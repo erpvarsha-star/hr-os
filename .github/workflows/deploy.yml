@@ -1,0 +1,31 @@
+name: Test and deploy handbook
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm test
+      - name: Build handbook site
+        run: npm run build
+      - name: Deploy to Netlify (vfl-hr-os)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: 0fd5251f-64a5-4a6b-a56e-47057574d68b
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ]; then
+            echo "::warning::NETLIFY_AUTH_TOKEN secret not set; skipping deploy."
+            exit 0
+          fi
+          npx -y netlify-cli@17 deploy --prod --dir=dist --site="$NETLIFY_SITE_ID" --message "GitHub Actions ${GITHUB_SHA::7}"

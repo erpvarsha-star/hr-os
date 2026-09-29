@@ -207,3 +207,5 @@ If something looks wrong and you are unsure, stop and check **AUDIT_LOG**: every
 ## Handbook site
 
 `npm run build` generates a static handbook in `dist/` (this runbook, the design spec, and every Apps Script file with a Copy button). It is deployed to the Netlify project `vfl-hr-os`, which is restricted to Netlify team login and marked `noindex`.
+
+Deployment is automatic: every push to `main` runs the tests, builds `dist/` and deploys it with GitHub Actions (`.github/workflows/deploy.yml`). This needs one repository secret, `NETLIFY_AUTH_TOKEN` (Netlify ▸ User settings ▸ Applications ▸ Personal access tokens). Do not link this repo in Netlify's Git settings; Actions deploys directly and avoids the contributor-verification block.
