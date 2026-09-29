@@ -302,15 +302,15 @@ test('2. setup twice: the second run changes nothing (only one more SETUP audit 
   assert.equal(env.sheets.PAYROLL_LOCKED.protections.length, 1, 'protection not duplicated');
 });
 
-test('3. owner sets PAYSLIP_FOLDER_ID, prepareMonth adds 4 period rows + 8 feed rows (idempotent), HR enters working days', () => {
+test('3. owner sets PAYSLIP_FOLDER_ID, prepareMonth adds 4 period rows + 9 feed rows (idempotent), HR enters working days', () => {
   c.setControl('PAYSLIP_FOLDER_ID', 'PRIVATE_FOLDER', 'private folder');
   const r = plain(c.prepareMonth(P));
-  assert.deepEqual([r.periodRowsAdded, r.feedRowsAdded], [4, 8]);
+  assert.deepEqual([r.periodRowsAdded, r.feedRowsAdded], [4, 9]);
   assert.deepEqual(plain(c.prepareMonth(P)), Object.assign({}, r, { periodRowsAdded: 0, feedRowsAdded: 0 }));
   assert.throws(() => c.prepareMonth('2026-08'), /earlier than MIN_PERIOD/);
   POPS.forEach((p) => assert.equal(pc(p).STATUS, 'PENDING'));
   POPS.forEach((p) => editCells('PAYROLL_PERIOD_CATEGORY', { PAYROLL_MONTH: P, PAYROLL_CATEGORY: p }, { WORKING_DAYS: 26 }));
-  assert.equal(rowsOf('FEED_STATUS').filter((f) => f.PERIOD === P && f.STATUS === 'OPEN').length, 8);
+  assert.equal(rowsOf('FEED_STATUS').filter((f) => f.PERIOD === P && f.STATUS === 'OPEN').length, 9);
 });
 
 test('4. monthly attendance: prepare, HR types counts, approve per population', () => {
@@ -325,7 +325,7 @@ test('4. monthly attendance: prepare, HR types counts, approve per population', 
   A('T-P1', 22, 22, 4); A('T-P2', 20, 20, 4);
   // an unapproved row is refused by readiness before approval
   const pre = plain(c.checkReadiness(P, 'STAFF')).rows.find((x) => x.CHECK === 'ATTENDANCE_APPROVED_VALID');
-  assert.equal(pre.STATUS, 'BLOCKED');
+  assert.equal(pre.STATUS, 'HOLD'); // unapproved rows hold those employees only
   POPS.forEach((p) => { const a = plain(c.approveAttendance(P, p)); assert.equal(a.approved, 2); assert.deepEqual(a.blocked, []); assert.equal(a.approvedBy, HR); });
   rowsOf('INPUT_ATTENDANCE').filter((x) => x.PAYROLL_MONTH === P).forEach((x) => assert.equal(x.APPROVAL_STATUS, 'APPROVED'));
   assert.equal(rowsOf('INPUT_ATTENDANCE').find((x) => x.PAYROLL_MONTH === '2026-08').APPROVED_BY, 'old@x', 'August attendance untouched');
@@ -380,7 +380,7 @@ test('5. feeds: OT sync (pending recorded), canteen/efficiency sync, manual adva
   // before feeds are marked complete readiness must block
   assert.equal(plain(c.checkReadiness(P, 'STAFF')).rows.find((x) => x.CHECK === 'FEEDS_COMPLETE').STATUS, 'BLOCKED');
   c.FEED_LIST.forEach((f) => assert.equal(c.markFeedComplete(P, f, 'e2e').status, 'COMPLETE'));
-  assert.equal(rowsOf('FEED_STATUS').filter((f) => f.PERIOD === P && f.STATUS === 'COMPLETE').length, 8);
+  assert.equal(rowsOf('FEED_STATUS').filter((f) => f.PERIOD === P && f.STATUS === 'COMPLETE').length, 9);
   assert.throws(() => c.markFeedComplete(P, 'NOPE'), /Unknown feed/);
 });
 

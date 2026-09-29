@@ -19,6 +19,8 @@ var TABS = {
   ATTENDANCE_DAILY: 'ATTENDANCE_DAILY',
   INPUT_ATTENDANCE: 'INPUT_ATTENDANCE',
   INPUT_OT: 'INPUT_OT',
+  INPUT_LEAVE: 'INPUT_LEAVE',
+  ATTENDANCE_COMPARISON: 'ATTENDANCE_COMPARISON',
   INPUT_CANTEEN: 'INPUT_CANTEEN',
   INPUT_EFFICIENCY: 'INPUT_EFFICIENCY',
   INPUT_ADVANCE: 'INPUT_ADVANCE',
@@ -52,7 +54,15 @@ var SITE_PUNE = 'PUNE';
 
 var DAILY_CODES = ['P', 'HD', 'A', 'WO', 'PH', 'EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
 var WEEKDAY_CODES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-var FEED_LIST = ['ATTENDANCE', 'CANTEEN', 'OT', 'EFFICIENCY', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'HOLIDAYS'];
+var FEED_LIST = ['ATTENDANCE', 'CANTEEN', 'OT', 'EFFICIENCY', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'HOLIDAYS', 'LEAVE'];
+var LEAVE_TYPES = ['EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
+/**
+ * Exception codes that block a WHOLE population (global problems: working days, statutory / calculation config).
+ * Every other calculation / feed problem is employee-level: severity HOLD (that employee is excluded from NET, the
+ * approval hash and the lock, and the rest of the population continues).
+ */
+var GLOBAL_BLOCKER_CODES = ['INVALID_WORKING_DAYS', 'MISSING_STATUTORY_KEY', 'UNKNOWN_POPULATION',
+  'MISSING_EFFICIENCY_CONFIG', 'MISSING_COMPONENT_PCT', 'UNKNOWN_PF_COMPONENT', 'LEAVE_SOURCE_UNREACHABLE'];
 var ADJUSTMENT_TYPES = ['ARREARS', 'DISPATCH_INCENTIVE', 'OTHER_ALLOWANCE', 'LEAVE_ENCASHMENT', 'OT_EXTRA_WORK',
   'PRODUCTION_INCENTIVE', 'TDS', 'OTHER_DEDUCTION', 'PENALTY', 'CANTEEN_EXTRA'];
 var APPROVAL_STATUSES = ['PENDING', 'APPROVED'];
@@ -211,6 +221,9 @@ function getWeeklyOff(site) {
   if (WEEKDAY_CODES.indexOf(v) < 0) throw new Error(key + ' must be one of ' + WEEKDAY_CODES.join(',') + ' (got "' + v + '")');
   return v;
 }
+
+/** Owner approver (approves attendance disputes). PAYROLL_CONTROL OWNER_APPROVER_EMAIL, seeded by setup. */
+function getOwnerApproverEmail() { return String(getControl('OWNER_APPROVER_EMAIL', '')).trim(); }
 
 /** Two-step guard: static floor first (no sheet access), then configured minimum. */
 function guardPeriod_(period) {

@@ -51,7 +51,7 @@ function mini(over = {}) {
   env.put('INPUT_ADVANCE', ['PAYROLL_MONTH', 'EMP_ID', 'OPENING_BALANCE_INR', 'RECOVERY_THIS_MONTH_INR', 'ACCOUNTS_LEDGER_REFERENCE', 'APPROVAL_STATUS']);
   env.put('INPUT_SOCIETY', ['PAYROLL_MONTH', 'EMP_ID', 'GENERAL_EMI_INR', 'EMERGENCY_EMI_INR', 'EDUCATION_EMI_INR', 'SHARES_OTHER_INR', 'TOTAL_RECOVERY_INR', 'APPROVAL_STATUS']);
   env.put('INPUT_ADJUSTMENTS', ['PAYROLL_MONTH', 'EMP_ID', 'ADJUSTMENT_TYPE', 'SIGNED_AMOUNT_INR', 'APPROVAL_STATUS']);
-  env.put('FEED_STATUS', ['PERIOD', 'FEED', 'STATUS'], ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
+  env.put('FEED_STATUS', ['PERIOD', 'FEED', 'STATUS'], ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY', 'LEAVE'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
   Object.keys(over).forEach((k) => over[k](env));
   return env;
 }
@@ -129,10 +129,13 @@ test('canteen / efficiency: an invalid LATEST response never falls back to an ol
   assert.equal(draft(env, 'W1').PRODUCTION_ALLOWANCE, 0, 'the older valid 84% is not used');
   assert.equal(draft(env, 'W2').PRODUCTION_ALLOWANCE, 7500);
   const s = rdy(env, 'STAFF', 'CANTEEN_EFFICIENCY_EXCEPTIONS');
-  assert.equal(s.STATUS, 'BLOCKED');
+  assert.equal(s.STATUS, 'HOLD', 'employee-level: S1 is held, the population is not blocked');
   assert.match(s.DETAIL, /canteen EXCEPTION rows \(1\): S1: AMOUNT_NEGATIVE/);
+  assert.match(draft(env, 'S1').FLAGS, /^HOLD;.*CANTEEN_EXCEPTION/);
+  assert.equal(draft(env, 'S1').NET_PAY, '');
   const w = rdy(env, 'PERMANENT_WORKER', 'CANTEEN_EFFICIENCY_EXCEPTIONS');
-  assert.equal(w.STATUS, 'BLOCKED');
+  assert.equal(w.STATUS, 'HOLD');
+  assert.match(draft(env, 'W1').FLAGS, /^HOLD;.*EFFICIENCY_EXCEPTION/);
   assert.match(w.DETAIL, /efficiency EXCEPTION rows \(1\): W1: EFFICIENCY_OUT_OF_RANGE/);
   assert.equal(rdy(env, 'CONSULTANT', 'CANTEEN_EFFICIENCY_EXCEPTIONS').STATUS, 'READY', 'other populations unaffected');
   // HR fixes both with later valid rows: exceptions clear, values apply
@@ -163,9 +166,10 @@ test('society components + total mismatch WARN; advance recovery > balance WARN;
   assert.equal(draft(env, 'W2').ADVANCE, 1500);
   assert.ok(exc(env, 'W2').includes('WARN:ADVANCE_RECOVERY_EXCEEDS_BALANCE'));
   assert.equal(typeof draft(env, 'W2').NET_PAY, 'number');
-  assert.ok(exc(env, 'S1').includes('BLOCKER:ADVANCE_DUPLICATE_LEDGER_REFERENCE'));
-  assert.equal(draft(env, 'S1').NET_PAY, '', 'NET withheld while a blocker exists');
-  assert.equal(rdy(env, 'STAFF', 'CALC_BLOCKERS').STATUS, 'BLOCKED');
+  assert.equal(draft(env, 'S1').NET_PAY, '', 'NET withheld while the employee is held');
+  assert.equal(rdy(env, 'STAFF', 'CALC_BLOCKERS').STATUS, 'HOLD');
+  assert.ok(exc(env, 'S1').includes('HOLD:ADVANCE_DUPLICATE_LEDGER_REFERENCE'));
+  assert.match(draft(env, 'S1').FLAGS, /^HOLD;/);
 });
 
 test('roster: employee with DOJ after the period end is not calculated', () => {

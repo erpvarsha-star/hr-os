@@ -118,7 +118,7 @@ function seed(over = {}) {
     { PAYROLL_MONTH: P, EMP_ID: 'E1', ADJUSTMENT_TYPE: 'OTHER_DEDUCTION', SIGNED_AMOUNT_INR: 1000, APPROVAL_STATUS: 'APPROVED' },
     { PAYROLL_MONTH: P, EMP_ID: 'E1', ADJUSTMENT_TYPE: 'ARREARS', SIGNED_AMOUNT_INR: 500, APPROVAL_STATUS: 'PENDING' },
   ]);
-  w.put('FEED_STATUS', HDR.FEED, ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
+  w.put('FEED_STATUS', HDR.FEED, ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY', 'LEAVE'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
   w.put('STATUTORY_CONFIG', HDR.STAT, statutoryRows);
   w.put('EFFICIENCY_CONFIG', ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'IMPLEMENTATION_STATE'], [{ EFFICIENCY_PERCENT_EXACT: 85, INCENTIVE_SLAB_INR: 8500, IMPLEMENTATION_STATE: 'PENDING' }]);
   Object.keys(over).forEach((k) => over[k](w));
@@ -277,7 +277,7 @@ test('calculateDraft(STAFF): header written, rows replaced for period+pop only, 
   const rd = rowsOf(w, 'PAYROLL_READINESS');
   assert.ok(rd.some((r) => r.DETAIL === 'keep me'));
   const mine = rd.filter((r) => r.PERIOD === P && r.POPULATION === 'STAFF');
-  assert.equal(mine.length, 15);
+  assert.equal(mine.length, 17);
   assert.ok(mine.every((r) => r.CHECKED_AT));
   assert.equal(mine.find((r) => r.CHECK === 'ATTENDANCE_COVERAGE').STATUS, 'READY');
   assert.equal(res.readiness.blocked, 0);
@@ -299,7 +299,7 @@ test('recalculation is idempotent: no duplicate rows, same hash, new run id allo
   assert.equal(rowsOf(w, 'PAYROLL_RECON').length, 1);
   assert.equal(pcRow(w, 'STAFF').DRAFT_HASH, h1);
   assert.equal(a.populations[0].hash, b.populations[0].hash);
-  assert.equal(rowsOf(w, 'PAYROLL_READINESS').filter((r) => r.POPULATION === "STAFF").length, 15);
+  assert.equal(rowsOf(w, 'PAYROLL_READINESS').filter((r) => r.POPULATION === "STAFF").length, 17);
 });
 
 test('HR_APPROVED recalculation resets to DRAFT with AUDIT entry and cleared approval stamps', () => {
@@ -354,10 +354,10 @@ test('period before 2026-09 is refused before any sheet is touched; bad populati
   assert.equal(w.sheets.PAYROLL_READINESS, undefined);
 });
 
-test('blockers surface: missing attendance row, zero salary, duplicate master id; NET_PAY null; readiness BLOCKED', () => {
+test('employee-level problems HOLD the employee (NET_PAY null, FLAGS HOLD) and do not block the population', () => {
   const w = seed({
     m: (x) => x.sheets.EMPLOYEE_MASTER.data.push(['E2', 'Second', 'STAFF', 'Active', '', '', ''], ['E1', 'Dup', 'STAFF', 'Active', '', '', '']),
-    s: (x) => x.sheets.SALARY_STRUCTURE.data.push(['E2', 'STAFF', '2026-08-01', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    s: (x) => x.sheets.SALARY_STRUCTURE.data.push(['E2', 'STAFF', '2026-08-01', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'hr@x', 't']),
   });
   const c = load(w);
   const res = plain(c.calculateDraft(P, 'STAFF'));
@@ -369,14 +369,24 @@ test('blockers surface: missing attendance row, zero salary, duplicate master id
   const draft = rowsOf(w, 'PAYROLL_DRAFT');
   assert.equal(draft.find((r) => r.EMP_ID === 'E2').NET_PAY, '');
   assert.equal(draft.find((r) => r.EMP_ID === 'E1').NET_PAY, '');
-  assert.ok(res.populations[0].blockers >= 3);
+  assert.equal(res.populations[0].blockers, 0); // nothing global
+  assert.ok(res.populations[0].holds >= 3);
+  assert.deepEqual(res.populations[0].held.sort(), ['E1', 'E2']);
+  assert.equal(draft.find((r) => r.EMP_ID === 'E2').FLAGS.split(';')[0], 'HOLD');
+  assert.ok(ex.filter((e) => e.EMP_ID === 'E2').every((e) => e.SEVERITY !== 'BLOCKER'));
+  assert.ok(ex.some((e) => e.EMP_ID === 'E2' && e.SEVERITY === 'HOLD' && e.CODE === 'MISSING_ATTENDANCE'));
   const rd = rowsOf(w, 'PAYROLL_READINESS').filter((r) => r.POPULATION === 'STAFF');
   const by = (n) => rd.find((r) => r.CHECK === n);
-  assert.equal(by('ATTENDANCE_COVERAGE').STATUS, 'BLOCKED');
-  assert.equal(by('DUPLICATE_MASTER_IDS').STATUS, 'BLOCKED');
-  assert.equal(by('SALARY_PRESENT_NONZERO').STATUS, 'BLOCKED');
-  assert.equal(by('CALC_BLOCKERS').STATUS, 'BLOCKED');
-  assert.ok(res.readiness.blocked >= 4);
+  assert.equal(by('ATTENDANCE_COVERAGE').STATUS, 'HOLD');
+  assert.equal(by('DUPLICATE_MASTER_IDS').STATUS, 'HOLD');
+  assert.equal(by('SALARY_PRESENT_NONZERO').STATUS, 'HOLD');
+  assert.equal(by('CALC_BLOCKERS').STATUS, 'READY'); // these codes have their own checks
+  assert.equal(res.readiness.blocked, 0);
+  assert.ok(res.readiness.hold >= 3);
+  // held rows are excluded from the recon and the hash
+  const recon = rowsOf(w, 'PAYROLL_RECON').find((r) => r.POPULATION === 'STAFF');
+  assert.equal(recon.HEADCOUNT, 0);
+  assert.equal(recon.TOTAL_NET, 0);
 });
 
 test('checkReadiness rewrites only its period+populations, keeps other periods, trailing rows cleared', () => {
@@ -392,12 +402,12 @@ test('checkReadiness rewrites only its period+populations, keeps other periods, 
   const c = load(w);
   const sum = plain(c.checkReadiness(P, 'STAFF'));
   assert.equal(sum.populations[0], 'STAFF');
-  assert.equal(sum.rows.length, 15); // 14 checks + CALC_BLOCKERS (calc results computed)
+  assert.equal(sum.rows.length, 17); // 16 checks + CALC_BLOCKERS (calc results computed)
   const rd = rowsOf(w, 'PAYROLL_READINESS');
   assert.ok(rd.some((r) => r.DETAIL === 'other period'));
   assert.ok(rd.some((r) => r.DETAIL === 'other pop same period'));
   assert.ok(!rd.some((r) => /^OLD[134]$/.test(r.CHECK)));
-  assert.equal(rd.length, 2 + 15);
+  assert.equal(rd.length, 2 + 17);
   assert.deepEqual(w.sheets.PAYROLL_READINESS.data[0], ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT']);
   assert.equal(sum.blocked, 0);
   // all populations run: locked skipped, each other population gets rows
@@ -421,7 +431,7 @@ test('pending OT (OT_PENDING_<period> in PAYROLL_CONTROL) makes check 7 WARN per
   assert.equal(ot7(seed({ c: ctl('not json') }), 'STAFF').STATUS, 'READY');
   const wx = seed({ c: ctl('{"STAFF":2}'), o: (x) => x.put('INPUT_OT', ['PAYROLL_MONTH', 'EMP_ID', 'OT_HOURS', 'ELIGIBILITY'],
     [{ PAYROLL_MONTH: P, EMP_ID: 'E1', OT_HOURS: 30, ELIGIBILITY: 'EXCEPTION' }]) });
-  assert.equal(ot7(wx, 'STAFF').STATUS, 'BLOCKED');
+  assert.equal(ot7(wx, 'STAFF').STATUS, 'HOLD'); // E1's OT exception holds E1 only
 });
 
 test('buildEngineContexts unwraps the {pct, physicalDaysOverride, source} object returned by efficiencyByEmp', () => {

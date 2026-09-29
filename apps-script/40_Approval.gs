@@ -73,7 +73,7 @@ function approval_ownerEmail_() {
 function approval_recomputeHash_(period, population, src) {
   src = src || engine_readSources_(period);
   var calc = engine_calcPopulation(src, population, '', nowIso_());
-  return { hash: hashRows(calc.rows, OUTPUT_COLUMNS, engine_sha256Hex_), src: src, calc: calc };
+  return { hash: hashRows(engine_payableRows_(calc.rows), OUTPUT_COLUMNS, engine_sha256Hex_), src: src, calc: calc };
 }
 
 function approval_pcRow_(period, population) {
@@ -122,8 +122,9 @@ function approval_run_(action, period, population) {
     vals[isHr ? 'HR_APPROVED_BY' : 'ACCOUNTS_APPROVED_BY'] = user;
     vals[isHr ? 'HR_APPROVED_AT' : 'ACCOUNTS_APPROVED_AT'] = nowIso_();
     approval_writePc_(pc, vals);
-    audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash });
-    return { ok: true, status: d.newStatus, reason: d.reason };
+    var held = re.calc.held.map(function (h) { return h.EMP_ID; });
+    audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash, held: held });
+    return { ok: true, status: d.newStatus, reason: d.reason, held: held };
   }
   if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
     if (status === PERIOD_STATUS.HR_APPROVED || status === PERIOD_STATUS.ACCOUNTS_APPROVED) {

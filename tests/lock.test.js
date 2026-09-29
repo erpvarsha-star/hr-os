@@ -118,7 +118,7 @@ function seed(over = {}) {
   w.put('PAYROLL_RATE_PROFILE', HDR.RATE, [{ EMP_ID: 'C1', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'DAILY_RATE', RATE_AMOUNT_INR: 700, MONTHLY_GROSS_INR: 0 }]);
   w.put('INPUT_OT', HDR.OT, []);
   w.put('INPUT_ADJUSTMENTS', HDR.ADJ, []);
-  w.put('FEED_STATUS', HDR.FEED, ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
+  w.put('FEED_STATUS', HDR.FEED, ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY', 'LEAVE'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
   w.put('STATUTORY_CONFIG', HDR.STAT, statutoryRows);
   w.put('EFFICIENCY_CONFIG', ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'IMPLEMENTATION_STATE'], [{ EFFICIENCY_PERCENT_EXACT: 85, INCENTIVE_SLAB_INR: 8500, IMPLEMENTATION_STATE: 'PENDING' }]);
   Object.keys(over).forEach((k) => over[k](w));
@@ -161,13 +161,14 @@ test('lockIdFor / buildLockRows pure', () => {
 
 test('lockDecision pure rules', () => {
   const c = load(null);
-  const ok = { status: 'ACCOUNTS_APPROVED', userEmail: ACC, accountsEmail: ACC, ownerEmail: 'o@x.com', storedHash: 'h', currentHash: 'h', draftSheetHash: 'h', draftRowCount: 1, existingLockedCount: 0 };
+  const ok = { status: 'ACCOUNTS_APPROVED', userEmail: ACC, accountsEmail: ACC, ownerEmail: 'o@x.com', storedHash: 'h', currentHash: 'h', draftSheetHash: 'h', draftRowCount: 1, alreadyLockedEmpIds: [] };
   const d = (o) => plain(c.lockDecision(Object.assign({}, ok, o)));
   assert.equal(d({}).ok, true);
   assert.equal(d({ userEmail: 'O@x.com' }).ok, true);
   assert.equal(d({ userEmail: HR }).ok, false);
   assert.equal(d({ status: 'HR_APPROVED' }).ok, false);
-  assert.equal(d({ existingLockedCount: 2 }).reason, 'ALREADY_IN_PAYROLL_LOCKED');
+  assert.equal(d({ alreadyLockedEmpIds: ['E1'] }).reason, 'EMP_ALREADY_LOCKED');
+  assert.equal(d({ draftRowCount: 0 }).reason, 'NO_PAYABLE_ROWS');
   assert.equal(d({ currentHash: 'x' }).newStatus, 'DRAFT');
   assert.equal(d({ draftSheetHash: 'x' }).reason, 'INPUTS_OR_DRAFT_CHANGED');
 });
@@ -221,7 +222,9 @@ test('lockPeriod: double lock refused; unlocked states refused; wrong runner ref
   assert.equal(rowsOf(w, 'PAYROLL_LOCKED').length, n);
   // even if status were forced back, PAYROLL_LOCKED is append-only
   w.sheets.PAYROLL_PERIOD_CATEGORY.data[1][3] = 'ACCOUNTS_APPROVED';
-  assert.equal(plain(c.lockPeriod(P, 'STAFF')).reason, 'ALREADY_IN_PAYROLL_LOCKED');
+  const dbl = plain(c.lockPeriod(P, 'STAFF'));
+  assert.equal(dbl.reason, 'EMP_ALREADY_LOCKED');
+  assert.deepEqual(dbl.alreadyLocked, ['E1']);
   assert.equal(rowsOf(w, 'PAYROLL_LOCKED').length, n);
 });
 
@@ -269,4 +272,52 @@ test('after lock: calculateDraft throws, approveAttendance refuses, prepare skip
   // other populations can still be calculated
   assert.doesNotThrow(() => c.calculateDraft(P, 'CONSULTANT'));
   assert.equal(pcRow(w, 'CONSULTANT').STATUS, 'DRAFT');
+});
+
+// ---------------------------------------------------------------- employee-level HOLD and the lock
+const withHeldEmployee = (x) => {
+  // E2: active STAFF with a salary structure but attendance still PENDING -> HOLD (ATTENDANCE_NOT_APPROVED)
+  x.sheets.EMPLOYEE_MASTER.data.push(['E2', 'Staff Two', 'STAFF', 'Active', 'HR', 'Exec', '01/01/2020']);
+  const sal = x.sheets.SALARY_STRUCTURE.data;
+  sal.push(sal[1].map((v, i) => (i === 0 ? 'E2' : v)));
+  x.sheets.INPUT_ATTENDANCE.data.push(x.sheets.INPUT_ATTENDANCE.data[1].map((v, i) => {
+    const h = x.sheets.INPUT_ATTENDANCE.data[0][i];
+    return h === 'EMP_ID' ? 'E2' : (h === 'APPROVAL_STATUS' ? 'PENDING' : v);
+  }));
+};
+
+test('held employee: excluded from NET / hash / lock; the population is not blocked; lock lists the held one', () => {
+  const { w, c } = drafted({ h: withHeldEmployee });
+  const draft = rowsOf(w, 'PAYROLL_DRAFT').filter((r) => r.POPULATION === 'STAFF');
+  assert.equal(draft.length, 2, 'the held row is still written to PAYROLL_DRAFT');
+  const held = draft.find((r) => r.EMP_ID === 'E2');
+  assert.match(held.FLAGS, /^HOLD;/);
+  assert.equal(held.NET_PAY, '');
+  assert.equal(typeof draft.find((r) => r.EMP_ID === 'E1').NET_PAY, 'number');
+  assert.ok(rowsOf(w, 'PAYROLL_EXCEPTIONS').some((e) => e.EMP_ID === 'E2' && e.SEVERITY === 'HOLD' && e.CODE === 'ATTENDANCE_NOT_APPROVED'));
+  // hash covers the payable row only: identical to the hash of a world without E2
+  const solo = drafted();
+  assert.equal(pcRow(w).DRAFT_HASH, pcRow(solo.w).DRAFT_HASH);
+  // approvals proceed although E2 is held
+  w.user = HR;
+  const hr = plain(c.hrApprove(P, 'STAFF'));
+  assert.equal(hr.ok, true);
+  assert.deepEqual(hr.held, ['E2']);
+  w.user = ACC; assert.equal(c.accountsApprove(P, 'STAFF').ok, true);
+  const r = plain(c.lockPeriod(P, 'STAFF'));
+  assert.equal(r.ok, true);
+  assert.equal(r.rows, 1);
+  assert.deepEqual(r.held.map((h) => h.EMP_ID), ['E2']);
+  assert.match(r.held[0].flags, /HOLD/);
+  assert.deepEqual(rowsOf(w, 'PAYROLL_LOCKED').map((l) => l.EMP_ID), ['E1']);
+  assert.match(auditText(w), /heldNotLocked/);
+});
+
+test('buildLockRows never copies held rows; a second lock for different EMP_IDs is allowed by the decision', () => {
+  const c = load(null);
+  const rows = [{ PERIOD: P, POPULATION: 'STAFF', EMP_ID: 'E1', FLAGS: '' }, { PERIOD: P, POPULATION: 'STAFF', EMP_ID: 'E2', FLAGS: 'HOLD;MISSING_ATTENDANCE' },
+    { PERIOD: P, POPULATION: 'STAFF', EMP_ID: 'E3', FLAGS: 'WARN_ONLY' }];
+  assert.deepEqual(plain(c.buildLockRows(rows, 'L', P, 'STAFF')).map((r) => r.EMP_ID), ['E1', 'E3']);
+  const ok = { status: 'ACCOUNTS_APPROVED', userEmail: ACC, accountsEmail: ACC, ownerEmail: 'o@x.com', storedHash: 'h', currentHash: 'h', draftSheetHash: 'h', draftRowCount: 1, alreadyLockedEmpIds: [] };
+  assert.equal(plain(c.lockDecision(ok)).ok, true);
 });

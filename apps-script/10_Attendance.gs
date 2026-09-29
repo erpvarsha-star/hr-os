@@ -64,6 +64,45 @@ function dojRosterDecision(v, endIso) {
   return same ? { include: inc[0], warn: '' } : { include: true, warn: 'AMBIGUOUS' };
 }
 
+/** EMPLOYEE_MASTER columns (first non-blank wins) that may hold a leaver's last working day. Absent column = no leavers. */
+var ATT_LWD_HEADERS = ['LAST_WORKING_DAY', 'LAST_WORKING_DATE', 'LWD_AS_SOURCE', 'DOL_AS_SOURCE', 'DATE_OF_LEAVING',
+  'RELIEVING_DATE'];
+
+/** Raw last-working-day cell of an EMPLOYEE_MASTER row ('' when no such column / blank). */
+function masterLastWorkingDay_(r) {
+  for (var i = 0; i < ATT_LWD_HEADERS.length; i++) {
+    var v = r[ATT_LWD_HEADERS[i]];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return '';
+}
+
+/**
+ * Roster rule for LEAVERS (non-Active employees): included when the last working day is on or after the period start
+ * (they were paid for part of the month). Date / ISO exact; dd/mm/yyyy day-first, and when the two readings disagree the
+ * employee is INCLUDED with warn 'AMBIGUOUS' (fail towards paying attention). Blank / unparseable -> not included.
+ * @returns {{include:boolean, warn:string, lwd:string}}
+ */
+function leaverRosterDecision(v, startIso) {
+  if (v == null || v === '') return { include: false, warn: '', lwd: '' };
+  var iso = toIsoDate(v);
+  if (iso) return { include: iso >= startIso, warn: '', lwd: iso };
+  var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
+  if (!m) return { include: false, warn: '', lwd: '' };
+  var a = +m[1], b = +m[2], y = +m[3];
+  var real = function (yy, mo, d) {
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    var dt = new Date(Date.UTC(yy, mo - 1, d));
+    return dt.getUTCMonth() === mo - 1 ? yy + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+  };
+  var cands = [];
+  [real(y, b, a), real(y, a, b)].forEach(function (c) { if (c && cands.indexOf(c) < 0) cands.push(c); });
+  if (!cands.length) return { include: false, warn: '', lwd: '' };
+  var inc = cands.map(function (c) { return c >= startIso; });
+  var any = inc.some(function (x) { return x; }), all = inc.every(function (x) { return x; });
+  return { include: any, warn: any && !all ? 'AMBIGUOUS' : '', lwd: cands[0] };
+}
+
 /** Latest VALID row per KEY (EMP_ID|DATE) within period. Later ENTERED_AT wins; ties -> later array position. */
 function pickLatestValid(dailyRows, period) {
   var best = {};
@@ -269,6 +308,42 @@ function validateAttendanceRowForApproval(row) {
   return problems;
 }
 
+/**
+ * Employee-level problems of one INPUT_ATTENDANCE row (shared by the readiness check and the engine so both hold the
+ * same employees): [{code, message}]. Codes: ATTENDANCE_NOT_APPROVED, ATTENDANCE_INVALID_VALUE (blank PRESENT_DAYS,
+ * non-numeric or negative fields), ATTENDANCE_OVER_MONTH (worked days > days in the month), HR_OVERRIDE_WITHOUT_REASON.
+ */
+function attendanceRowProblems(row, population, period) {
+  var out = [];
+  if (!row) return out;
+  if (String(row.APPROVAL_STATUS == null ? '' : row.APPROVAL_STATUS).trim().toUpperCase() !== 'APPROVED') {
+    out.push({ code: 'ATTENDANCE_NOT_APPROVED', message: 'Attendance row is not APPROVED' });
+  }
+  var bad = [];
+  ATT_NUM_FIELDS.forEach(function (k) {
+    if (k === 'PRESENT_DAYS' && (row[k] === '' || row[k] == null)) { bad.push(k + ' blank'); return; }
+    var n = attNum_(row[k]);
+    if (isNaN(n) || n < 0) bad.push(k);
+  });
+  if (bad.length) {
+    out.push({ code: 'ATTENDANCE_INVALID_VALUE', message: 'Blank / non-numeric / negative day fields: ' + bad.join(', ') });
+  } else {
+    var w = computeWorkedDays(row, population), dim = daysInMonth(period);
+    if (w > dim + 1e-9) {
+      out.push({ code: 'ATTENDANCE_OVER_MONTH', message: 'Worked days ' + w + ' exceed days in month ' + dim });
+    }
+  }
+  if (String(row.HR_OVERRIDE || '').trim().toUpperCase() === 'Y' && String(row.OVERRIDE_REASON || '').trim() === '') {
+    out.push({ code: 'HR_OVERRIDE_WITHOUT_REASON', message: 'HR_OVERRIDE=Y needs OVERRIDE_REASON' });
+  }
+  return out;
+}
+
+/** True when the INPUT_ATTENDANCE row comes from the monthly register (the pay source, DESIGN section 2). */
+function isRegisterRow_(row) {
+  return !!row && String(row.SOURCE_REF == null ? '' : row.SOURCE_REF).trim().toUpperCase() === 'REGISTER';
+}
+
 // ================================================================ sheet-touching entry points
 
 function periodPopulationsOpen_(period) {
@@ -286,18 +361,28 @@ function periodPopulationsOpen_(period) {
 function buildRoster(period) {
   var rows = readObjects(TABS.EMPLOYEE_MASTER), seen = {}, roster = [], duplicates = [], excluded = [], warnings = [];
   var end = period ? periodEnd(period) : '';
+  var start = period ? periodStart(period) : '';
   rows.forEach(function (r) {
-    if (String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() !== 'active') return;
+    var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = String(r.PAYROLL_CATEGORY || '').trim();
     var id = String(r.EMP_ID || '').trim();
     if (!id || !isKnownPopulation(pop)) return;
+    var lv = { include: false, warn: '', lwd: '' };
+    if (!active) {
+      // leaver: a non-Active employee whose last working day is on/after the period start stays on the roster
+      if (!start) return;
+      lv = leaverRosterDecision(masterLastWorkingDay_(r), start);
+      if (!lv.include) return;
+    }
     var dec = end ? dojRosterDecision(r.DOJ_AS_SOURCE, end) : { include: true, warn: '' };
     if (!dec.include) { if (excluded.indexOf(id) < 0) excluded.push(id); return; }
     if (seen[id]) { duplicates.push(id); return; }
     seen[id] = true;
     if (dec.warn) warnings.push(id);
-    roster.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), NAME: String(r.EMPLOYEE_NAME || ''),
-      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DOJ: parseDoj(r.DOJ_AS_SOURCE), DOJ_WARN: dec.warn });
+    var entry = { EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), NAME: String(r.EMPLOYEE_NAME || ''),
+      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DOJ: parseDoj(r.DOJ_AS_SOURCE), DOJ_WARN: dec.warn };
+    if (!active) { entry.LEAVER = true; entry.LWD = lv.lwd; entry.LWD_WARN = lv.warn; }
+    roster.push(entry);
   });
   roster.duplicates = duplicates;
   roster.joinersExcluded = excluded;

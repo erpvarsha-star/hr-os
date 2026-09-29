@@ -1,17 +1,24 @@
 /**
  * 31_Readiness.gs - payroll readiness (DESIGN section 3). buildReadiness is pure; checkReadiness gathers inputs
  * from the sheets (via engine_readSources_ in 32_Engine.gs), runs the checks and rewrites PAYROLL_READINESS
- * rows for the period (other periods are never touched). Only STATUS = BLOCKED blocks approval.
- * Helpers are prefixed rdy_.
+ * rows for the period (other periods are never touched). Only STATUS = BLOCKED (global problems) blocks approval;
+ * STATUS = HOLD lists employee-level problems: those employees are excluded from NET / hash / lock and the rest of
+ * the population continues. Helpers are prefixed rdy_.
  */
 var RDY_MAX_IDS = 20;
-var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS'];
+var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'LEAVE'];
 var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED',
   'SL_AVAILED', 'PAID_LEAVE_OTHER', 'ABSENT_LWP_DAYS'];
 var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE_APPROVED_VALID',
   'DAILY_ATTENDANCE_COMPLETE', 'SALARY_PRESENT_NONZERO', 'FEEDS_COMPLETE', 'OT_EXCEPTIONS', 'STATUTORY_CONFIG',
   'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
-  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS'];
+  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'LEAVE_EXCEPTIONS', 'ATTENDANCE_DISPUTES'];
+/** Engine HOLD codes that already have their own readiness check (CALC_BLOCKERS lists only the others). */
+var RDY_COVERED_CODES = ['NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
+  'ATTENDANCE_INVALID_VALUE', 'ATTENDANCE_OVER_MONTH', 'HR_OVERRIDE_WITHOUT_REASON', 'DAILY_ATTENDANCE_MISSING',
+  'DUPLICATE_MASTER_ID', 'OT_EXCEPTION', 'CANTEEN_EXCEPTION', 'EFFICIENCY_EXCEPTION', 'LEAVE_EXCEPTION',
+  'ATTENDANCE_DISPUTE', 'MISSING_SALARY_STRUCTURE', 'ZERO_SALARY_STRUCTURE', 'MISSING_RATE_PROFILE', 'ZERO_RATE',
+  'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM'];
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -39,11 +46,15 @@ function rdy_list_(items) {
   return a.length > RDY_MAX_IDS ? head + ', +' + (a.length - RDY_MAX_IDS) + ' more' : head;
 }
 
-function rdy_res_(blockers, warns, okDetail) {
+/** blockers = global (BLOCKED), holds = employee-level (HOLD), warns (WARN). Precedence BLOCKED > HOLD > WARN > READY. */
+function rdy_res_(blockers, warns, okDetail, holds) {
+  holds = holds || [];
   var parts = [];
   if (blockers.length) parts.push(blockers.join('; '));
+  if (holds.length) parts.push('employee HOLD (excluded from NET and lock): ' + holds.join('; '));
   if (warns.length) parts.push(warns.join('; '));
   if (blockers.length) return { status: 'BLOCKED', detail: parts.join(' | ') };
+  if (holds.length) return { status: 'HOLD', detail: parts.join(' | ') };
   if (warns.length) return { status: 'WARN', detail: parts.join(' | ') };
   return { status: 'READY', detail: okDetail || 'OK' };
 }
@@ -96,11 +107,11 @@ function rdy_check2_(inputs, ctx) {
   var missing = ctx.rosterIds.filter(function (id) { return !counts[id]; });
   var dups = Object.keys(counts).filter(function (id) { return counts[id] > 1; });
   var unknown = Object.keys(counts).filter(function (id) { return !ctx.rosterSet[id]; });
-  var b = [];
-  if (missing.length) b.push('no attendance row: ' + rdy_list_(missing));
-  if (dups.length) b.push('duplicate attendance rows: ' + rdy_list_(dups));
+  var b = [], h = [];
+  if (missing.length) h.push('no attendance row: ' + rdy_list_(missing));
+  if (dups.length) h.push('duplicate attendance rows: ' + rdy_list_(dups));
   if (unknown.length) b.push('unknown/inactive EMP_ID in attendance: ' + rdy_list_(unknown));
-  return rdy_res_(b, [], ctx.rosterIds.length + ' employees covered');
+  return rdy_res_(b, [], ctx.rosterIds.length + ' employees covered', h);
 }
 
 function rdy_check3_(inputs, ctx) {
@@ -122,16 +133,16 @@ function rdy_check3_(inputs, ctx) {
     else if (isFinite(wd) && wd > 0 && w > wd) overWd.push(id + '(' + w + ')');
     if (rdy_id_(r.HR_OVERRIDE).toUpperCase() === 'Y' && rdy_id_(r.OVERRIDE_REASON) === '') noReason.push(id);
   });
-  var b = [], w = [];
-  if (notApproved.length) b.push('attendance not APPROVED: ' + rdy_list_(notApproved));
-  if (badNum.length) b.push('blank/non-numeric/negative day fields: ' + rdy_list_(badNum));
-  if (overDim.length) b.push('worked days exceed days in month: ' + rdy_list_(overDim));
-  if (noReason.length) b.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
+  var h = [], w = [];
+  if (notApproved.length) h.push('attendance not APPROVED: ' + rdy_list_(notApproved));
+  if (badNum.length) h.push('blank/non-numeric/negative day fields: ' + rdy_list_(badNum));
+  if (overDim.length) h.push('ATTENDANCE_OVER_MONTH (worked days exceed days in month): ' + rdy_list_(overDim));
+  if (noReason.length) h.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
   if (overWd.length) {
     var msg = 'worked days exceed WORKING_DAYS: ' + rdy_list_(overWd);
-    if (pop === 'PERMANENT_WORKER') b.push(msg); else w.push(msg);
+    if (pop === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
   }
-  return rdy_res_(b, w, ctx.attRows.length + ' rows approved and valid');
+  return rdy_res_([], w, ctx.attRows.length + ' rows approved and valid', h);
 }
 
 function rdy_check4_(inputs, ctx) {
@@ -139,7 +150,7 @@ function rdy_check4_(inputs, ctx) {
   if (m == null) return { status: 'READY', detail: 'No daily attendance data for period (monthly entry)' };
   var bad = ctx.rosterIds.filter(function (id) { return m[id] && m[id].length; })
     .map(function (id) { return id + '(' + m[id].length + ' dates, from ' + m[id][0] + ')'; });
-  return rdy_res_(bad.length ? ['missing daily dates: ' + rdy_list_(bad)] : [], [], 'Daily attendance complete');
+  return rdy_res_([], [], 'Daily attendance complete', bad.length ? ['missing daily dates: ' + rdy_list_(bad)] : []);
 }
 
 function rdy_check5_(inputs, ctx) {
@@ -159,10 +170,10 @@ function rdy_check5_(inputs, ctx) {
       if (!(amt > 0)) zero.push(id);
     }
   });
-  var b = [];
-  if (missing.length) b.push('no salary structure / rate profile: ' + rdy_list_(missing));
-  if (zero.length) b.push('zero pay structure: ' + rdy_list_(zero));
-  return rdy_res_(b, [], 'Pay structure present for all');
+  var h = [];
+  if (missing.length) h.push('no salary structure / rate profile: ' + rdy_list_(missing));
+  if (zero.length) h.push('zero pay structure: ' + rdy_list_(zero));
+  return rdy_res_([], [], 'Pay structure present for all', h);
 }
 
 function rdy_check6_(inputs) {
@@ -179,18 +190,20 @@ function rdy_check6_(inputs) {
 
 function rdy_check7_(inputs, ctx) {
   var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
-  var ids = [];
+  var own = [], unknown = [];
   (inputs.otExceptionRows || []).forEach(function (r) {
     if (rdy_id_(r.ELIGIBILITY).toUpperCase() !== 'EXCEPTION') return;
     var p = normalizePeriod(r.PAYROLL_MONTH);
     if (p && p !== inputs.period) return;
     var id = rdy_id_(r.EMP_ID);
+    if (ctx.rosterSet[id]) own.push(id);
     // unattributable (unknown EMP_ID) exceptions block every population - fail closed
-    if (ctx.rosterSet[id] || (all ? !all[id] : false)) ids.push(id === '' ? '(blank EMP_ID)' : id);
+    else if (all ? !all[id] : false) unknown.push(id === '' ? '(blank EMP_ID)' : id);
   });
-  var b = ids.length ? ['OT exceptions (' + ids.length + '): ' + rdy_list_(rdy_uniq_(ids))] : [];
+  var b = unknown.length ? ['OT exceptions for unknown EMP_ID (' + unknown.length + '): ' + rdy_list_(rdy_uniq_(unknown))] : [];
+  var h = own.length ? ['OT exceptions (' + own.length + '): ' + rdy_list_(rdy_uniq_(own))] : [];
   var w = inputs.pendingOtCount > 0 ? ['pending OT events: ' + inputs.pendingOtCount] : [];
-  return rdy_res_(b, w, 'No OT exceptions');
+  return rdy_res_(b, w, 'No OT exceptions', h);
 }
 
 function rdy_check8_(inputs) {
@@ -216,7 +229,7 @@ function rdy_check9_(inputs, ctx) {
     var id = rdy_id_(x);
     if (ctx.rosterSet[id] && dups.indexOf(id) < 0) dups.push(id);
   });
-  return rdy_res_(dups.length ? ['duplicate active EMP_ID in EMPLOYEE_MASTER: ' + rdy_list_(dups)] : [], [], 'No duplicates');
+  return rdy_res_([], [], 'No duplicates', dups.length ? ['duplicate active EMP_ID in EMPLOYEE_MASTER: ' + rdy_list_(dups)] : []);
 }
 
 function rdy_check10_(inputs, ctx) {
@@ -228,8 +241,8 @@ function rdy_check10_(inputs, ctx) {
     var basis = rdy_id_(r.PAY_BASIS).toUpperCase();
     return basis === 'MONTHLY_GROSS_PRORATED' && rdy_num_(ot[id]) > 0;
   });
-  return rdy_res_(bad.length ? ['monthly consultant with OT hours (BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM): ' + rdy_list_(bad)] : [],
-    [], 'No monthly consultant OT');
+  return rdy_res_([], [], 'No monthly consultant OT',
+    bad.length ? ['monthly consultant with OT hours (BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM): ' + rdy_list_(bad)] : []);
 }
 
 function rdy_check11_(inputs) {
@@ -252,7 +265,7 @@ function rdy_check12_(inputs) {
     var flagged = (res.exceptions || []).some(function (e) { return e.code === 'NEGATIVE_NET_PAY'; });
     if (flagged || (typeof row.NET_PAY === 'number' && row.NET_PAY < 0)) neg.push(rdy_id_(row.EMP_ID));
   });
-  return rdy_res_(neg.length ? ['negative net pay: ' + rdy_list_(neg)] : [], [], 'No negative net pay');
+  return rdy_res_([], [], 'No negative net pay', neg.length ? ['negative net pay: ' + rdy_list_(neg)] : []);
 }
 
 /**
@@ -281,48 +294,82 @@ function rdy_check13_(inputs, ctx) {
   return rdy_res_(b, w, 'Pay structure approved');
 }
 
+/** Splits exception rows into employees of this population (known) and unattributable ones (unknown). */
 function rdy_exceptionList_(rows, ctx, allowUnknown) {
-  var all = null;
-  var out = [];
+  var known = [], unknown = [];
   (rows || []).forEach(function (r) {
     var id = rdy_id_(r.EMP_ID);
-    var known = ctx.rosterSet[id];
-    if (known || allowUnknown(id)) out.push((id || '(blank EMP_ID)') + (r.reason ? ': ' + r.reason : ''));
+    var text = (id || '(blank EMP_ID)') + (r.reason ? ': ' + r.reason : '');
+    if (ctx.rosterSet[id]) known.push(text);
+    else if (allowUnknown(id)) unknown.push(text);
   });
-  return out;
+  return { known: known, unknown: unknown };
 }
 
 /**
  * Canteen / efficiency: when the LATEST response of an employee is invalid (EXCEPTION row) there is no fallback to an
- * older valid one, so every such current exception BLOCKS the population that owns the employee.
- * Unknown / inactive EMP_IDs block every population for canteen, and the worker population for efficiency.
+ * older valid one. The exception holds the employee (HOLD); unknown / inactive EMP_IDs cannot be attributed and block
+ * every population for canteen, and the worker population for efficiency.
  */
 function rdy_check14_(inputs, ctx) {
   var pop = inputs.population, all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
   var unknownAll = function (id) { return all ? !all[id] : false; };
   var canteen = rdy_exceptionList_(inputs.canteenExceptions, ctx, unknownAll);
   var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return pop === 'PERMANENT_WORKER' && unknownAll(id); });
-  var b = [];
-  if (canteen.length) b.push('canteen EXCEPTION rows (' + canteen.length + '): ' + rdy_list_(canteen));
-  if (eff.length) b.push('efficiency EXCEPTION rows (' + eff.length + '): ' + rdy_list_(eff));
-  return rdy_res_(b, [], 'No canteen / efficiency exceptions');
+  var b = [], h = [];
+  if (canteen.unknown.length) b.push('canteen EXCEPTION rows for unknown EMP_ID (' + canteen.unknown.length + '): ' + rdy_list_(canteen.unknown));
+  if (eff.unknown.length) b.push('efficiency EXCEPTION rows for unknown EMP_ID (' + eff.unknown.length + '): ' + rdy_list_(eff.unknown));
+  if (canteen.known.length) h.push('canteen EXCEPTION rows (' + canteen.known.length + '): ' + rdy_list_(canteen.known));
+  if (eff.known.length) h.push('efficiency EXCEPTION rows (' + eff.known.length + '): ' + rdy_list_(eff.known));
+  return rdy_res_(b, [], 'No canteen / efficiency exceptions', h);
 }
 
-/** Extra row (only when calcResults supplied): any other BLOCKER raised by the calculation. */
-function rdy_calcBlockers_(inputs) {
-  var ids = [];
-  inputs.calcResults.forEach(function (res) {
-    var other = (res.exceptions || []).some(function (e) { return e.severity === 'BLOCKER' && e.code !== 'NEGATIVE_NET_PAY'; });
-    if (other) ids.push(rdy_id_((res.row || {}).EMP_ID));
+/** Leave sync: current EXCEPTION rows in INPUT_LEAVE hold the employee; an unreachable leave source blocks the population. */
+function rdy_check15_(inputs, ctx) {
+  var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
+  var lv = rdy_exceptionList_(inputs.leaveExceptions, ctx, function (id) { return all ? !all[id] : false; });
+  var b = [], h = [];
+  if (rdy_id_(inputs.leaveSyncError)) b.push('LEAVE_SOURCE_UNREACHABLE: ' + rdy_id_(inputs.leaveSyncError));
+  if (lv.unknown.length) b.push('leave EXCEPTION rows for unknown EMP_ID (' + lv.unknown.length + '): ' + rdy_list_(lv.unknown));
+  if (lv.known.length) h.push('leave EXCEPTION rows (' + lv.known.length + '): ' + rdy_list_(lv.known));
+  return rdy_res_(b, [], 'No leave exceptions', h);
+}
+
+/** Daily-vs-register attendance disputes (October onward): each unresolved dispute holds that employee. */
+function rdy_check16_(inputs, ctx) {
+  var h = [];
+  (inputs.attendanceDisputes || []).forEach(function (d) {
+    var id = rdy_id_(d.EMP_ID);
+    if (ctx.rosterSet[id]) h.push(id + ' (' + (d.stage || 'DISPUTE') + ')');
   });
-  return rdy_res_(ids.length ? ['calculation blockers: ' + rdy_list_(ids)] : [], [], 'No calculation blockers');
+  return rdy_res_([], [], 'No open attendance disputes', h.length ? ['attendance disputes (' + h.length + '): ' + rdy_list_(h)] : []);
+}
+
+/**
+ * Extra row (only when calcResults supplied): BLOCKED for global calculation problems (GLOBAL_BLOCKER_CODES), HOLD for
+ * the other employee-level problems that have no dedicated check.
+ */
+function rdy_calcBlockers_(inputs) {
+  var blockers = [], holds = [];
+  inputs.calcResults.forEach(function (res) {
+    var id = rdy_id_((res.row || {}).EMP_ID);
+    var g = false, hd = false;
+    (res.exceptions || []).forEach(function (e) {
+      if (e.severity !== 'BLOCKER' && e.severity !== 'HOLD') return;
+      if (GLOBAL_BLOCKER_CODES.indexOf(e.code) >= 0) g = true;
+      else if (RDY_COVERED_CODES.indexOf(e.code) < 0) hd = true;
+    });
+    if (g) blockers.push(id); else if (hd) holds.push(id);
+  });
+  return rdy_res_(blockers.length ? ['calculation blockers: ' + rdy_list_(blockers)] : [], [], 'No calculation blockers',
+    holds.length ? ['calculation holds: ' + rdy_list_(holds)] : []);
 }
 
 /**
  * inputs = {period, population, roster, allActiveIds?, masterDuplicateIds?, periodCategoryRow, attendanceRows,
  *   dailyMissingByEmp (null = no daily data), salaryByEmp, rateByEmp, feedStatus, otExceptionRows, otHoursByEmp,
  *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, canteenExceptions?, efficiencyExceptions?,
- *   calcResults?}
+ *   leaveExceptions?, leaveSyncError?, attendanceDisputes?, calcResults?}
  * Returns [{PERIOD, POPULATION, CHECK, STATUS, DETAIL}].
  */
 function buildReadiness(inputs) {
@@ -342,7 +389,7 @@ function buildReadiness(inputs) {
     rdy_check1_(scoped), rdy_check2_(scoped, ctx), rdy_check3_(scoped, ctx), rdy_check4_(scoped, ctx),
     rdy_check5_(scoped, ctx), rdy_check6_(scoped), rdy_check7_(scoped, ctx), rdy_check8_(scoped),
     rdy_check9_(scoped, ctx), rdy_check10_(scoped, ctx), rdy_check11_(scoped), rdy_check12_(scoped),
-    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx)
+    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx), rdy_check15_(scoped, ctx), rdy_check16_(scoped, ctx)
   ];
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
@@ -354,12 +401,12 @@ function buildReadiness(inputs) {
   return out;
 }
 
-/** Summary of readiness rows: {blocked, warn, ready, byPopulation:{pop:{blocked,warn,ready}}}. */
+/** Summary of readiness rows: {blocked, hold, warn, ready, byPopulation:{pop:{blocked,hold,warn,ready}}}. */
 function rdy_summarize_(rows) {
-  var s = { blocked: 0, warn: 0, ready: 0, byPopulation: {} };
+  var s = { blocked: 0, hold: 0, warn: 0, ready: 0, byPopulation: {} };
   rows.forEach(function (r) {
-    var p = s.byPopulation[r.POPULATION] || (s.byPopulation[r.POPULATION] = { blocked: 0, warn: 0, ready: 0 });
-    var k = r.STATUS === 'BLOCKED' ? 'blocked' : (r.STATUS === 'WARN' ? 'warn' : 'ready');
+    var p = s.byPopulation[r.POPULATION] || (s.byPopulation[r.POPULATION] = { blocked: 0, hold: 0, warn: 0, ready: 0 });
+    var k = r.STATUS === 'BLOCKED' ? 'blocked' : (r.STATUS === 'HOLD' ? 'hold' : (r.STATUS === 'WARN' ? 'warn' : 'ready'));
     p[k]++; s[k]++;
   });
   return s;
@@ -394,8 +441,8 @@ function checkReadiness(period, population, opts) {
   engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
     function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
   var sum = rdy_summarize_(rows);
-  var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, warn: sum.warn,
-    ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };
-  audit('READINESS', period, population || '', { blocked: sum.blocked, warn: sum.warn, ready: sum.ready });
+  var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, hold: sum.hold,
+    warn: sum.warn, ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };
+  audit('READINESS', period, population || '', { blocked: sum.blocked, hold: sum.hold, warn: sum.warn, ready: sum.ready });
   return res;
 }
