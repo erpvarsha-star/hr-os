@@ -74,21 +74,30 @@ function engine_ptExemptSet(rows, period) {
   return out;
 }
 
-/** EMPLOYEE_MASTER rows -> {all: active entries in known populations (duplicates kept), duplicateIds, allActiveIds}. */
-function engine_rosterFromMaster(rows) {
-  var all = [], counts = {};
+/**
+ * EMPLOYEE_MASTER rows -> {all: active entries in known populations (duplicates kept), duplicateIds, allActiveIds,
+ * joinersExcluded, dojWarnings}. With a period, employees whose DOJ is after the period end are excluded; an
+ * ambiguous / unparseable DOJ keeps the employee in with DOJ_WARN set (DOJ_AMBIGUOUS / DOJ_UNPARSEABLE warning).
+ */
+function engine_rosterFromMaster(rows, period) {
+  var all = [], counts = {}, excluded = [], warnings = [];
+  var end = period ? periodEnd(period) : '';
   (rows || []).forEach(function (r) {
     if (String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() !== 'active') return;
     var pop = engine_id_(r.PAYROLL_CATEGORY), id = engine_id_(r.EMP_ID);
     if (!id || !isKnownPopulation(pop)) return;
+    var dec = end ? dojRosterDecision(r.DOJ_AS_SOURCE, end) : { include: true, warn: '' };
+    if (!dec.include) { if (excluded.indexOf(id) < 0) excluded.push(id); return; }
     counts[id] = (counts[id] || 0) + 1;
+    if (dec.warn) warnings.push(id);
     var doj = '';
     if (typeof parseDoj === 'function') { try { doj = parseDoj(r.DOJ_AS_SOURCE) || ''; } catch (e) { doj = ''; } }
     all.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || ''),
-      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DESIGNATION: String(r.DESIGNATION || '').trim(), DOJ: doj });
+      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DESIGNATION: String(r.DESIGNATION || '').trim(), DOJ: doj,
+      DOJ_WARN: dec.warn });
   });
   return { all: all, duplicateIds: Object.keys(counts).filter(function (k) { return counts[k] > 1; }),
-    allActiveIds: Object.keys(counts) };
+    allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings };
 }
 
 /**
@@ -243,8 +252,9 @@ function engine_readinessInputs_(src, pop, calcResults) {
 function engine_calcPopulation(src, pop, runId, calcAt) {
   var d = engine_derive_(src, pop);
   var pc = engine_periodCatRow_(src, pop);
-  var dupSet = {};
+  var dupSet = {}, dojWarn = {};
   (src.roster.duplicateIds || []).forEach(function (x) { dupSet[x] = true; });
+  d.employees.forEach(function (e) { if (e.DOJ_WARN) dojWarn[e.EMP_ID] = e.DOJ_WARN; });
   var ctxs = buildEngineContexts({
     period: src.period, population: pop, workingDays: pc ? pc.WORKING_DAYS : '', employees: d.employees,
     attendanceByEmp: d.attendanceByEmp, salaryByEmp: d.salaryByEmp, rateByEmp: d.rateByEmp, otByEmp: d.otByEmp,
@@ -259,6 +269,10 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
     if (!ctx.hasAttendance) extra.push({ severity: 'BLOCKER', code: 'MISSING_ATTENDANCE', message: 'No INPUT_ATTENDANCE row' });
     else if (!ctx.attendanceApproved) extra.push({ severity: 'WARN', code: 'ATTENDANCE_NOT_APPROVED', message: 'Attendance row is not APPROVED' });
     if (dupSet[ctx.emp.EMP_ID]) extra.push({ severity: 'BLOCKER', code: 'DUPLICATE_MASTER_ID', message: 'EMP_ID appears more than once among active master rows' });
+    if (dojWarn[ctx.emp.EMP_ID]) {
+      extra.push({ severity: 'WARN', code: 'DOJ_' + dojWarn[ctx.emp.EMP_ID],
+        message: 'DOJ_AS_SOURCE could not be read unambiguously against the period end; employee included' });
+    }
     ((ctx.adjustments && ctx.adjustments.exceptions) || []).forEach(function (e) { extra.push(e); });
     var all = res.exceptions.concat(extra);
     var row = res.row;
@@ -324,7 +338,7 @@ function engine_readSources_(period) {
   });
   return {
     period: period,
-    roster: engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER)),
+    roster: engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period),
     periodCat: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_PERIOD_CATEGORY), 'PAYROLL_MONTH', period),
     attendance: engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
     dailyRows: daily,

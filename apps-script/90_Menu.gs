@@ -12,6 +12,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
       .addItem('Prepare monthly attendance (HR entry)', 'menuPrepareAttendance')
+      .addItem('Sync days form \u2192 monthly attendance', 'menuSyncDaysForm')
       .addItem('Generate monthly attendance from daily', 'menuGenerateAttendance')
       .addItem('Approve attendance (population)...', 'menuApproveAttendance')
       .addSeparator()
@@ -77,18 +78,12 @@ function callStage_(fnName, stage, args) {
 function menuSetup() { run_('Setup', hrosSetup); }
 function menuCreateForms() { run_('Create attendance forms', createAttendanceForms); }
 function menuRefreshRosters() { run_('Refresh form rosters', refreshAttendanceFormRosters); }
-/** Attendance-form triggers (needs the forms) and canteen/efficiency-form triggers (need their form IDs in PAYROLL_CONTROL). */
-function menuInstallTriggers() {
-  run_('Install triggers', function () {
-    var out = {};
-    try { out.attendance = installTriggers(); } catch (e) { out.attendance = 'skipped: ' + (e && e.message ? e.message : e); }
-    out.canteenAndEfficiency = installFeedTriggers();
-    return out;
-  });
-}
+/** The single spreadsheet-level onFormSubmit trigger (attendance forms, days form, canteen, efficiency). */
+function menuInstallTriggers() { run_('Install triggers', installTriggers); }
 
 function menuPrepareMonth() { run_('Prepare month', function () { var p = askPeriod_('Prepare month'); return p && prepareMonth(p); }); }
 function menuPrepareAttendance() { run_('Prepare monthly attendance', function () { var p = askPeriod_('Prepare monthly attendance'); return p && prepareMonthlyAttendance(p); }); }
+function menuSyncDaysForm() { run_('Sync days form', function () { var p = askPeriod_('Sync days form'); return p && syncDaysFormToAttendance(p); }); }
 function menuGenerateAttendance() { run_('Generate monthly attendance', function () { var p = askPeriod_('Generate monthly attendance'); return p && generateMonthlyAttendance(p); }); }
 function menuApproveAttendance() {
   run_('Approve attendance', function () {

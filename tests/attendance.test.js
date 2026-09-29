@@ -160,25 +160,11 @@ test('period helpers', () => {
   assert.equal(ctx.weekdayOf('2026-10-04'), 'SUN');
 });
 
-test('form row label round trip and answer parsing', () => {
+test('form row label round trip', () => {
   const label = ctx.formRowLabel('VFL1064', 'A B');
   assert.equal(label, 'VFL1064 – A B');
   assert.deepEqual(plain(ctx.parseRowLabel(label)), { empId: 'VFL1064', name: 'A B' });
   assert.equal(ctx.parseRowLabel('no separator'), null);
-  const parsed = plain(ctx.parseFormAnswers([
-    { type: 'DATE', title: 'Date', response: '2026-10-05' },
-    { type: 'GRID', title: 'Attendance – Forge', rows: [label, 'E2 – X'], response: ['a', ''] },
-    { type: 'CHECKBOX', title: 'ack', response: ['Confirmed'] },
-  ], 'resp1', 'ts'));
-  assert.deepEqual(parsed, { date: '2026-10-05', marks: { VFL1064: 'A' }, ack: true, timestamp: 'ts', sourceRef: 'resp1' });
-});
-
-test('trigger plan is idempotent, never exceeds 5, ignores foreign triggers', () => {
-  const existing = [{ handler: 'other', sourceId: '' }, { handler: 'onAttendanceFormSubmit', sourceId: 'F1' }];
-  assert.deepEqual(plain(ctx.planTriggerInstall(existing, ['F1', 'F2'], 5)), ['F2']);
-  assert.deepEqual(plain(ctx.planTriggerInstall(existing, ['F1'], 5)), []);
-  const full = [1, 2, 3, 4, 5].map((i) => ({ handler: 'x' + i, sourceId: '' }));
-  assert.throws(() => ctx.planTriggerInstall(full, ['F1'], 5), /Trigger limit/);
 });
 
 test('DOJ parsing is conservative on ambiguity', () => {

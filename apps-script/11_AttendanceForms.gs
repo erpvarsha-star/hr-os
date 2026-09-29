@@ -115,35 +115,82 @@ function refreshAttendanceFormRosters() {
   return res;
 }
 
-/** Pure: which attendance triggers must be created. existing = [{handler, sourceId}]. */
-function planTriggerInstall(existing, formIds, maxTriggers) {
-  var toCreate = [];
-  formIds.forEach(function (fid) {
-    var have = existing.some(function (t) { return t.handler === 'onAttendanceFormSubmit' && t.sourceId === fid; });
-    if (!have) toCreate.push(fid);
-  });
-  if (existing.length + toCreate.length > (maxTriggers || ATT_MAX_TRIGGERS)) {
-    throw new Error('Trigger limit: ' + existing.length + ' existing + ' + toCreate.length + ' new exceeds ' + (maxTriggers || ATT_MAX_TRIGGERS));
-  }
-  return toCreate;
+// ================================================================ one spreadsheet-level form-submit trigger
+
+var HROS_SUBMIT_HANDLER = 'hrosOnFormSubmit';
+
+/** Response tab -> handler key. Tabs not listed are ignored. */
+var HROS_FORM_ROUTES = {
+  ATT_FORM_NASHIK_RAW: 'ATT_NASHIK',
+  ATT_FORM_PUNE_RAW: 'ATT_PUNE',
+  PAYROLL_DAYS_FORM_RESPONSES: 'DAYS',
+  CANTEEN_FORM_RESPONSES: 'CANTEEN',
+  EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY'
+};
+
+/** Pure. */
+function routeFormSubmit(sheetName) {
+  var n = String(sheetName == null ? '' : sheetName).trim();
+  return Object.prototype.hasOwnProperty.call(HROS_FORM_ROUTES, n) ? HROS_FORM_ROUTES[n] : null;
 }
 
-/** Idempotent. Creates only the attendance onFormSubmit triggers that are missing; never touches other triggers. */
+/**
+ * The ONE installable onFormSubmit trigger (spreadsheet level, no form IDs needed). Routes by the name of the sheet
+ * the response landed in: daily attendance (Nashik / Pune raw tabs), the Days-Worked form, canteen, efficiency.
+ */
+function hrosOnFormSubmit(e) {
+  var sheet = e && e.range && e.range.getSheet ? e.range.getSheet() : null;
+  var name = sheet ? sheet.getName() : '';
+  var route = routeFormSubmit(name);
+  if (!route) return null;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    if (route === 'ATT_NASHIK' || route === 'ATT_PUNE') {
+      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_NASHIK;
+      var rowNum = e.range.getRow(), lc = sheet.getLastColumn();
+      var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
+      var values = sheet.getRange(rowNum, 1, 1, lc).getValues()[0];
+      var parsed = parseAttendanceRawRow(headers, values, name, rowNum);
+      var out = ingestAttendanceResponse_(parsed, site);
+      audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: site, source: parsed.sourceRef, valid: out.valid,
+        rejected: out.rejected, superseded: out.superseded });
+      return out;
+    }
+    var period = feeds_periodFromNamedValues(e.namedValues);
+    if (!period) { audit(route + '_SUBMIT_SKIPPED', '', '', 'Payroll Month not found in response'); return null; }
+    if (route === 'DAYS') return syncDaysFormToAttendance(period);
+    if (route === 'CANTEEN') return syncCanteenFromForm(period);
+    return syncEfficiencyFromForm(period);
+  } catch (err) {
+    try { audit(route + '_SUBMIT_ERROR', '', '', String(err && err.message ? err.message : err)); } catch (e2) { /* ignore */ }
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Pure: is the single trigger needed? existing = [{handler}]. Foreign triggers are only counted, never touched.
+ * Throws if creating it would exceed maxTriggers.
+ */
+function planFormSubmitTrigger(existing, maxTriggers) {
+  var max = maxTriggers || ATT_MAX_TRIGGERS;
+  var present = (existing || []).filter(function (t) { return t.handler === HROS_SUBMIT_HANDLER; }).length;
+  if (present) return { create: false, present: present, total: existing.length };
+  if (existing.length + 1 > max) throw new Error('Trigger limit: ' + existing.length + ' existing + 1 new exceeds ' + max);
+  return { create: true, present: 0, total: existing.length + 1 };
+}
+
+/** Idempotent. Creates the single spreadsheet onFormSubmit trigger if missing; never deletes or edits other triggers. */
 function installTriggers() {
-  var formIds = [];
-  Object.keys(ATT_FORM_DEFS).forEach(function (k) {
-    var id = String(getControl(ATT_FORM_DEFS[k].idKey, '')).trim();
-    if (id) formIds.push(id);
-  });
-  if (!formIds.length) throw new Error('No attendance forms registered - run createAttendanceForms first');
-  var existing = ScriptApp.getProjectTriggers().map(function (t) {
-    return { handler: t.getHandlerFunction(), sourceId: t.getTriggerSourceId ? t.getTriggerSourceId() : '' };
-  });
-  var toCreate = planTriggerInstall(existing, formIds, ATT_MAX_TRIGGERS);
-  toCreate.forEach(function (fid) {
-    ScriptApp.newTrigger('onAttendanceFormSubmit').forForm(FormApp.openById(fid)).onFormSubmit().create();
-  });
-  var res = { created: toCreate.length, alreadyPresent: formIds.length - toCreate.length, totalTriggers: existing.length + toCreate.length };
+  var existing = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  var plan = planFormSubmitTrigger(existing, ATT_MAX_TRIGGERS);
+  if (plan.create) {
+    ScriptApp.newTrigger(HROS_SUBMIT_HANDLER).forSpreadsheet(getSpreadsheet_()).onFormSubmit().create();
+  }
+  var res = { created: plan.create ? 1 : 0, alreadyPresent: plan.present, totalTriggers: plan.total,
+    note: plan.present > 1 ? 'more than one ' + HROS_SUBMIT_HANDLER + ' trigger exists - ask the owner to remove the extra ones' : '' };
   audit('TRIGGERS_INSTALL', '', '', res);
   return res;
 }
