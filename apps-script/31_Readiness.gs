@@ -11,7 +11,7 @@ var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH',
 var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE_APPROVED_VALID',
   'DAILY_ATTENDANCE_COMPLETE', 'SALARY_PRESENT_NONZERO', 'FEEDS_COMPLETE', 'OT_EXCEPTIONS', 'STATUTORY_CONFIG',
   'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
-  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'DAYS_FORM_EXCEPTIONS'];
+  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS'];
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -308,14 +308,6 @@ function rdy_check14_(inputs, ctx) {
   return rdy_res_(b, [], 'No canteen / efficiency exceptions');
 }
 
-/** Days-Worked form (PAYROLL_DAYS_EXCEPTIONS) problems of the period: unknown / inactive employee, bad numbers, lone correction. */
-function rdy_check15_(inputs, ctx) {
-  var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
-  var rows = (inputs.daysExceptions || []).map(function (r) { return { EMP_ID: r.EMP_ID, reason: r.type }; });
-  var list = rdy_exceptionList_(rows, ctx, function (id) { return all ? !all[id] : false; });
-  return rdy_res_(list.length ? ['Days-form exceptions (' + list.length + '): ' + rdy_list_(list)] : [], [], 'No days-form exceptions');
-}
-
 /** Extra row (only when calcResults supplied): any other BLOCKER raised by the calculation. */
 function rdy_calcBlockers_(inputs) {
   var ids = [];
@@ -329,7 +321,7 @@ function rdy_calcBlockers_(inputs) {
 /**
  * inputs = {period, population, roster, allActiveIds?, masterDuplicateIds?, periodCategoryRow, attendanceRows,
  *   dailyMissingByEmp (null = no daily data), salaryByEmp, rateByEmp, feedStatus, otExceptionRows, otHoursByEmp,
- *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, canteenExceptions?, efficiencyExceptions?, daysExceptions?,
+ *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, canteenExceptions?, efficiencyExceptions?,
  *   calcResults?}
  * Returns [{PERIOD, POPULATION, CHECK, STATUS, DETAIL}].
  */
@@ -350,7 +342,7 @@ function buildReadiness(inputs) {
     rdy_check1_(scoped), rdy_check2_(scoped, ctx), rdy_check3_(scoped, ctx), rdy_check4_(scoped, ctx),
     rdy_check5_(scoped, ctx), rdy_check6_(scoped), rdy_check7_(scoped, ctx), rdy_check8_(scoped),
     rdy_check9_(scoped, ctx), rdy_check10_(scoped, ctx), rdy_check11_(scoped), rdy_check12_(scoped),
-    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx), rdy_check15_(scoped, ctx)
+    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx)
   ];
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
@@ -399,19 +391,8 @@ function checkReadiness(period, population, opts) {
     buildReadiness(inputs).forEach(function (r) { r.CHECKED_AT = checkedAt; rows.push(r); });
     done.push(pop);
   });
-  // The tab keeps its original header (PAYROLL_MONTH, FEED, OWNER, STATUS, ROW_COUNT, APPROVED_OR_ZERO_DECLARATION,
-  // DETAIL, UPDATED_AT); PERIOD / POPULATION / CHECK / CHECKED_AT are appended on the right. Both sets are filled so the
-  // tab reads correctly either way: PAYROLL_MONTH = period, FEED = the check name, UPDATED_AT = check time.
-  var sheetRows = rows.map(function (r) {
-    var o = {};
-    Object.keys(r).forEach(function (k) { o[k] = r[k]; });
-    o.PAYROLL_MONTH = period; o.FEED = r.CHECK; o.UPDATED_AT = r.CHECKED_AT;
-    return o;
-  });
-  engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], sheetRows,
-    function (o) {
-      return (normalizePeriod(o.PERIOD) || normalizePeriod(o.PAYROLL_MONTH)) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0;
-    });
+  engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
+    function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
   var sum = rdy_summarize_(rows);
   var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, warn: sum.warn,
     ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };

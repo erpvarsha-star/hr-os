@@ -250,8 +250,7 @@ function engine_readinessInputs_(src, pop, calcResults) {
     statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
     pendingOtCount: engine_pendingOt_(src, pop),
     canteenExceptions: engine_callOpt_('canteenExceptions', [src.canteenRows || [], src.period], []),
-    efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], []),
-    daysExceptions: src.daysExceptions || []
+    efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], [])
   };
 }
 
@@ -370,12 +369,6 @@ function engine_readSources_(period) {
     ptExemptRows: engine_readOpt_(TABS.PT_EXEMPTIONS),
     efficiencyConfig: engine_readOpt_(TABS.EFFICIENCY_CONFIG),
     lockedPrevRows: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_LOCKED), 'PERIOD', engine_prevPeriod(period)),
-    daysExceptions: engine_readOpt_('PAYROLL_DAYS_EXCEPTIONS').filter(function (r) {
-      return String(r.KEY == null ? '' : r.KEY).indexOf(period + '|') === 0;
-    }).map(function (r) {
-      var k = String(r.KEY).split('|');
-      return { EMP_ID: engine_id_(k[1]), type: engine_id_(r.EXCEPTION_TYPE), detail: engine_id_(r.DETAIL) };
-    }),
     otPendingRaw: getSheet(TABS.PAYROLL_CONTROL) ? readControlMap()['OT_PENDING_' + period] : ''
   };
 }

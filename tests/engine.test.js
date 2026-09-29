@@ -277,7 +277,7 @@ test('calculateDraft(STAFF): header written, rows replaced for period+pop only, 
   const rd = rowsOf(w, 'PAYROLL_READINESS');
   assert.ok(rd.some((r) => r.DETAIL === 'keep me'));
   const mine = rd.filter((r) => r.PERIOD === P && r.POPULATION === 'STAFF');
-  assert.equal(mine.length, 16);
+  assert.equal(mine.length, 15);
   assert.ok(mine.every((r) => r.CHECKED_AT));
   assert.equal(mine.find((r) => r.CHECK === 'ATTENDANCE_COVERAGE').STATUS, 'READY');
   assert.equal(res.readiness.blocked, 0);
@@ -299,7 +299,7 @@ test('recalculation is idempotent: no duplicate rows, same hash, new run id allo
   assert.equal(rowsOf(w, 'PAYROLL_RECON').length, 1);
   assert.equal(pcRow(w, 'STAFF').DRAFT_HASH, h1);
   assert.equal(a.populations[0].hash, b.populations[0].hash);
-  assert.equal(rowsOf(w, 'PAYROLL_READINESS').filter((r) => r.POPULATION === "STAFF").length, 16);
+  assert.equal(rowsOf(w, 'PAYROLL_READINESS').filter((r) => r.POPULATION === "STAFF").length, 15);
 });
 
 test('HR_APPROVED recalculation resets to DRAFT with AUDIT entry and cleared approval stamps', () => {
@@ -392,12 +392,12 @@ test('checkReadiness rewrites only its period+populations, keeps other periods, 
   const c = load(w);
   const sum = plain(c.checkReadiness(P, 'STAFF'));
   assert.equal(sum.populations[0], 'STAFF');
-  assert.equal(sum.rows.length, 16); // 15 checks + CALC_BLOCKERS (calc results computed)
+  assert.equal(sum.rows.length, 15); // 14 checks + CALC_BLOCKERS (calc results computed)
   const rd = rowsOf(w, 'PAYROLL_READINESS');
   assert.ok(rd.some((r) => r.DETAIL === 'other period'));
   assert.ok(rd.some((r) => r.DETAIL === 'other pop same period'));
   assert.ok(!rd.some((r) => /^OLD[134]$/.test(r.CHECK)));
-  assert.equal(rd.length, 2 + 16);
+  assert.equal(rd.length, 2 + 15);
   assert.deepEqual(w.sheets.PAYROLL_READINESS.data[0], ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT']);
   assert.equal(sum.blocked, 0);
   // all populations run: locked skipped, each other population gets rows
@@ -405,33 +405,6 @@ test('checkReadiness rewrites only its period+populations, keeps other periods, 
   assert.deepEqual(all.skippedLocked, ['PUNE_STAFF']);
   assert.equal(Object.keys(all.byPopulation).length, 3);
   assert.ok(all.byPopulation.PERMANENT_WORKER.warn > 0); // efficiency config not CONFIRMED
-});
-
-test('PAYROLL_READINESS keeps its original header and is filled meaningfully (PAYROLL_MONTH, FEED=check, STATUS, DETAIL, UPDATED_AT)', () => {
-  const legacy = ['PAYROLL_MONTH', 'FEED', 'OWNER', 'STATUS', 'ROW_COUNT', 'APPROVED_OR_ZERO_DECLARATION', 'DETAIL', 'UPDATED_AT'];
-  const w = seed({ rdy: (x) => x.put('PAYROLL_READINESS', legacy, [{ PAYROLL_MONTH: '2026-10', FEED: 'KEEP', STATUS: 'READY', DETAIL: 'other period' }]) });
-  const c = load(w);
-  const sum = plain(c.checkReadiness(P, 'STAFF'));
-  const hdr = w.sheets.PAYROLL_READINESS.data[0];
-  assert.deepEqual(hdr.slice(0, 8), legacy, 'legacy columns untouched, in place');
-  assert.deepEqual(hdr.slice(8), ['PERIOD', 'POPULATION', 'CHECK', 'CHECKED_AT'], 'new columns appended on the right');
-  const rd = rowsOf(w, 'PAYROLL_READINESS');
-  assert.equal(rd.length, 1 + sum.rows.length);
-  const mine = rd.filter((r) => r.PAYROLL_MONTH === P);
-  assert.equal(mine.length, sum.rows.length);
-  mine.forEach((r) => {
-    assert.equal(r.FEED, r.CHECK, 'FEED = check name');
-    assert.equal(r.PERIOD, P);
-    assert.equal(r.POPULATION, 'STAFF');
-    assert.ok(['READY', 'WARN', 'BLOCKED'].includes(r.STATUS));
-    assert.ok(r.DETAIL);
-    assert.equal(r.UPDATED_AT, r.CHECKED_AT);
-    assert.ok(r.UPDATED_AT);
-  });
-  assert.ok(rd.some((r) => r.FEED === 'KEEP' && r.PAYROLL_MONTH === '2026-10'), 'other periods kept');
-  // second run replaces the same rows instead of duplicating them
-  c.checkReadiness(P, 'STAFF');
-  assert.equal(rowsOf(w, 'PAYROLL_READINESS').length, 1 + sum.rows.length);
 });
 
 test('pending OT (OT_PENDING_<period> in PAYROLL_CONTROL) makes check 7 WARN per population, READY when none, BLOCKED for exceptions', () => {

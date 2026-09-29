@@ -37,9 +37,9 @@ const run = (inputs) => plain(ctx.buildReadiness(inputs));
 const get = (rows, check) => rows.find((r) => r.CHECK === check);
 const st = (inputs, check) => get(run(inputs), check).STATUS;
 
-test('happy path: 15 checks all READY, row shape', () => {
+test('happy path: 14 checks all READY, row shape', () => {
   const rows = run(base());
-  assert.equal(rows.length, 15);
+  assert.equal(rows.length, 14);
   assert.deepEqual(rows.map((r) => r.CHECK), plain(ctx.RDY_CHECK_NAMES));
   rows.forEach((r) => {
     assert.equal(r.STATUS, 'READY', r.CHECK + ': ' + r.DETAIL);
@@ -192,7 +192,7 @@ test('12 negative net pay and CALC_BLOCKERS row', () => {
     { row: { EMP_ID: 'E2', NET_PAY: null }, exceptions: [{ severity: 'BLOCKER', code: 'MISSING_SALARY_STRUCTURE' }] },
   ];
   const rows = run(base('STAFF', { calcResults }));
-  assert.equal(rows.length, 16);
+  assert.equal(rows.length, 15);
   const neg = get(rows, 'NEGATIVE_NET_PAY');
   assert.equal(neg.STATUS, 'BLOCKED');
   assert.match(neg.DETAIL, /E1/);

@@ -168,19 +168,10 @@ test('society components + total mismatch WARN; advance recovery > balance WARN;
   assert.equal(rdy(env, 'STAFF', 'CALC_BLOCKERS').STATUS, 'BLOCKED');
 });
 
-test('roster: employee with DOJ after the period end is not calculated; Days-form exceptions block readiness', () => {
+test('roster: employee with DOJ after the period end is not calculated', () => {
   const env = mini();
   env.c.calculateDraft(P, 'STAFF');
   assert.deepEqual(env.rowsOf('PAYROLL_DRAFT').map((r) => r.EMP_ID), ['S1'], 'NEW1 joins on 25 Oct');
-  env.put('PAYROLL_DAYS_EXCEPTIONS', ['KEY', 'EXCEPTION_TYPE', 'DETAIL', 'SOURCE_ROW'], [
-    { KEY: P + '|GHOST9', EXCEPTION_TYPE: 'UNKNOWN_OR_INACTIVE_EMP_ID', DETAIL: 'x', SOURCE_ROW: 'PAYROLL_DAYS_FORM_RESPONSES!4' },
-    { KEY: '2026-10|GHOST8', EXCEPTION_TYPE: 'DAYS_INVALID', DETAIL: 'other period', SOURCE_ROW: 'x' }]);
-  const r = rdy(env, 'STAFF', 'DAYS_FORM_EXCEPTIONS');
-  assert.equal(r.STATUS, 'BLOCKED');
-  assert.match(r.DETAIL, /GHOST9: UNKNOWN_OR_INACTIVE_EMP_ID/);
-  assert.ok(!/GHOST8/.test(r.DETAIL));
-  env.put('PAYROLL_DAYS_EXCEPTIONS', ['KEY', 'EXCEPTION_TYPE', 'DETAIL', 'SOURCE_ROW'], []);
-  assert.equal(rdy(env, 'STAFF', 'DAYS_FORM_EXCEPTIONS').STATUS, 'READY');
 });
 
 test('gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG rows and unapproved rate profiles block; proxy warns', () => {

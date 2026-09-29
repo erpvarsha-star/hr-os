@@ -136,12 +136,8 @@ const Utilities = {
 };
 const me = () => ({ getEmail: () => env.user });
 const dvBuilder = () => { const b = { requireValueInList() { return b; }, setAllowInvalid() { return b; }, build() { return {}; } }; return b; };
-// the real OT form-response spreadsheet is a different file: OT_SOURCE_SPREADSHEET_ID (seeded by setup), tab "Form Responses 1"
-const OT_EXT_ID = '1AssFUO5PJZLUzZCFINlqwGw9mckICIRnsYxHCmuhVkM';
-const extSheets = {};
-const extSs = { getSheetByName: (n) => extSheets[n] || null, getSheets: () => Object.values(extSheets) };
 const SpreadsheetApp = {
-  getActiveSpreadsheet: () => ss, openById: (id) => { if (id === OT_EXT_ID) return extSs; if (id === 'FAKE_SS_ID') return ss; throw new Error('cannot open ' + id); }, getActive: () => ss, flush() {},
+  getActiveSpreadsheet: () => ss, openById: () => ss, getActive: () => ss, flush() {},
   ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dvBuilder,
 };
 const Session = { getActiveUser: me, getEffectiveUser: me };
@@ -223,11 +219,10 @@ function seedWorld() {
   put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
   put('PAYROLL_HISTORY', HIST_HDR, HIST_ROWS);
   // decoy local tab: must NOT be read while OT_SOURCE_SPREADSHEET_ID is set
+  // the OT form is linked into this spreadsheet: OT_FORM_RESPONSES is the default source; the legacy Overtime_Form copy is only a fallback
   put('Overtime_Form', OT_HDR, []);
-  env.sheets.Overtime_Form.data.push(otRow({ emp: 'T-S2', date: '2026-09-10', h: 8, kase: 9999 }));
-  ext = makeSheet('Form Responses 1');
-  ext.data = [OT_HDR.slice()];
-  extSheets['Form Responses 1'] = ext;
+  env.sheets.Overtime_Form.data.push(otRow({ emp: 'T-S2', date: '2026-09-10', h: 8, kase: 9999 })); // decoy: must not be read
+  ext = put('OT_FORM_RESPONSES', OT_HDR, []);
   ext.data.push(
     otRow({ emp: 'T-S1', date: new Date(2026, 8, 12), h: 4, kase: 5001 }),
     otRow({ emp: 'T-W1', date: '2026-09-15', h: 3.5, kase: 5002 }),
@@ -337,13 +332,14 @@ test('4. monthly attendance: prepare, HR types counts, approve per population', 
 });
 
 test('5. feeds: OT sync (pending recorded), canteen/efficiency sync, manual advance/society/adjustments, mark all feeds complete', () => {
-  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_SPREADSHEET_ID').VALUE, OT_EXT_ID);
-  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_TAB').VALUE, 'Form Responses 1');
+  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_SPREADSHEET_ID').VALUE, '', 'external source only when set');
+  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_TAB').VALUE, 'OT_FORM_RESPONSES');
   const win = rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_WINDOW_START_2026-09');
   assert.equal(win.VALUE, '2026-08-26');
   assert.match(win.NOTE, /Aug salary paid OT to 25-Aug/);
   const ot = plain(c.syncOtFromForm(P));
   assert.equal(ot.window, '2026-08-26..2026-09-30');
+  assert.equal(ot.source, 'OT_FORM_RESPONSES');
   assert.equal(ot.validWritten, 3);
   assert.equal(ot.exceptionsWritten, 0);
   assert.equal(ot.pending, 1);
@@ -578,7 +574,7 @@ test('11. protected data intact: PAYROLL_HISTORY and August INPUT_OT rows byte-i
   aug.forEach((r) => assert.ok(r.slice(OT_LEGACY_HDR.length).every(blank)));
   assert.equal(ot.length - 1, 2 + 4 + 1, 'appended: 3 first-sync events + 1 corrected approval + the manual row (2 were superseded in place)');
   // Overtime_Form password columns were never copied anywhere
-  Object.values(env.sheets).forEach((s) => assert.ok(!JSON.stringify(s.data).includes('SECRET-DO-NOT-READ') || s.name === 'Overtime_Form', s.name));
+  Object.values(env.sheets).forEach((s) => assert.ok(!JSON.stringify(s.data).includes('SECRET-DO-NOT-READ') || s.name === 'Overtime_Form' || s.name === 'OT_FORM_RESPONSES', s.name));
   assert.ok(!rowsOf('INPUT_OT').some((r) => r.EMP_ID === 'T-S2'), 'the local Overtime_Form decoy was never read');
   assert.match(audits(), /HR_APPROVE/);
   assert.match(audits(), /PAYSLIPS_GENERATED/);

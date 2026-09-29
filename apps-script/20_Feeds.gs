@@ -12,7 +12,8 @@ var FEEDS_OT_MAX_HOURS = 16;
 var FEEDS_NORMALIZER_VERSION = 'OT-1.0';
 var FEEDS_CANTEEN_TAB = 'CANTEEN_FORM_RESPONSES';
 var FEEDS_EFFICIENCY_TAB = 'EFFICIENCY_FORM_RESPONSES';
-var FEEDS_OT_DEFAULT_TAB = 'Form Responses 1';
+var FEEDS_OT_LOCAL_TAB = 'OT_FORM_RESPONSES';      // default local OT source (the OT form is linked into this spreadsheet)
+var FEEDS_OT_EXTERNAL_TAB = 'Form Responses 1';    // default tab name when an external source spreadsheet is configured
 
 // ================================================================ small pure helpers
 
@@ -754,20 +755,73 @@ function feeds_parsePendingOt(raw) {
 }
 
 /**
- * Opens the OT source: the external response spreadsheet (PAYROLL_CONTROL OT_SOURCE_SPREADSHEET_ID, tab
- * OT_SOURCE_TAB, default "Form Responses 1"), or - only when the ID key is blank - the local Overtime_Form tab.
+ * Name of the LOCAL tab syncOtFromForm reads when no external spreadsheet is configured: PAYROLL_CONTROL OT_SOURCE_TAB
+ * (seeded OT_FORM_RESPONSES) when that tab exists, else the legacy Overtime_Form tab, else ''.
+ */
+function feeds_localOtTabName_() {
+  try {
+    if (String(getControl('OT_SOURCE_SPREADSHEET_ID', '')).trim()) return '';
+    var want = String(getControl('OT_SOURCE_TAB', '')).trim() || FEEDS_OT_LOCAL_TAB;
+    if (getSheet(want)) return want;
+    return getSheet(FEEDS_OT_TAB) ? FEEDS_OT_TAB : '';
+  } catch (e) { return ''; }
+}
+
+/**
+ * Opens the OT source. Default: a LOCAL tab of this spreadsheet (the OT form is linked into it) named by
+ * PAYROLL_CONTROL OT_SOURCE_TAB (seeded OT_FORM_RESPONSES); if that tab is absent the legacy Overtime_Form tab is used.
+ * Only when OT_SOURCE_SPREADSHEET_ID is set (seeded blank) is an external response spreadsheet opened
+ * (SpreadsheetApp.openById) and OT_SOURCE_TAB (default "Form Responses 1") read there.
  */
 function feeds_openOtSource_() {
   var id = String(getControl('OT_SOURCE_SPREADSHEET_ID', '')).trim();
-  if (!id) return { sheet: resolveSheet_(FEEDS_OT_TAB), label: FEEDS_OT_TAB };
-  var tab = String(getControl('OT_SOURCE_TAB', FEEDS_OT_DEFAULT_TAB)).trim() || FEEDS_OT_DEFAULT_TAB;
+  var tab = String(getControl('OT_SOURCE_TAB', '')).trim();
+  if (!id) {
+    var local = tab || FEEDS_OT_LOCAL_TAB;
+    var sheet = getSheet(local) || getSheet(FEEDS_OT_TAB);
+    if (!sheet) throw new Error('OT source tab not found: neither "' + local + '" nor "' + FEEDS_OT_TAB + '" exists (PAYROLL_CONTROL OT_SOURCE_TAB)');
+    return { sheet: sheet, label: sheet.getName() };
+  }
+  tab = tab || FEEDS_OT_EXTERNAL_TAB;
   var ss;
   try { ss = SpreadsheetApp.openById(id); } catch (e) {
     throw new Error('Cannot open the OT source spreadsheet (OT_SOURCE_SPREADSHEET_ID): ' + (e && e.message ? e.message : e));
   }
-  var sheet = ss.getSheetByName(tab);
-  if (!sheet) throw new Error('OT source spreadsheet has no tab "' + tab + '" (OT_SOURCE_TAB)');
-  return { sheet: sheet, label: 'external:' + tab };
+  var ext = ss.getSheetByName(tab);
+  if (!ext) throw new Error('OT source spreadsheet has no tab "' + tab + '" (OT_SOURCE_TAB)');
+  return { sheet: ext, label: 'external:' + tab };
+}
+
+/**
+ * Pure: the payroll period an OT date belongs to. Default = its calendar month; when the NEXT month has an
+ * OT_WINDOW_START_<next> override that starts on or before the date (the September catch-up from 26-Aug) the date belongs
+ * to that next period. '' when the date is not a valid date.
+ */
+function feeds_otPeriodForDate(dateIso, controlMap) {
+  var iso = feeds_parseDate_(dateIso);
+  if (!iso) return '';
+  var cal = iso.slice(0, 7), p = parsePeriod(cal);
+  var next = p.month === 12 ? (p.year + 1) + '-01' : p.year + '-' + pad2_(p.month + 1);
+  var raw = controlMap ? controlMap['OT_WINDOW_START_' + next] : '';
+  if (raw !== '' && raw != null) {
+    var start = feeds_parseDate_(raw);
+    if (start && start <= iso) return next;
+  }
+  return cal;
+}
+
+/** Period of the OT event in one row of the OT source tab (reads the header row and the single Date Of OT cell); '' if unusable or before MIN_PERIOD. */
+function feeds_otPeriodOfRow_(sheet, rowNum) {
+  var lc = sheet.getLastColumn();
+  if (lc < 1) return '';
+  var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
+  var col = -1;
+  headers.forEach(function (h, i) { if (col < 0 && ['dateofot', 'otdate'].indexOf(feeds_norm_(h)) >= 0) col = i; });
+  if (col < 0) return '';
+  var period = feeds_otPeriodForDate(sheet.getRange(rowNum, col + 1, 1, 1).getValues()[0][0], readControlMap());
+  if (!period) return '';
+  try { guardPeriod_(period); } catch (e) { return ''; }
+  return period;
 }
 
 /**

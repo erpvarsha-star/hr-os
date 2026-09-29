@@ -119,29 +119,32 @@ function refreshAttendanceFormRosters() {
 
 var HROS_SUBMIT_HANDLER = 'hrosOnFormSubmit';
 
-/** Response tab -> handler key. Tabs not listed are ignored. */
+/** Response tab -> handler key. Tabs not listed are ignored. The OT source tab is resolved dynamically (see routeFormSubmit). */
 var HROS_FORM_ROUTES = {
   ATT_FORM_NASHIK_RAW: 'ATT_NASHIK',
   ATT_FORM_PUNE_RAW: 'ATT_PUNE',
-  PAYROLL_DAYS_FORM_RESPONSES: 'DAYS',
   CANTEEN_FORM_RESPONSES: 'CANTEEN',
-  EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY'
+  EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY',
+  OT_FORM_RESPONSES: 'OT'
 };
 
-/** Pure. */
-function routeFormSubmit(sheetName) {
+/** Pure. otTabName = the local OT source tab currently in use (e.g. a renamed response tab), or '' when none. */
+function routeFormSubmit(sheetName, otTabName) {
   var n = String(sheetName == null ? '' : sheetName).trim();
-  return Object.prototype.hasOwnProperty.call(HROS_FORM_ROUTES, n) ? HROS_FORM_ROUTES[n] : null;
+  if (Object.prototype.hasOwnProperty.call(HROS_FORM_ROUTES, n)) return HROS_FORM_ROUTES[n];
+  if (n && otTabName && n === String(otTabName).trim()) return 'OT';
+  return null;
 }
 
 /**
  * The ONE installable onFormSubmit trigger (spreadsheet level, no form IDs needed). Routes by the name of the sheet
- * the response landed in: daily attendance (Nashik / Pune raw tabs), the Days-Worked form, canteen, efficiency.
+ * the response landed in: daily attendance (Nashik / Pune raw tabs), the OT source tab (syncOtFromForm for the
+ * period of the OT date), canteen, efficiency. Every other tab is ignored.
  */
 function hrosOnFormSubmit(e) {
   var sheet = e && e.range && e.range.getSheet ? e.range.getSheet() : null;
   var name = sheet ? sheet.getName() : '';
-  var route = routeFormSubmit(name);
+  var route = routeFormSubmit(name, feeds_localOtTabName_());
   if (!route) return null;
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -157,9 +160,13 @@ function hrosOnFormSubmit(e) {
         rejected: out.rejected, superseded: out.superseded });
       return out;
     }
+    if (route === 'OT') {
+      var otPeriod = feeds_otPeriodOfRow_(sheet, e.range.getRow());
+      if (!otPeriod) { audit('OT_SUBMIT_SKIPPED', '', '', 'OT date not found or outside the payroll periods'); return null; }
+      return syncOtFromForm(otPeriod);
+    }
     var period = feeds_periodFromNamedValues(e.namedValues);
     if (!period) { audit(route + '_SUBMIT_SKIPPED', '', '', 'Payroll Month not found in response'); return null; }
-    if (route === 'DAYS') return syncDaysFormToAttendance(period);
     if (route === 'CANTEEN') return syncCanteenFromForm(period);
     return syncEfficiencyFromForm(period);
   } catch (err) {
