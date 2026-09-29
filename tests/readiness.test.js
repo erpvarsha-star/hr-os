@@ -220,3 +220,30 @@ test('DETAIL lists up to 20 EMP_IDs then "+N more"', () => {
   assert.match(r.DETAIL, /\+5 more/);
   assert.equal(ctx.rdy_list_(['a', 'b']), 'a, b');
 });
+
+test('15 leave exceptions hold the employee; unknown employees and an unreachable leave source block the population', () => {
+  assert.equal(st(base(), 'LEAVE_EXCEPTIONS'), 'READY');
+  const own = get(run(base('STAFF', { leaveExceptions: [{ EMP_ID: 'E1', reason: 'UNKNOWN_LEAVE_TYPE | "Paternity"' }] })), 'LEAVE_EXCEPTIONS');
+  assert.equal(own.STATUS, 'HOLD');
+  assert.match(own.DETAIL, /E1: UNKNOWN_LEAVE_TYPE/);
+  assert.equal(st(base('STAFF', { leaveExceptions: [{ EMP_ID: 'ZZ', reason: 'UNKNOWN_OR_INACTIVE_EMP_ID' }] }), 'LEAVE_EXCEPTIONS'), 'BLOCKED');
+  assert.equal(st(base('STAFF', { allActiveIds: ['E1', 'E2', 'ZZ'], leaveExceptions: [{ EMP_ID: 'ZZ', reason: 'x' }] }), 'LEAVE_EXCEPTIONS'), 'READY', 'another population employee');
+  const un = get(run(base('STAFF', { leaveSyncError: 'Cannot open the leave spreadsheet ... VIEW access' })), 'LEAVE_EXCEPTIONS');
+  assert.equal(un.STATUS, 'BLOCKED');
+  assert.match(un.DETAIL, /^LEAVE_SOURCE_UNREACHABLE: Cannot open/);
+});
+
+test('16 attendance disputes hold the named employees of the population only', () => {
+  assert.equal(st(base(), 'ATTENDANCE_DISPUTES'), 'READY');
+  const r = get(run(base('STAFF', { attendanceDisputes: [{ EMP_ID: 'E2', stage: 'AWAITING_HR' }, { EMP_ID: 'OTHER', stage: 'AWAITING_HR' }] })), 'ATTENDANCE_DISPUTES');
+  assert.equal(r.STATUS, 'HOLD');
+  assert.match(r.DETAIL, /E2 \(AWAITING_HR\)/);
+  assert.doesNotMatch(r.DETAIL, /OTHER/);
+});
+
+test('HOLD never blocks an approval: only BLOCKED readiness rows do', () => {
+  const c2 = loadGs(['00_Config.gs', '01_SheetUtil.gs', '99_Audit.gs', '10_Attendance.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '40_Approval.gs']);
+  const args = { action: 'HR', status: 'DRAFT', userEmail: 'hr@x', approverEmail: 'hr@x', storedHash: 'h', currentHash: 'h' };
+  assert.equal(plain(c2.approvalDecision(Object.assign({ readinessRows: [{ STATUS: 'HOLD' }, { STATUS: 'WARN' }] }, args))).ok, true);
+  assert.equal(plain(c2.approvalDecision(Object.assign({ readinessRows: [{ STATUS: 'HOLD' }, { STATUS: 'BLOCKED' }] }, args))).ok, false);
+});

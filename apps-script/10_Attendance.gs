@@ -467,11 +467,14 @@ function generateMonthlyAttendance(period) {
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var creates = [], updates = [], counts = { CREATE: 0, REGENERATE: 0, UNCHANGED: 0, OVERRIDE: 0, KEEP_APPROVED: 0 };
+  var registerKept = [];
   var needsReason = [], withMissing = [];
   records.forEach(function (rec) {
     var pop = rec.PAYROLL_CATEGORY;
     var gen = generatedValuesFromRecord(rec);
     var ex = existing[rec.EMP_ID] || null;
+    // the monthly register is the pay source: its rows are compared with the daily data (ATTENDANCE_COMPARISON), never regenerated
+    if (ex && isRegisterRow_(ex)) { registerKept.push(rec.EMP_ID); return; }
     var m = mergeGeneratedWithExisting(ex, gen);
     counts[m.action]++;
     if (m.action === 'KEEP_APPROVED') return;
@@ -502,7 +505,7 @@ function generateMonthlyAttendance(period) {
   appendObjects(TABS.INPUT_ATTENDANCE, creates);
   var refreshed = refreshAttendanceWorkingDays_(period);
   var res = { period: period, counts: counts, employeesWithMissingDates: withMissing, overridesNeedingReason: needsReason,
-    workingDaysRefreshed: refreshed, skippedLockedPopulations: pp.locked };
+    workingDaysRefreshed: refreshed, skippedLockedPopulations: pp.locked, registerRowsKept: registerKept.length };
   audit('ATT_GENERATE', period, '', res);
   return res;
 }
@@ -516,10 +519,24 @@ function approveAttendance(period, population) {
   try { user = Session.getActiveUser().getEmail(); } catch (e) { user = ''; }
   if (!user) throw new Error('Cannot determine active user email - approval refused');
   var approved = [], blocked = [], updates = [];
+  // an employee with an open daily-vs-register dispute stays PENDING until the owner approved HR's decision AND the
+  // decided days are in the attendance row (same rule the engine uses for the hold)
+  var openDispute = {};
+  if (typeof cmp_storedRows_ === 'function' && getSheet(TABS.ATTENDANCE_COMPARISON)) {
+    var attBy = {};
+    readObjects(TABS.INPUT_ATTENDANCE).forEach(function (a) {
+      var id = String(a.EMP_ID).trim();
+      if (normalizePeriod(a.PAYROLL_MONTH) === period && !(id in attBy)) attBy[id] = a;
+    });
+    attendanceDisputeStages(cmp_storedRows_(period), attBy, getOwnerApproverEmail(), period).forEach(function (d) {
+      openDispute[String(d.EMP_ID).trim()] = true;
+    });
+  }
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period || String(r.PAYROLL_CATEGORY).trim() !== population) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var problems = validateAttendanceRowForApproval(r);
+    if (openDispute[String(r.EMP_ID).trim()]) problems.push('attendance dispute open (daily vs register): see ATTENDANCE_COMPARISON');
     if (problems.length) { blocked.push({ EMP_ID: r.EMP_ID, problems: problems }); return; }
     updates.push({ row: r._row, values: { APPROVAL_STATUS: 'APPROVED', APPROVED_BY: user } });
     approved.push(r.EMP_ID);

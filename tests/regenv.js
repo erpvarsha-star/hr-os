@@ -1,0 +1,89 @@
+'use strict';
+// Shared compact world for the register / leave / comparison tests (fake sheets + the whole code base).
+const { makeEnv, LEAVE_HDR, LEAVE_INPUT_HDR } = require('./fakes');
+
+const P = '2026-09'; // 30 days; Tuesdays start; Sundays = 6, 13, 20, 27
+const HR = 'hr@varshaforgings.com', OWNER = 'yash.munot@gmail.com', ACC = 'accounts@varshaforgings.com';
+
+const ATT_HDR = ['PAYROLL_MONTH', 'EMP_ID', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED',
+  'SL_AVAILED', 'PAID_LEAVE_OTHER', 'WORKED_DAYS', 'PAYABLE_DAYS', 'APPROVAL_STATUS', 'APPROVED_BY', 'SOURCE_REF', 'ENTERED_AT', 'REMARKS',
+  'PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE', 'OVERRIDE_REASON', 'ROW_KEY',
+  'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'];
+const PC_HDR = ['PAYROLL_MONTH', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'STATUS', 'APPROVED_BY', 'APPROVED_AT', 'NOTE', 'DRAFT_RUN_ID', 'DRAFT_HASH',
+  'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'];
+const MASTER_HDR = ['EMP_ID', 'EMPLOYEE_NAME', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE', 'DEPARTMENT', 'DESIGNATION', 'DOJ_AS_SOURCE', 'LAST_WORKING_DAY'];
+const COMPARISON_HDR = ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS', 'HR_DECIDED_DAYS', 'HR_REASON',
+  'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
+const DAILY_HDR = ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'REJECT_REASON', 'ENTERED_AT'];
+
+const EMPS = [
+  ['S1', 'STAFF', 'Staff One'], ['S2', 'STAFF', 'Staff Two'], ['W1', 'PERMANENT_WORKER', 'Worker One'],
+  ['C1', 'CONSULTANT', 'Consultant One'], ['P1', 'PUNE_STAFF', 'Pune One'],
+];
+
+/** A world with roster, control keys, period rows and empty INPUT_ATTENDANCE / INPUT_LEAVE / comparison tabs. */
+function world(opts = {}) {
+  const env = makeEnv({ user: opts.user || HR });
+  env.put('PAYROLL_CONTROL', ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'], [
+    { KEY: 'MIN_PERIOD', VALUE: '2026-09' }, { KEY: 'HR_APPROVER_EMAIL', VALUE: HR }, { KEY: 'ACCOUNTS_APPROVER_EMAIL', VALUE: ACC },
+    { KEY: 'OWNER_APPROVER_EMAIL', VALUE: OWNER }, { KEY: 'NASHIK_WEEKLY_OFF', VALUE: 'SUN' }, { KEY: 'PUNE_WEEKLY_OFF', VALUE: 'SUN' },
+  ].concat(opts.control || []));
+  env.put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
+  env.put('EMPLOYEE_MASTER', MASTER_HDR, EMPS.map(([EMP_ID, PAYROLL_CATEGORY, EMPLOYEE_NAME]) => ({ EMP_ID, EMPLOYEE_NAME, PAYROLL_CATEGORY,
+    STATUS_AS_SOURCE: 'Active', DEPARTMENT: 'Dept', DESIGNATION: 'X', DOJ_AS_SOURCE: '01/01/2020' })).concat(opts.master || []));
+  env.put('PAYROLL_PERIOD_CATEGORY', PC_HDR, ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'].map((c) => ({ PAYROLL_MONTH: P,
+    PAYROLL_CATEGORY: c, WORKING_DAYS: 26, STATUS: 'PENDING' })).concat(opts.periodRows || []));
+  env.put('INPUT_ATTENDANCE', ATT_HDR, opts.attendance || []);
+  env.put('INPUT_LEAVE', LEAVE_INPUT_HDR, opts.leave || []);
+  env.put('HOLIDAY_CALENDAR', ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'], opts.holidays || []);
+  env.put('ATTENDANCE_DAILY', DAILY_HDR, opts.daily || []);
+  env.put('ATTENDANCE_COMPARISON', COMPARISON_HDR, opts.comparison || []);
+  if (opts.leaveSource !== false) env.put('Leave_Applications', LEAVE_HDR, opts.leaveSourceRows || []);
+  return env;
+}
+
+/** Daily rows (VALID) of one employee: codes = {day: code}. Days not listed are not written. */
+function dailyRows(empId, codes, site = 'NASHIK') {
+  return Object.keys(codes).map((day) => {
+    const date = `${P}-${String(day).padStart(2, '0')}`;
+    return { PERIOD: P, DATE: date, SITE: site, EMP_ID: empId, CODE: codes[day], SOURCE: 'FORM_NASHIK', SOURCE_REF: 'x', KEY: `${empId}|${date}`,
+      STATUS: 'VALID', REJECT_REASON: '', ENTERED_AT: '2026-10-01T10:00:00' };
+  });
+}
+
+const CFG = [['PF_WAGE_CEILING', 15000], ['PF_EMPLOYEE_RATE', 0.12], ['PF_MAX_EMPLOYEE', 1800], ['ESI_EMPLOYEE_RATE', 0.0075], ['ESI_EXEMPT_ABOVE', 21000],
+  ['ESI_EMPLOYER_RATE', 0.0325], ['WORKER_VDA_RATE', 103], ['WORKER_HEAT_RATE', 5.78],
+  ['PT_SLABS', '[{"min":0,"max":7500,"pt":0},{"min":7500.01,"max":10000,"pt":175},{"min":10000.01,"max":null,"pt":200}]'],
+  ['MLWF_EMPLOYEE_RATE', 25], ['PT_FEB_AMOUNT', 300], ['MLWF_MONTHS', '6,12'], ['STAFF_OT_MULTIPLIER', 2], ['WORKER_OT_MULTIPLIER', 2],
+  ['STAFF_PF_WAGE_COMPONENTS', 'BASIC,CONVEYANCE,EDUCATION,MEDICAL'],
+  ['STAFF_COMPONENT_PCTS', '{"BASIC":0.40,"HRA":0.24,"CONVEYANCE":0.06,"MEDICAL":0.06,"EDUCATION":0.06,"PRO_DEV":0.03,"COMMUNICATION":0.02,"UNIFORM":0.04,"WASHING":0.09}'],
+  ['EMPLOYER_PF_RATE_STAFF', 0.1301], ['EMPLOYER_PF_RATE_WORKER', 0.1301], ['BONUS_RATE_STAFF', 0.0833], ['GRATUITY_RATE_STAFF', 0.0483],
+  ['BONUS_RATE_WORKER', 0.18], ['GRATUITY_RATE_WORKER', 0.0481]];
+const SAL_HDR = ['EMP_ID', 'PAYROLL_CATEGORY', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
+  'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'FIXED_GROSS_PM_AS_SOURCE_INR', 'HR_APPROVED_BY'];
+
+/** world() + everything the engine needs to calculate STAFF (S1, S2) and CONSULTANT (C1): salary, statutory, feeds COMPLETE. */
+function fullWorld(opts = {}) {
+  const env = world(opts);
+  const staff = (id) => ({ EMP_ID: id, PAYROLL_CATEGORY: 'STAFF', EFFECTIVE_FROM: '2026-08-01', BASIC_PM_INR: 12600, HRA_PM_INR: 7560, CONVEYANCE_PM_INR: 1890,
+    EDUCATION_PM_INR: 1890, MEDICAL_PM_INR: 1890, PRO_DEV_PM_INR: 945, COMMUNICATION_PM_INR: 630, UNIFORM_PM_INR: 1260, WASHING_PM_INR: 2835,
+    FIXED_GROSS_PM_AS_SOURCE_INR: 31500, HR_APPROVED_BY: 'hr@x' });
+  env.put('SALARY_STRUCTURE', SAL_HDR, [staff('S1'), staff('S2')]);
+  env.put('PAYROLL_RATE_PROFILE', ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 'MONTHLY_GROSS_INR', 'VERSION_STATE'], []);
+  env.put('STATUTORY_CONFIG', ['KEY', 'VALUE', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY'],
+    CFG.map(([KEY, VALUE]) => ({ KEY, VALUE, EFFECTIVE_FROM: '2026-09', VERSION: 1, APPROVED_BY: 'accounts@x' })));
+  env.put('EFFICIENCY_CONFIG', ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'IMPLEMENTATION_STATE'],
+    [{ EFFICIENCY_PERCENT_EXACT: 85, INCENTIVE_SLAB_INR: 8500, IMPLEMENTATION_STATE: 'CONFIRMED' }]);
+  env.put('INPUT_OT', ['PAYROLL_MONTH', 'EMP_ID', 'OT_HOURS', 'SOURCE_REF', 'APPROVAL_STATUS', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON']);
+  env.put('INPUT_CANTEEN', ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS']);
+  env.put('INPUT_EFFICIENCY', ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS']);
+  env.put('INPUT_ADVANCE', ['PAYROLL_MONTH', 'EMP_ID', 'OPENING_BALANCE_INR', 'RECOVERY_THIS_MONTH_INR', 'ACCOUNTS_LEDGER_REFERENCE', 'APPROVAL_STATUS']);
+  env.put('INPUT_SOCIETY', ['PAYROLL_MONTH', 'EMP_ID', 'GENERAL_EMI_INR', 'EMERGENCY_EMI_INR', 'EDUCATION_EMI_INR', 'SHARES_OTHER_INR', 'TOTAL_RECOVERY_INR', 'APPROVAL_STATUS']);
+  env.put('INPUT_ADJUSTMENTS', ['PAYROLL_MONTH', 'EMP_ID', 'ADJUSTMENT_TYPE', 'SIGNED_AMOUNT_INR', 'APPROVAL_STATUS']);
+  env.put('FEED_STATUS', ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
+    ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY', 'LEAVE'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
+  return env;
+}
+
+
+module.exports = { fullWorld, P, HR, OWNER, ACC, ATT_HDR, PC_HDR, MASTER_HDR, COMPARISON_HDR, DAILY_HDR, EMPS, world, dailyRows };

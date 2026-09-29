@@ -33,8 +33,9 @@ function makeSheet(name) {
   return s;
 }
 
-const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '20_Feeds.gs', '30_Calc.gs',
-  '31_Readiness.gs', '32_Engine.gs', '40_Approval.gs', '41_Lock.gs', '50_Payslips.gs', '51_Email.gs', '90_Menu.gs', '99_Audit.gs'];
+const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '12_Register.gs', '13_RegisterPage.gs',
+  '20_Feeds.gs', '21_Leave.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '50_Payslips.gs',
+  '51_Email.gs', '90_Menu.gs', '99_Audit.gs'];
 
 /** A fresh world: sheets, fake SpreadsheetApp/Session/LockService/ScriptApp, and the whole code base in one context. */
 function makeEnv(opts = {}) {
@@ -80,8 +81,11 @@ function makeEnv(opts = {}) {
   };
   const me = () => ({ getEmail: () => env.user });
   const dv = () => { const b = { requireValueInList() { return b; }, setAllowInvalid() { return b; }, build() { return {}; } }; return b; };
+  env.dialogs = [];
+  const HtmlService = { createHtmlOutput: (html) => { const o = { html, title: '' }; o.setWidth = (w) => { o.width = w; return o; }; o.setHeight = (h) => { o.height = h; return o; }; o.setTitle = (t) => { o.title = t; return o; }; o.getContent = () => html; return o; } };
+  const ui = { showModalDialog: (out, title) => { env.dialogs.push({ out, title }); } };
   const SpreadsheetApp = {
-    getActiveSpreadsheet: () => ss, getActive: () => ss, flush() {}, ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dv,
+    getActiveSpreadsheet: () => ss, getActive: () => ss, flush() {}, ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dv, getUi: () => ui,
     openById: (id) => {
       if (id === 'FAKE_SS_ID') return ss;
       if (env.external[id]) return { getSheetByName: (n) => env.external[id][n] || null };
@@ -99,8 +103,18 @@ function makeEnv(opts = {}) {
     deleteTrigger: () => { throw new Error('triggers must never be deleted here'); },
   };
   const LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
-  env.c = loadGs(FILES, Object.assign({ Utilities, SpreadsheetApp, Session: { getActiveUser: me, getEffectiveUser: me }, LockService, ScriptApp }, opts.globals || {}));
+  env.c = loadGs(FILES, Object.assign({ Utilities, SpreadsheetApp, HtmlService, Session: { getActiveUser: me, getEffectiveUser: me }, LockService, ScriptApp }, opts.globals || {}));
   return env;
 }
 
-module.exports = { makeEnv, makeSheet, blank };
+/** Header of the leave application form responses (a password column is included on purpose: it must never be read). */
+const LEAVE_HDR = ['Timestamp', 'Submission Type', 'Email Address', 'Employee ID', 'Name', 'Department', 'Reason for Leave', 'Leave Start Date',
+  'Leave Start Date Half', 'Number of Leave in working days', 'Leave End Date', 'Leave End Date Half', 'Leave Type', 'Approval Decision',
+  'Approved Number of days', 'Remarks', 'Password', 'Month', 'Case No'];
+const leaveRow = (o) => Object.assign({ Timestamp: '2026-09-10 10:00:00', 'Submission Type': 'Approval (for admin use only)', 'Employee ID': '', 'Leave Type': '',
+  'Leave Start Date': '', 'Leave End Date': '', 'Approval Decision': 'Approved', Password: 'SECRET-SENTINEL' }, o);
+
+const LEAVE_INPUT_HDR = ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY', 'STATUS',
+  'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT'];
+
+module.exports = { makeEnv, makeSheet, blank, LEAVE_HDR, LEAVE_INPUT_HDR, leaveRow };

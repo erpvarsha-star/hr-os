@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { loadGs, plain } = require('./load');
+const { LEAVE_HDR, leaveRow } = require('./fakes');
 
 // ---------------------------------------------------------------- fake Sheets
 const pad = (n, w = 2) => String(n).padStart(w, '0');
@@ -136,20 +137,28 @@ const Utilities = {
 };
 const me = () => ({ getEmail: () => env.user });
 const dvBuilder = () => { const b = { requireValueInList() { return b; }, setAllowInvalid() { return b; }, build() { return {}; } }; return b; };
+// the leave application spreadsheet is a SEPARATE spreadsheet (read-only for HR OS)
+const LEAVE_ID = '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q';
+const leaveSheets = {};
+const leaveSs = { getSheetByName: (n) => leaveSheets[n] || null };
+const dialogs = [];
+const HtmlService = { createHtmlOutput: (html) => { const o = { html }; o.setWidth = () => o; o.setHeight = () => o; o.setTitle = () => o; return o; } };
 const SpreadsheetApp = {
-  getActiveSpreadsheet: () => ss, openById: () => ss, getActive: () => ss, flush() {},
-  ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dvBuilder,
+  getActiveSpreadsheet: () => ss, openById: (id) => (id === LEAVE_ID ? leaveSs : ss), getActive: () => ss, flush() {},
+  ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dvBuilder, getUi: () => ({ showModalDialog: (out, title) => dialogs.push({ out, title }) }),
 };
 const Session = { getActiveUser: me, getEffectiveUser: me };
 const LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
 
-const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '20_Feeds.gs', '30_Calc.gs',
-  '31_Readiness.gs', '32_Engine.gs', '40_Approval.gs', '41_Lock.gs', '50_Payslips.gs', '51_Email.gs', '90_Menu.gs', '99_Audit.gs'];
-const c = loadGs(FILES, Object.assign({ Utilities, SpreadsheetApp, Session, LockService }, env.google));
+const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '12_Register.gs', '13_RegisterPage.gs',
+  '20_Feeds.gs', '21_Leave.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '50_Payslips.gs',
+  '51_Email.gs', '90_Menu.gs', '99_Audit.gs'];
+const c = loadGs(FILES, Object.assign({ Utilities, SpreadsheetApp, HtmlService, Session, LockService }, env.google));
 
 // ---------------------------------------------------------------- synthetic master: 2 employees per population (fake ids)
 const EMPS = [
   ['T-S1', 'STAFF', 'Test Staff One', 'Accounts', 's1@example.test'], ['T-S2', 'STAFF', 'Test Staff Two', 'Stores', 's2@example.test'],
+  ['T-S3', 'STAFF', 'Test Staff Three (no register entry)', 'Stores', 's3@example.test'],
   ['T-W1', 'PERMANENT_WORKER', 'Test Worker One', 'Forge', 'w1@example.test'], ['T-W2', 'PERMANENT_WORKER', 'Test Worker Two', 'Forge', 'w2@example.test'],
   ['T-C1', 'CONSULTANT', 'Test Consultant One', 'QA', ''], ['T-C2', 'CONSULTANT', 'Test Consultant Two', 'QA', ''],
   ['T-P1', 'PUNE_STAFF', 'Test Pune One', 'Sales', ''], ['T-P2', 'PUNE_STAFF', 'Test Pune Two', 'Sales', ''],
@@ -176,7 +185,7 @@ const AUG_OT = [
   { PAYROLL_MONTH: '2026-08', EMP_ID: 'T-S1', OT_HOURS: 12, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED', ENTERED_AT: '2026-09-01', SOURCE_CASE_NOS: '17001', SOURCE_EVENT_COUNT: 2, DATE_RANGE: '2026-08-03..2026-08-20' },
   { PAYROLL_MONTH: '2026-08', EMP_ID: 'T-W1', OT_HOURS: 98.5, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED', ENTERED_AT: '2026-09-01', SOURCE_CASE_NOS: '17002', SOURCE_EVENT_COUNT: 9, DATE_RANGE: '2026-08-01..2026-08-31' },
 ];
-let augBefore, histBefore, snapAfterSetup, auditLenAfterSetup, ext;
+let augBefore, histBefore, snapAfterSetup, auditLenAfterSetup, ext, leaveBefore;
 
 function seedWorld() {
   const stat = [['PF_WAGE_CEILING', 15000], ['PF_EMPLOYEE_RATE', 0.12], ['PF_MAX_EMPLOYEE', 1800], ['ESI_EMPLOYEE_RATE', 0.0075], ['ESI_EXEMPT_ABOVE', 21000],
@@ -243,6 +252,28 @@ function seedWorld() {
   };
   raw('RAW_STAFF_MASTER', [['T-S1', 100000000001, 'FAKEPAN01A', 'FAKEESI01', 'Fake Bank', 'FAKE0000001', 900000000001]]); // T-S2 has no row: blank tokens
   raw('RAW_WORKER_MASTER', [['T-W1', 100000000002, 'FAKEPAN02B', '', 'Fake Bank W', 'FAKE0000002', 900000000002], ['T-W2', 100000000003, 'FAKEPAN03C', '', 'Fake Bank W', 'FAKE0000002', 900000000003]]);
+  // the leave application spreadsheet (separate, read-only): event log + yearly balance tabs
+  const mkLeave = (name, rows) => { const sh = makeSheet(name); sh.data = rows; leaveSheets[name] = sh; return sh; };
+  const L = (o) => LEAVE_HDR.map((h) => { const r = leaveRow(o); return h in r ? r[h] : ''; });
+  const APP = 'Approval (for admin use only)';
+  mkLeave('Leave_Applications', [LEAVE_HDR.slice(),
+    L({ 'Submission Type': 'Apply For Leave', 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-08', 'Leave End Date': '2026-09-09', 'Approval Decision': '', 'Case No': '3001', Timestamp: '2026-09-01 09:00:00' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-08', 'Leave End Date': '2026-09-09', 'Approval Decision': 'Approved  ', 'Approved Number of days': 2, 'Case No': '3001', Timestamp: '2026-09-02 09:00:00' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S2', 'Leave Type': 'casual Leave (CL)', 'Leave Start Date': '2026-09-21', 'Leave End Date': '2026-09-21' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S2', 'Leave Type': 'MEdical Leave (SL)', 'Leave Start Date': '2026-09-22', 'Leave End Date': '2026-09-22', 'Leave Start Date Half': 'First Half' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-W1', 'Leave Type': 'Outdoor Duty (OD)', 'Leave Start Date': '2026-09-02', 'Leave End Date': '2026-09-03' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-W1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-24', 'Leave End Date': '2026-09-24' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-W2', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-23', 'Leave End Date': '2026-09-23' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-C1', 'Leave Type': 'Casual Leave (CL)', 'Leave Start Date': '2026-09-10', 'Leave End Date': '2026-09-10', 'Case No': '3002', Timestamp: '2026-09-03 09:00:00' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-C1', 'Leave Type': 'Casual Leave (CL)', 'Leave Start Date': '2026-09-10', 'Leave End Date': '2026-09-10', 'Approval Decision': 'Rejected', 'Case No': '3002', Timestamp: '2026-09-04 09:00:00' }),
+    L({ 'Submission Type': 'Apply For Leave', 'Employee ID': 'T-P1', 'Leave Type': 'Casual Leave (CL)', 'Leave Start Date': '2026-09-28', 'Leave End Date': '2026-09-28', 'Approval Decision': '' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-07-01', 'Leave End Date': '2026-07-02' }), // history
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-03-10', 'Leave End Date': '2026-03-05' }), // old bad row must not block September
+    L({ 'Submission Type': '', 'Employee ID': '', 'Approval Decision': '' })]);
+  mkLeave('Leave Databse Staff', [['Leave database 2026'], ['Employee ID', 'Name', 'EL Available', 'CL Available', 'SL Available', 'Total Available'],
+    ['T-S1', 'x', 12, 4.5, 6, 22.5], ['T-S2', 'x', 3, 1, 0, 4]]);
+  mkLeave('Leave Dadabase PW', [['Employee', 'Blocks by payroll cycle'], ['T-W1', 'x']]); // layout not identifiable: worker balances stay blank
+  leaveBefore = JSON.stringify(Object.keys(leaveSheets).map((k) => leaveSheets[k].data));
   put('CANTEEN_FORM_RESPONSES', ['Timestamp', 'Payroll Month', 'Employee ID', 'Deduction Amount (INR)', 'Submission Type'], [
     { Timestamp: '2026-09-28 09:00:00', 'Payroll Month': '2026-09', 'Employee ID': 'T-S1', 'Deduction Amount (INR)': 600, 'Submission Type': 'New' },
     { Timestamp: '2026-09-28 09:05:00', 'Payroll Month': 'September 2026', 'Employee ID': 'T-W1', 'Deduction Amount (INR)': 450, 'Submission Type': 'New' }]);
@@ -286,6 +317,16 @@ test('1. setup: creates tabs/columns/keys, leaves PAYROLL_HISTORY and August row
   assert.ok(stat.some((r) => r.KEY === 'STAFF_COMPONENT_PCTS'));
   assert.equal(rowsOf('PT_EXEMPTIONS').length, 3);
   assert.equal(env.sheets.PAYROLL_LOCKED.protections.length, 1);
+  ['ATTENDANCE_COMPARISON', 'INPUT_LEAVE'].forEach((t) => assert.ok(log.createdTabs.includes(t), t));
+  assert.equal(ctl.OWNER_APPROVER_EMAIL, 'yash.munot@gmail.com');
+  assert.match(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OWNER_APPROVER_EMAIL').NOTE, /confirm owner email/);
+  assert.equal(ctl.LEAVE_SOURCE_SPREADSHEET_ID, LEAVE_ID);
+  assert.equal(ctl.LEAVE_SOURCE_TAB, 'Leave_Applications');
+  assert.deepEqual(env.sheets.INPUT_ATTENDANCE.data[0].slice(-9), ['PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE', 'OVERRIDE_REASON',
+    'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY']);
+  assert.deepEqual(env.sheets.INPUT_LEAVE.data[0], ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY', 'STATUS',
+    'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT']);
+  assert.equal(env.sheets.ATTENDANCE_COMPARISON.data[0].length, 16);
   snapAfterSetup = snapshot();
   auditLenAfterSetup = rowsOf('AUDIT_LOG').length;
 });
@@ -313,22 +354,43 @@ test('3. owner sets PAYSLIP_FOLDER_ID, prepareMonth adds 4 period rows + 9 feed 
   assert.equal(rowsOf('FEED_STATUS').filter((f) => f.PERIOD === P && f.STATUS === 'OPEN').length, 9);
 });
 
-test('4. monthly attendance: prepare, HR types counts, approve per population', () => {
-  const r = plain(c.prepareMonthlyAttendance(P));
-  assert.equal(r.rowsAdded, 8);
-  assert.equal(plain(c.prepareMonthlyAttendance(P)).rowsAdded, 0);
-  const A = (id, present, phys, wo, extra) => editCells('INPUT_ATTENDANCE', { PAYROLL_MONTH: P, EMP_ID: id },
-    Object.assign({ PRESENT_DAYS: present, PHYSICAL_PRESENT_DAYS: phys, WEEK_OFF: wo, PH: 0, EL_AVAILED: 0, CL_AVAILED: 0, SL_AVAILED: 0, PAID_LEAVE_OTHER: 0, ABSENT_LWP_DAYS: 0 }, extra || {}));
-  A('T-S1', 22, 22, 4); A('T-S2', 18, 18, 4, { EL_AVAILED: 1, CL_AVAILED: 1, ABSENT_LWP_DAYS: 2 });
-  A('T-W1', 25, 25, 4, { EL_AVAILED: 1 }); A('T-W2', 22, 22, 4);
-  A('T-C1', 24, 24, 0); A('T-C2', 20, 20, 4);
-  A('T-P1', 22, 22, 4); A('T-P2', 20, 20, 4);
-  // an unapproved row is refused by readiness before approval
+test('4. monthly register: dialog, one number per employee, leave sync from the separate leave spreadsheet refreshes the components, approve per population', () => {
+  env.user = HR;
+  c.menuOpenRegister();
+  assert.equal(dialogs.length, 1);
+  assert.match(dialogs[0].out.html, /Days present INCLUDES weekly offs/);
+  const load = plain(c.registerLoad(P));
+  assert.equal(load.period, P);
+  assert.deepEqual(load.employees.map((e) => e.empId), ['T-S1', 'T-S2', 'T-S3', 'T-W1', 'T-W2', 'T-C1', 'T-C2', 'T-P1', 'T-P2']);
+  assert.ok(!load.employees.some((e) => e.empId === 'T-GONE'), 'inactive employees are not on the register');
+  const entries = [['T-S1', 24], ['T-S2', 22], ['T-W1', 22], ['T-W2', 22], ['T-C1', 20], ['T-C2', 16], ['T-P1', 22], ['T-P2', 20]].map(([empId, days]) => ({ empId, days }));
+  const sub = plain(c.registerSubmit({ period: P, includesWO: { STAFF: 'Y', PERMANENT_WORKER: 'N', CONSULTANT: 'N', PUNE_STAFF: 'N' },
+    entries: entries.concat([{ empId: 'T-S3', days: '' }]) }));
+  assert.deepEqual([sub.written, sub.created, sub.notEntered, sub.exceptions], [8, 8, ['T-S3'], []]);
+  const att = (id) => rowsOf('INPUT_ATTENDANCE').find((x) => x.PAYROLL_MONTH === P && x.EMP_ID === id);
+  assert.deepEqual([att('T-S1').PRESENT_DAYS, att('T-S1').WEEK_OFF, att('T-S1').EL_AVAILED, att('T-S1').SOURCE_REF, att('T-S1').REGISTER_INCLUDES_WO], [20, 4, 0, 'REGISTER', 'Y']);
+  assert.equal(att('T-W1').WEEK_OFF, 0, 'workers have no week-off component');
+  assert.equal(att('T-S1').APPROVAL_STATUS, 'PENDING');
+  // leave: read-only sync from the separate spreadsheet; the PENDING register rows are re-derived with it
+  const lv = plain(c.syncLeaveFromSource(P));
+  assert.equal(lv.source, 'leave:Leave_Applications');
+  assert.deepEqual([lv.validWritten, lv.exceptionsWritten, lv.pending, lv.revokedByRejection, lv.registerRowsRefreshed], [6, 0, 1, 1, 4]);
+  assert.deepEqual(plain(c.leaveByEmp(rowsOf('INPUT_LEAVE'), P)), { 'T-S1': { EL: 2 }, 'T-S2': { CL: 1, SL: 0.5 }, 'T-W1': { OD: 2, EL: 1 }, 'T-W2': { EL: 1 } });
+  assert.deepEqual([att('T-S1').EL_AVAILED, att('T-S1').WORKED_DAYS], [2, 26]);
+  assert.deepEqual([att('T-S2').CL_AVAILED, att('T-S2').SL_AVAILED, att('T-S2').WORKED_DAYS], [1, 0.5, 23.5]);
+  assert.deepEqual([att('T-W1').PRESENT_DAYS, att('T-W1').PHYSICAL_PRESENT_DAYS, att('T-W1').EL_AVAILED], [24, 22, 1], 'OD counts as present, not as physical');
+  assert.equal(plain(c.syncLeaveFromSource(P)).unchanged, 6, 'leave sync is idempotent');
+  assert.equal(plain(c.syncLeaveFromSource(P)).registerRowsRefreshed, 0);
+  // an unapproved row is refused by readiness before approval (employee-level HOLD, not a population block)
   const pre = plain(c.checkReadiness(P, 'STAFF')).rows.find((x) => x.CHECK === 'ATTENDANCE_APPROVED_VALID');
-  assert.equal(pre.STATUS, 'HOLD'); // unapproved rows hold those employees only
-  POPS.forEach((p) => { const a = plain(c.approveAttendance(P, p)); assert.equal(a.approved, 2); assert.deepEqual(a.blocked, []); assert.equal(a.approvedBy, HR); });
+  assert.equal(pre.STATUS, 'HOLD');
+  POPS.forEach((p) => { const a = plain(c.approveAttendance(P, p)); assert.equal(a.approved, idsOf(p).filter((id) => id !== 'T-S3').length); assert.deepEqual(a.blocked, []); assert.equal(a.approvedBy, HR); });
   rowsOf('INPUT_ATTENDANCE').filter((x) => x.PAYROLL_MONTH === P).forEach((x) => assert.equal(x.APPROVAL_STATUS, 'APPROVED'));
   assert.equal(rowsOf('INPUT_ATTENDANCE').find((x) => x.PAYROLL_MONTH === '2026-08').APPROVED_BY, 'old@x', 'August attendance untouched');
+  // the register never overwrites approved rows
+  const again = plain(c.registerSubmit({ period: P, includesWO: {}, entries: [{ empId: 'T-S1', days: 10 }] }));
+  assert.deepEqual([again.written, again.skippedApproved], [0, ['T-S1']]);
+  assert.equal(att('T-S1').PRESENT_DAYS, 20);
 });
 
 test('5. feeds: OT sync (pending recorded), canteen/efficiency sync, manual advance/society/adjustments, mark all feeds complete', () => {
@@ -405,7 +467,7 @@ test('5b. approval gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG block; HR
   assert.throws(() => c.approveSalaryStructure(P, 'CONSULTANT'), /STAFF and PERMANENT_WORKER/);
   // counts (what the menu shows) then stamp: only the rows effective for September (the October raise stays unsigned)
   const plan = plain(c.planSalaryStructureApproval(P, 'STAFF'));
-  assert.deepEqual([plan.employees, plan.withEffectiveRow, plan.toStamp.length, plan.alreadyApproved, plan.withoutRow], [2, 2, 2, 0, []]);
+  assert.deepEqual([plan.employees, plan.withEffectiveRow, plan.toStamp.length, plan.alreadyApproved, plan.withoutRow], [3, 2, 2, 0, ['T-S3']]);
   const a = plain(c.approveSalaryStructure(P, 'STAFF'));
   assert.deepEqual([a.ok, a.stamped, a.alreadyApproved], [true, 2, 0]);
   assert.equal(plain(c.approveSalaryStructure(P, 'PERMANENT_WORKER')).stamped, 2);
@@ -428,22 +490,31 @@ test('5b. approval gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG block; HR
 test('6. readiness: no BLOCKED anywhere; pending OT gives WARN on the worker population only', () => {
   const res = plain(c.checkReadiness(P));
   assert.equal(res.blocked, 0, JSON.stringify(res.rows.filter((r) => r.STATUS === 'BLOCKED')));
+  assert.ok(res.hold > 0, 'T-S3 has no register entry: an employee-level HOLD, never a population block');
   const by = (pop, check) => res.rows.find((r) => r.POPULATION === pop && r.CHECK === check);
   assert.equal(by('PERMANENT_WORKER', 'OT_EXCEPTIONS').STATUS, 'WARN');
   assert.match(by('PERMANENT_WORKER', 'OT_EXCEPTIONS').DETAIL, /pending OT events: 1/);
   ['STAFF', 'CONSULTANT', 'PUNE_STAFF'].forEach((p) => assert.equal(by(p, 'OT_EXCEPTIONS').STATUS, 'READY', p));
   assert.equal(by('PERMANENT_WORKER', 'EFFICIENCY_CONFIG_CONFIRMED').STATUS, 'WARN');
-  res.rows.forEach((r) => assert.ok(['READY', 'WARN'].includes(r.STATUS), r.POPULATION + ' ' + r.CHECK));
+  res.rows.forEach((r) => assert.ok(['READY', 'WARN'].includes(r.STATUS) || (r.STATUS === 'HOLD' && r.POPULATION === 'STAFF'), r.POPULATION + ' ' + r.CHECK));
+  assert.match(by('STAFF', 'ATTENDANCE_COVERAGE').DETAIL, /no attendance row: T-S3/);
+  assert.equal(by('STAFF', 'LEAVE_EXCEPTIONS').STATUS, 'READY');
   assert.equal(rowsOf('PAYROLL_READINESS').filter((r) => r.PERIOD === P).length, res.rows.length);
 });
 
 test('7. calculateDraft: 4 DRAFT populations, sane numbers, salary picked effective-dated', () => {
   const r = plain(c.calculateDraft(P));
   assert.equal(r.readiness.blocked, 0);
+  assert.equal(r.leaveSync.ok, true, 'the leave source is re-read at the start of calculateDraft');
+  assert.deepEqual(r.populations.find((x) => x.population === 'STAFF').held, ['T-S3']);
   POPS.forEach((p) => { assert.equal(pc(p).STATUS, 'DRAFT', p); assert.ok(pc(p).DRAFT_HASH, p); });
   const draft = rowsOf('PAYROLL_DRAFT').filter((x) => x.PERIOD === P);
-  assert.equal(draft.length, 8);
-  draft.forEach((x) => { assert.equal(typeof x.NET_PAY, 'number', x.EMP_ID); assert.ok(x.NET_PAY > 0, x.EMP_ID); });
+  assert.equal(draft.length, 9);
+  const held = draft.find((x) => x.EMP_ID === 'T-S3');
+  assert.match(held.FLAGS, /^HOLD;.*MISSING_ATTENDANCE/);
+  assert.equal(held.NET_PAY, '');
+  draft.filter((x) => x.EMP_ID !== 'T-S3').forEach((x) => { assert.equal(typeof x.NET_PAY, 'number', x.EMP_ID); assert.ok(x.NET_PAY > 0, x.EMP_ID); });
+  assert.equal(rowsOf('PAYROLL_RECON').find((x) => x.POPULATION === 'STAFF').HEADCOUNT, 2, 'held employee is outside the recon totals');
   const row = (id) => draft.find((x) => x.EMP_ID === id);
   // T-S1: FG 31,500 (not the October 99,999), w=26 of wd=26, OT 4h, canteen 600, arrears 500
   assert.equal(row('T-S1').FIXED_GROSS, 31500);
@@ -471,8 +542,12 @@ test('7. calculateDraft: 4 DRAFT populations, sane numbers, salary picked effect
   assert.equal(row('T-C1').GROSS_EARNINGS, 700 * 24);
   assert.equal(row('T-P1').TDS, 0 + 100);
   assert.match(row('T-W2').FLAGS, /WORKER_ESI_BASIS_UNCONFIRMED/);
-  assert.equal(rowsOf('PAYROLL_STAFF').length, 2);
+  assert.equal(rowsOf('PAYROLL_STAFF').length, 3);
   assert.equal(rowsOf('PAYROLL_WORKER').length, 2);
+  assert.equal(row('T-S1').EL, 2);
+  assert.equal(row('T-W1').PRESENT_DAYS, 24);
+  assert.equal(row('T-W1').PHYSICAL_PRESENT_DAYS, 22);
+  assert.equal(row('T-W1').VDA, 103 * 22, 'VDA follows the physical days (OD excluded)');
   assert.equal(rowsOf('PAYROLL_RECON').filter((x) => x.PERIOD === P).length, 4);
   // recalculation reproduces the same hash (deterministic)
   const h0 = pc('STAFF').DRAFT_HASH;
@@ -497,10 +572,13 @@ test('8. approvals: only the named approvers may approve; HR then Accounts; lock
   env.user = HR;
   assert.equal(plain(c.lockPeriod(P, 'STAFF')).reason, 'USER_NOT_ACCOUNTS_APPROVER_OR_OWNER');
   env.user = ACC;
-  POPS.forEach((p) => { const l = plain(c.lockPeriod(P, p)); assert.equal(l.ok, true, p + JSON.stringify(l)); assert.equal(pc(p).STATUS, 'LOCKED'); assert.match(pc(p).LOCK_ID, new RegExp('^LOCK-2026-09-' + p + '-\\d{12}$')); });
+  POPS.forEach((p) => {
+    const l = plain(c.lockPeriod(P, p)); assert.equal(l.ok, true, p + JSON.stringify(l)); assert.equal(pc(p).STATUS, 'LOCKED'); assert.match(pc(p).LOCK_ID, new RegExp('^LOCK-2026-09-' + p + '-\\d{12}$'));
+    if (p === 'STAFF') { assert.equal(l.rows, 2); assert.deepEqual(l.held.map((h) => h.EMP_ID), ['T-S3']); } else assert.deepEqual(l.held, []);
+  });
   const locked = rowsOf('PAYROLL_LOCKED');
-  assert.equal(locked.length, 8);
-  assert.deepEqual(locked.map((r) => r.EMP_ID).sort(), EMPS.map((e) => e[0]).sort());
+  assert.equal(locked.length, 8, 'the held employee is not locked');
+  assert.deepEqual(locked.map((r) => r.EMP_ID).sort(), EMPS.map((e) => e[0]).filter((id) => id !== 'T-S3').sort());
   assert.throws(() => c.calculateDraft(P, 'STAFF'), /LOCKED/);
   assert.equal(plain(c.lockPeriod(P, 'STAFF')).ok, false, 'no double lock');
   assert.equal(rowsOf('PAYROLL_LOCKED').length, 8);
@@ -521,7 +599,12 @@ test('9. payslips: STAFF + PERMANENT_WORKER generated with rates from salary str
   const texts = Object.values(g.calls.docTexts);
   assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /BASIC_RATE: 12,600/.test(t) && /HRA_RATE: 7,560/.test(t)), 'staff RATE tokens from SALARY_STRUCTURE (Sept row, not Oct)');
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /BASIC_RATE: 8,000/.test(t) && /VDA_RATE: 2,575/.test(t) && /HEAT_ALLOWANCE_RATE: 150/.test(t) && /PRODUCTION_ALLOWANCE_RATE: 8,500/.test(t)));
-  texts.forEach((t) => { assert.ok(!/\{\{/.test(t)); assert.ok(!/(EL_AVAILABLE|CL_AVAILABLE|SL_AVAILABLE): \S/.test(t), 'leave-available tokens blank'); });
+  texts.forEach((t) => assert.ok(!/\{\{/.test(t)));
+  // leave balances come read-only from the leave spreadsheet's yearly balance tab (staff); the worker tab layout is not identifiable -> blank + audit note
+  assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /EL_AVAILABLE: 12\b/.test(t) && /CL_AVAILABLE: 4.5/.test(t) && /SL_AVAILABLE: 6\b/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && /EL_AVAILABLE: 3\b/.test(t) && /CL_AVAILABLE: 1\b/.test(t) && /SL_AVAILABLE: 0\b/.test(t)));
+  texts.filter((t) => /EMP_ID: T-W/.test(t)).forEach((t) => assert.ok(!/(EL_AVAILABLE|CL_AVAILABLE|SL_AVAILABLE): \S/.test(t), 'worker balances left blank, not guessed'));
+  assert.match(audits(), /leaveBalancesMatched.*could not identify .*Leave Dadabase PW/);
   // identity printed from the hidden RAW masters (T-S2 has no row there -> blank)
   assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /UAN: 100000000001/.test(t) && /PAN: FAKEPAN01A/.test(t) && /ESI_NO: FAKEESI01/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /UAN: 100000000002/.test(t) && /PAN: FAKEPAN02B/.test(t)));
@@ -576,6 +659,9 @@ test('11. protected data intact: PAYROLL_HISTORY and August INPUT_OT rows byte-i
   // Overtime_Form password columns were never copied anywhere
   Object.values(env.sheets).forEach((s) => assert.ok(!JSON.stringify(s.data).includes('SECRET-DO-NOT-READ') || s.name === 'Overtime_Form' || s.name === 'OT_FORM_RESPONSES', s.name));
   assert.ok(!rowsOf('INPUT_OT').some((r) => r.EMP_ID === 'T-S2'), 'the local Overtime_Form decoy was never read');
+  assert.equal(JSON.stringify(Object.keys(leaveSheets).map((k) => leaveSheets[k].data)), leaveBefore, 'the leave spreadsheet is never written');
+  Object.values(env.sheets).forEach((sh) => assert.ok(!JSON.stringify(sh.data).includes('SECRET-SENTINEL'), sh.name + ' must not contain the leave password column'));
+  assert.match(audits(), /LEAVE_SYNC/);
   assert.match(audits(), /HR_APPROVE/);
   assert.match(audits(), /PAYSLIPS_GENERATED/);
   assert.match(audits(), /PAYSLIP_EMAIL_REFUSED/);

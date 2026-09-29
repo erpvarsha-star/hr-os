@@ -2,7 +2,7 @@
 // Integration tests over a compact in-memory workbook with the REAL feed readers (20_Feeds.gs) wired into the engine.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { makeEnv } = require('./fakes');
+const { makeEnv, LEAVE_HDR, LEAVE_INPUT_HDR } = require('./fakes');
 const { plain } = require('./load');
 
 const P = '2026-09';
@@ -51,6 +51,8 @@ function mini(over = {}) {
   env.put('INPUT_ADVANCE', ['PAYROLL_MONTH', 'EMP_ID', 'OPENING_BALANCE_INR', 'RECOVERY_THIS_MONTH_INR', 'ACCOUNTS_LEDGER_REFERENCE', 'APPROVAL_STATUS']);
   env.put('INPUT_SOCIETY', ['PAYROLL_MONTH', 'EMP_ID', 'GENERAL_EMI_INR', 'EMERGENCY_EMI_INR', 'EDUCATION_EMI_INR', 'SHARES_OTHER_INR', 'TOTAL_RECOVERY_INR', 'APPROVAL_STATUS']);
   env.put('INPUT_ADJUSTMENTS', ['PAYROLL_MONTH', 'EMP_ID', 'ADJUSTMENT_TYPE', 'SIGNED_AMOUNT_INR', 'APPROVAL_STATUS']);
+  env.put('Leave_Applications', LEAVE_HDR); // local leave source: no leave, reachable
+  env.put('INPUT_LEAVE', LEAVE_INPUT_HDR);
   env.put('FEED_STATUS', ['PERIOD', 'FEED', 'STATUS'], ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'EFFICIENCY', 'LEAVE'].map((FEED) => ({ PERIOD: P, FEED, STATUS: 'COMPLETE' })));
   Object.keys(over).forEach((k) => over[k](env));
   return env;

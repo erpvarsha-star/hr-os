@@ -11,10 +11,16 @@ function onOpen() {
       .addItem('Install triggers', 'menuInstallTriggers'))
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
+      .addItem('Open monthly attendance register', 'menuOpenRegister')
       .addItem('Prepare monthly attendance (HR entry)', 'menuPrepareAttendance')
       .addItem('Generate monthly attendance from daily', 'menuGenerateAttendance')
       .addItem('Approve attendance (population)...', 'menuApproveAttendance')
       .addSeparator()
+      .addItem('Build daily vs register comparison', 'menuBuildComparison')
+      .addItem('Submit dispute decisions', 'menuSubmitDisputes')
+      .addItem('Owner: approve attendance disputes', 'menuOwnerApproveDisputes')
+      .addSeparator()
+      .addItem('Sync leave', 'menuSyncLeave')
       .addItem('Sync OT', 'menuSyncOt')
       .addItem('Sync canteen', 'menuSyncCanteen')
       .addItem('Sync efficiency', 'menuSyncEfficiency')
@@ -101,6 +107,24 @@ function menuMarkFeed() {
   });
 }
 
+function menuOpenRegister() { run_('Monthly attendance register', registerOpenDialog); }
+function menuSyncLeave() { run_('Sync leave', function () { var p = askPeriod_('Sync leave'); return p && syncLeaveFromSource(p); }); }
+function menuBuildComparison() { run_('Daily vs register comparison', function () { var p = askPeriod_('Daily vs register comparison'); return p && buildAttendanceComparison(p); }); }
+function menuSubmitDisputes() { run_('Submit dispute decisions', function () { var p = askPeriod_('Submit dispute decisions'); return p && submitDisputeDecisions(p); }); }
+/** Shows how many HR-submitted disputes are waiting, asks for a YES, then stamps (the runner check happens inside). */
+function menuOwnerApproveDisputes() {
+  run_('Owner: approve attendance disputes', function () {
+    var p = askPeriod_('Owner: approve attendance disputes'); if (!p) return null;
+    var waiting = cmp_storedRows_(p).filter(function (r) {
+      return String(r.STATUS).trim().toUpperCase() === 'DISPUTE' && String(r.HR_BY || '').trim() && !String(r.OWNER_DECISION || '').trim();
+    });
+    var text = waiting.length + ' HR-submitted dispute decision(s) wait for the owner (' +
+      waiting.slice(0, 20).map(function (r) { return r.EMP_ID + ' -> ' + r.HR_DECIDED_DAYS + ' days'; }).join(', ') +
+      ').\nYou must be logged in as OWNER_APPROVER_EMAIL. Approve them now?';
+    if (!confirm_('Owner: approve attendance disputes', text)) return 'Cancelled - nothing was approved.';
+    return ownerApproveDisputes(p);
+  });
+}
 function menuSyncOt() { run_('Sync OT', function () { var p = askPeriod_('Sync OT'); return p && callStage_('syncOtFromForm', 2, [p]); }); }
 function menuSyncCanteen() { run_('Sync canteen', function () { var p = askPeriod_('Sync canteen'); return p && callStage_('syncCanteenFromForm', 3, [p]); }); }
 function menuSyncEfficiency() { run_('Sync efficiency', function () { var p = askPeriod_('Sync efficiency'); return p && callStage_('syncEfficiencyFromForm', 3, [p]); }); }

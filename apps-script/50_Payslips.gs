@@ -53,8 +53,17 @@ function pslEmp_(empCol, rowCol) {
   };
 }
 
-/** Leave balances: blank on the payslip (the external leave sheet is not a payroll feed). */
-var PAYSLIP_BLANK_TOKENS = ['EL_AVAILABLE', 'CL_AVAILABLE', 'SL_AVAILABLE'];
+/**
+ * Leave balances (EL_AVAILABLE / CL_AVAILABLE / SL_AVAILABLE): read at generation time, read-only, from the yearly balance
+ * tabs of the leave spreadsheet (21_Leave.gs leave_readBalances_). Blank when the balance cannot be identified confidently.
+ */
+var PAYSLIP_BALANCE_TOKENS = { EL_AVAILABLE: 'EL', CL_AVAILABLE: 'CL', SL_AVAILABLE: 'SL' };
+function pslBal_(type) {
+  return function (row, emp, sal, ident, bal) {
+    var v = bal ? bal[type] : undefined;
+    return v === undefined || v === null || v === '' || !isFinite(Number(v)) ? '' : payslipDays(v);
+  };
+}
 
 /**
  * Sensitive identity tokens (UAN, ESI number, PAN, bank name / account / IFSC) are printed on the payslip but are only
@@ -68,7 +77,7 @@ function pslZero_() { return '0'; }
 
 /**
  * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
- * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow, identity). A missing salary row makes
+ * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow, identity, leaveBalance). A missing salary row makes
  * buildReplacements throw, so that employee's payslip FAILS instead of printing blank/zero rates.
  */
 var PAYSLIP_RATE_COLUMNS = {
@@ -109,7 +118,7 @@ function pslCommonMap_() {
     NET_PAY: pslM_('NET_PAY'),
     NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
   };
-  PAYSLIP_BLANK_TOKENS.forEach(function (t) { m[t] = pslBlank_; });
+  Object.keys(PAYSLIP_BALANCE_TOKENS).forEach(function (t) { m[t] = pslBal_(PAYSLIP_BALANCE_TOKENS[t]); });
   Object.keys(PAYSLIP_IDENTITY_TOKENS).forEach(function (t) { m[t] = pslIdent_(PAYSLIP_IDENTITY_TOKENS[t]); });
   return m;
 }
@@ -160,12 +169,12 @@ function templateTokenCheck(templateText, map) {
   return { ok: missing.length === 0, tokens: tokens, missingTokens: missing };
 }
 
-/** {token: string} for every token of the population's map. Throws on non-numeric amounts. ident = identity record (or null). */
-function buildReplacements(population, lockedRow, emp, salary, ident) {
+/** {token: string} for every token of the population's map. Throws on non-numeric amounts. ident = identity record, bal = {EL, CL, SL} (or null). */
+function buildReplacements(population, lockedRow, emp, salary, ident, bal) {
   var map = payslipTokenMap(population), out = {};
   Object.keys(map).forEach(function (t) {
     var d = map[t];
-    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null, ident || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
+    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null, ident || null, bal || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
     out[t] = v == null ? '' : String(v);
   });
   return out;
@@ -295,8 +304,8 @@ function payslipTemplateId_(population) {
   return id;
 }
 
-function generateOnePayslip_(ctx, row, emp, salary, ident) {
-  var repl = buildReplacements(ctx.population, row, emp, salary, ident);
+function generateOnePayslip_(ctx, row, emp, salary, ident, bal) {
+  var repl = buildReplacements(ctx.population, row, emp, salary, ident, bal);
   var pdfName = payslipFileName(String(row.EMP_ID), ctx.period);
   var copy = null;
   try {
@@ -343,6 +352,12 @@ function generatePayslips(period, population, lockId, job_) {
   // UAN / ESI no / PAN / bank details: read from the hidden RAW master for this batch only; nothing is stored or logged
   var identity = payslipReadIdentity_(population, batch.map(function (r) { return String(r.EMP_ID); }));
 
+  // EL / CL / SL available balances from the leave spreadsheet (read-only; never written anywhere; blank when not identifiable)
+  var balances = { byEmp: {}, matched: 0, note: '' };
+  try { balances = leave_readBalances_(population, batch.map(function (r) { return String(r.EMP_ID); })); } catch (e) {
+    balances.note = String(e && e.message ? e.message : e);
+  }
+
   var root = DriveApp.getFolderById(pre.folderId);
   var folder = payslipSubfolder_(payslipSubfolder_(root, period), population);
   var ctx = { period: period, population: population, templateId: templateId, folder: folder };
@@ -354,7 +369,8 @@ function generatePayslips(period, population, lockId, job_) {
     var reg = { LOCK_ID: pre.lockId, PERIOD: period, EMP_ID: id, POPULATION: population, DOC_ID: '', PDF_ID: '',
       PDF_URL: '', GENERATED_AT: nowIso_(), STATUS: '' };
     try {
-      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null, identity.byEmp[feeds_empId_(id)] || null);
+      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null, identity.byEmp[feeds_empId_(id)] || null,
+        balances.byEmp[feeds_empId_(id)] || null);
       reg.DOC_ID = res.docId; reg.PDF_ID = res.pdfId; reg.PDF_URL = res.pdfUrl; reg.STATUS = 'GENERATED';
       ok++;
     } catch (e) {
@@ -376,7 +392,8 @@ function generatePayslips(period, population, lockId, job_) {
   }
   var summary = { period: period, population: population, lockId: pre.lockId, generated: ok, failed: failed,
     remaining: remaining, continuationScheduled: continuing,
-    identityMatched: identity.matched + ' of ' + batch.length + (identity.note ? ' (' + identity.note + ')' : '') };
+    identityMatched: identity.matched + ' of ' + batch.length + (identity.note ? ' (' + identity.note + ')' : ''),
+    leaveBalancesMatched: balances.matched + ' of ' + batch.length + (balances.note ? ' (' + balances.note + ')' : '') };
   audit('PAYSLIPS_GENERATED', period, population, summary);
   return summary;
 }
