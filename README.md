@@ -1,3 +1,13 @@
+# VFL HR OS — Monthly Payroll
+
+## Quick deploy (2 pastes)
+1. Open the HR OS sheet ▸ **Extensions ▸ Apps Script**.
+2. Replace the contents of `Code.gs` with [`deploy/HR_OS.gs`](deploy/HR_OS.gs) (open ▸ **Raw** ▸ select all ▸ copy ▸ paste).
+3. Project Settings ▸ tick **Show "appsscript.json"** ▸ replace its contents with [`deploy/appsscript.json`](deploy/appsscript.json).
+4. Save, reload the sheet, open **HR OS ▸ Setup ▸ Run setup** and approve the Google permission prompt.
+
+The detailed guide follows.
+
 # HR OS - Monthly Payroll (deployment guide and HR runbook)
 
 Written for the business owner and the HR / Accounts team. No programming knowledge is needed to follow it.
