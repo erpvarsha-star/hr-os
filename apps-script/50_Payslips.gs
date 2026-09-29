@@ -1,0 +1,320 @@
+/**
+ * 50_Payslips.gs - Stage 8: payslip PDFs from PAYROLL_LOCKED (STAFF, PERMANENT_WORKER only).
+ * Template placeholder syntax (read from the two template Docs): {{TOKEN}}, e.g. {{PAYROLL_PERIOD}}.
+ * Pure parts (token maps, formatting, replacements, templateTokenCheck) never touch Drive/Sheets.
+ * PDFs are created in the owner-only payslip folder; sharing is never changed here.
+ */
+var PAYSLIP_BATCH_SIZE = 25;
+var PAYSLIP_JOB_PROP = 'PAYSLIP_JOB';
+var PAYSLIP_POPULATIONS = ['STAFF', 'PERMANENT_WORKER'];
+var PAYSLIP_CONTINUE_FN = 'continuePayslips_';
+
+// ---------------------------------------------------------------- pure formatting
+
+/** 1234567 -> '12,34,567' (Indian grouping, 0 decimals, half away from zero). Blank -> '0'. Non-numeric throws. */
+function payslipMoney(v) {
+  if (v === '' || v == null) return '0';
+  var n = Number(v);
+  if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric money value "' + v + '"');
+  var neg = n < 0;
+  var s = String(Math.floor(Math.abs(n) + 0.5));
+  if (s.length > 3) {
+    var last3 = s.slice(-3), rest = s.slice(0, -3);
+    s = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
+  }
+  return (neg && s !== '0' ? '-' : '') + s;
+}
+
+/** Days / hours: up to 1 decimal, no trailing zero. Blank -> '0'. */
+function payslipDays(v) {
+  if (v === '' || v == null) return '0';
+  var n = Number(v);
+  if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric days value "' + v + '"');
+  var r = Math.round(Math.abs(n) * 10) / 10;
+  return (n < 0 && r !== 0 ? '-' : '') + String(r);
+}
+
+/** '2026-09' -> 'September 2026'. */
+function payslipPeriodLabel(period) {
+  return monthName(period) + ' ' + parsePeriod(period).year;
+}
+
+// ---------------------------------------------------------------- token maps
+
+function pslM_(col) { return function (row) { return payslipMoney(row[col]); }; }
+function pslD_(col) { return function (row) { return payslipDays(row[col]); }; }
+function pslBlank_() { return ''; }
+function pslEmp_(empCol, rowCol) {
+  return function (row, emp) {
+    var v = emp && emp[empCol] != null && emp[empCol] !== '' ? emp[empCol] : (rowCol ? row[rowCol] : '');
+    if (Object.prototype.toString.call(v) === '[object Date]') v = toIsoDate(v);
+    return v == null ? '' : String(v);
+  };
+}
+
+/** Sensitive identifiers and leave balances: always blank in v1 (DESIGN section 8). */
+var PAYSLIP_BLANK_TOKENS = ['UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'ACCOUNT_NO', 'IFSC',
+  'EL_AVAILABLE', 'CL_AVAILABLE', 'SL_AVAILABLE'];
+
+/**
+ * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
+ * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow). A missing salary row makes
+ * buildReplacements throw, so that employee's payslip FAILS instead of printing blank/zero rates.
+ */
+var PAYSLIP_RATE_COLUMNS = {
+  BASIC_RATE: 'BASIC_PM_INR', HRA_RATE: 'HRA_PM_INR', CONVEYANCE_RATE: 'CONVEYANCE_PM_INR',
+  EDUCATION_RATE: 'EDUCATION_PM_INR', WASHING_RATE: 'WASHING_PM_INR', MEDICAL_RATE: 'MEDICAL_PM_INR',
+  PRO_DEV_RATE: 'PRO_DEV_PM_INR', COMMUNICATION_RATE: 'COMMUNICATION_PM_INR', UNIFORM_RATE: 'UNIFORM_PM_INR',
+  HEAT_ALLOWANCE_RATE: 'HEAT_MASTER_INR', VDA_RATE: 'VDA_MASTER_INR', PRODUCTION_ALLOWANCE_RATE: 'PRODUCTION_MASTER_INR'
+};
+
+function pslRate_(col) {
+  return function (row, emp, sal) {
+    if (!sal) throw new Error('No SALARY_STRUCTURE row effective for ' + row.PERIOD + ' (' + col + ')');
+    return payslipMoney(sal[col]);
+  };
+}
+
+function pslCommonMap_() {
+  var m = {
+    PAYROLL_PERIOD: function (row) { return payslipPeriodLabel(row.PERIOD); },
+    EMP_NAME: pslEmp_('EMPLOYEE_NAME', 'EMPLOYEE_NAME'),
+    EMP_ID: function (row, emp) { return String((emp && emp.EMP_ID) || row.EMP_ID || ''); },
+    DEPARTMENT: pslEmp_('DEPARTMENT', 'DEPARTMENT'),
+    DESIGNATION: pslEmp_('DESIGNATION', 'DESIGNATION'),
+    DOJ: pslEmp_('DOJ_AS_SOURCE'),
+    PRESENT_DAYS: pslD_('PRESENT_DAYS'), EL_DAYS: pslD_('EL'), CL_DAYS: pslD_('CL'), SL_DAYS: pslD_('SL'),
+    PH_DAYS: pslD_('PH_DAYS'), DAYS_PAYABLE: pslD_('WORKED_PAYABLE_DAYS'),
+    BASIC_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.BASIC_RATE), HRA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HRA_RATE),
+    CONVEYANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.CONVEYANCE_RATE),
+    EDUCATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.EDUCATION_RATE), WASHING_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.WASHING_RATE),
+    BASIC: pslM_('BASIC'), HRA: pslM_('HRA'), CONVEYANCE: pslM_('CONVEYANCE'), EDUCATION: pslM_('EDUCATION'),
+    WASHING: pslM_('WASHING'), ARREARS: pslM_('ARREARS'),
+    OT_HOURS: pslD_('OT_HOURS'), OT_AMOUNT: pslM_('OT_AMOUNT'),
+    DISPATCH_INCENTIVE: pslM_('DISPATCH_INCENTIVE'), OTHER_ALLOWANCE: pslM_('OTHER_ALLOWANCE'),
+    GROSS_EARNINGS: pslM_('TOTAL_EARNINGS'),
+    PF_EMPLOYEE: pslM_('PF_EMPLOYEE'), ESI_EMPLOYEE: pslM_('ESI_EMPLOYEE'), PROF_TAX: pslM_('PT'),
+    MLWF: pslM_('MLWF'), SALARY_ADVANCE: pslM_('ADVANCE'), SOCIETY: pslM_('SOCIETY'), CANTEEN: pslM_('CANTEEN'),
+    OTHER_DEDUCTION: pslM_('OTHER_DEDUCTION'), TOTAL_DEDUCTIONS: pslM_('TOTAL_DEDUCTIONS'),
+    NET_PAY: pslM_('NET_PAY'),
+    NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
+  };
+  PAYSLIP_BLANK_TOKENS.forEach(function (t) { m[t] = pslBlank_; });
+  return m;
+}
+
+function pslExtend_(base, extra) { Object.keys(extra).forEach(function (k) { base[k] = extra[k]; }); return base; }
+
+var PAYSLIP_TOKEN_MAP_STAFF = pslExtend_(pslCommonMap_(), {
+  WEEKLY_OFF_DAYS: pslD_('WO_DAYS'),
+  MEDICAL_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.MEDICAL_RATE), PRO_DEV_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRO_DEV_RATE),
+  COMMUNICATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.COMMUNICATION_RATE),
+  UNIFORM_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.UNIFORM_RATE),
+  MEDICAL: pslM_('MEDICAL'), PRO_DEV: pslM_('PRO_DEV'), COMMUNICATION: pslM_('COMMUNICATION'),
+  UNIFORM: pslM_('UNIFORM'), TDS: pslM_('TDS')
+});
+
+var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
+  WORKING_DAYS: pslD_('WORKING_DAYS'),
+  HEAT_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HEAT_ALLOWANCE_RATE),
+  VDA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.VDA_RATE),
+  PRODUCTION_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRODUCTION_ALLOWANCE_RATE),
+  HEAT_ALLOWANCE: pslM_('HEAT'), VDA: pslM_('VDA'), PRODUCTION_ALLOWANCE: pslM_('PRODUCTION_ALLOWANCE'),
+  PRODUCTION_ALLOWANCE_OFFSET: pslM_('EFFICIENCY_DEDUCTION'), LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
+});
+
+function payslipTokenMap(population) {
+  if (population === POP.STAFF) return PAYSLIP_TOKEN_MAP_STAFF;
+  if (population === POP.PERMANENT_WORKER) return PAYSLIP_TOKEN_MAP_WORKER;
+  throw new Error('No payslip for population "' + population + '"');
+}
+
+// ---------------------------------------------------------------- pure template checks / replacements
+
+/** All {{TOKEN}} names in text. Drive text export escapes underscores (\_); those backslashes are ignored. */
+function extractTemplateTokens(templateText) {
+  var out = [], seen = {}, re = /\{\{\s*([A-Za-z0-9_\\]+?)\s*\}\}/g, m;
+  var text = String(templateText || '');
+  while ((m = re.exec(text))) {
+    var t = m[1].replace(/\\/g, '');
+    if (!seen[t]) { seen[t] = true; out.push(t); }
+  }
+  return out;
+}
+
+/** Fail-closed check: every token in the template must exist in the map. */
+function templateTokenCheck(templateText, map) {
+  var tokens = extractTemplateTokens(templateText);
+  var missing = tokens.filter(function (t) { return !Object.prototype.hasOwnProperty.call(map, t); });
+  return { ok: missing.length === 0, tokens: tokens, missingTokens: missing };
+}
+
+/** {token: string} for every token of the population's map. Throws on non-numeric amounts. */
+function buildReplacements(population, lockedRow, emp, salary) {
+  var map = payslipTokenMap(population), out = {};
+  Object.keys(map).forEach(function (t) {
+    var d = map[t];
+    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
+    out[t] = v == null ? '' : String(v);
+  });
+  return out;
+}
+
+function payslipFileName(empId, period) { return empId + '_' + period + '_Payslip.pdf'; }
+
+function escapeRegex_(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** Pure: pending locked rows = not GENERATED in register for lockId, not already attempted in this job. */
+function payslipPending(lockedRows, registerRows, lockId, attempted) {
+  var done = {}, tried = {};
+  (registerRows || []).forEach(function (r) {
+    if (String(r.LOCK_ID) === lockId && String(r.STATUS) === 'GENERATED') done[String(r.EMP_ID)] = true;
+  });
+  (attempted || []).forEach(function (id) { tried[id] = true; });
+  return (lockedRows || []).filter(function (r) {
+    var id = String(r.EMP_ID);
+    return !done[id] && !tried[id];
+  });
+}
+
+// ---------------------------------------------------------------- orchestration
+
+function payslipLockId_(period, population) {
+  var rows = readObjects(TABS.PAYROLL_PERIOD_CATEGORY).filter(function (r) {
+    return normalizePeriod(r.PAYROLL_MONTH) === period && String(r.PAYROLL_CATEGORY).trim() === population;
+  });
+  if (!rows.length) throw new Error('No PAYROLL_PERIOD_CATEGORY row for ' + period + ' x ' + population);
+  return { status: String(rows[0].STATUS || '').trim(), lockId: String(rows[0].LOCK_ID || '').trim() };
+}
+
+/** Shared validation. Returns {lockId, folderId, lockedRows}. Throws (refuses) with a clear message. */
+function payslipPreflight_(period, population, lockId) {
+  guardPeriod_(period);
+  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) {
+    throw new Error('Payslips are only for STAFF and PERMANENT_WORKER (got "' + population + '")');
+  }
+  var st = payslipLockId_(period, population);
+  if (st.status !== PERIOD_STATUS.LOCKED) {
+    throw new Error(period + ' x ' + population + ' is ' + (st.status || 'not set') + ', not LOCKED - payslips refused');
+  }
+  var useLock = String(lockId || st.lockId || '').trim();
+  if (!useLock) throw new Error('No LOCK_ID for ' + period + ' x ' + population);
+  var folderId = String(getControl('PAYSLIP_FOLDER_ID', '')).trim();
+  if (!folderId) throw new Error('PAYSLIP_FOLDER_ID is blank in PAYROLL_CONTROL - payslip step blocked');
+  var lockedRows = readObjects(TABS.PAYROLL_LOCKED).filter(function (r) {
+    return String(r.LOCK_ID).trim() === useLock && String(r.POPULATION).trim() === population;
+  });
+  if (!lockedRows.length) throw new Error('No PAYROLL_LOCKED rows for LOCK_ID ' + useLock);
+  return { lockId: useLock, folderId: folderId, lockedRows: lockedRows };
+}
+
+function payslipSubfolder_(parent, name) {
+  var it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+function payslipTemplateId_(population) {
+  var key = population === POP.STAFF ? 'PAYSLIP_TEMPLATE_STAFF_ID' : 'PAYSLIP_TEMPLATE_WORKER_ID';
+  var id = String(getControl(key, '')).trim();
+  if (!id) throw new Error(key + ' is blank in PAYROLL_CONTROL');
+  return id;
+}
+
+function generateOnePayslip_(ctx, row, emp, salary) {
+  var repl = buildReplacements(ctx.population, row, emp, salary);
+  var pdfName = payslipFileName(String(row.EMP_ID), ctx.period);
+  var copy = null;
+  try {
+    copy = DriveApp.getFileById(ctx.templateId).makeCopy('TMP_' + row.EMP_ID + '_' + ctx.period, ctx.folder);
+    var doc = DocumentApp.openById(copy.getId());
+    var body = doc.getBody();
+    Object.keys(repl).forEach(function (t) {
+      body.replaceText(escapeRegex_('{{' + t + '}}'), repl[t].replace(/\$/g, '\\$'));
+    });
+    var left = extractTemplateTokens(body.getText());
+    if (left.length) { doc.saveAndClose(); throw new Error('Unreplaced tokens: ' + left.join(',')); }
+    doc.saveAndClose();
+    var blob = copy.getAs('application/pdf').setName(pdfName);
+    var pdf = ctx.folder.createFile(blob);
+    return { docId: copy.getId(), pdfId: pdf.getId(), pdfUrl: pdf.getUrl() };
+  } finally {
+    if (copy) { try { copy.setTrashed(true); } catch (e) { /* ignore */ } }
+  }
+}
+
+/**
+ * Generate payslips for a LOCKED period x population. Processes up to 25 employees per execution and
+ * schedules a one-off continuation trigger when more remain.
+ */
+function generatePayslips(period, population, lockId, job_) {
+  var pre = payslipPreflight_(period, population, lockId);
+  var templateId = payslipTemplateId_(population);
+  var tcheck = templateTokenCheck(DocumentApp.openById(templateId).getBody().getText(), payslipTokenMap(population));
+  if (!tcheck.ok) {
+    audit('PAYSLIPS_REFUSED', period, population, { reason: 'unknown template tokens', missingTokens: tcheck.missingTokens });
+    throw new Error('Template has tokens with no mapping (fail closed): ' + tcheck.missingTokens.join(', '));
+  }
+  var attempted = (job_ && job_.attempted) || [];
+  var register = readObjects(TABS.PAYSLIP_REGISTER);
+  var pending = payslipPending(pre.lockedRows, register, pre.lockId, attempted);
+  var batch = pending.slice(0, PAYSLIP_BATCH_SIZE);
+
+  var master = {};
+  readObjects(TABS.EMPLOYEE_MASTER).forEach(function (r) { var id = String(r.EMP_ID).trim(); if (!(id in master)) master[id] = r; });
+
+  // SALARY_STRUCTURE read once; same effective-dated pick as the engine. Missing row -> that employee FAILS.
+  var salaryByEmp = engine_pickSalary(engine_readOpt_('SALARY_STRUCTURE'), period);
+
+  var root = DriveApp.getFolderById(pre.folderId);
+  var folder = payslipSubfolder_(payslipSubfolder_(root, period), population);
+  var ctx = { period: period, population: population, templateId: templateId, folder: folder };
+  var ok = 0, failed = [];
+
+  batch.forEach(function (row) {
+    var id = String(row.EMP_ID);
+    attempted.push(id);
+    var reg = { LOCK_ID: pre.lockId, PERIOD: period, EMP_ID: id, POPULATION: population, DOC_ID: '', PDF_ID: '',
+      PDF_URL: '', GENERATED_AT: nowIso_(), STATUS: '' };
+    try {
+      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null);
+      reg.DOC_ID = res.docId; reg.PDF_ID = res.pdfId; reg.PDF_URL = res.pdfUrl; reg.STATUS = 'GENERATED';
+      ok++;
+    } catch (e) {
+      reg.STATUS = 'FAILED';
+      failed.push({ empId: id, error: String(e && e.message ? e.message : e) });
+    }
+    appendObjects(TABS.PAYSLIP_REGISTER, [reg]);
+  });
+
+  var remaining = pending.length - batch.length;
+  var continuing = false;
+  if (remaining > 0) {
+    PropertiesService.getScriptProperties().setProperty(PAYSLIP_JOB_PROP,
+      JSON.stringify({ period: period, population: population, lockId: pre.lockId, attempted: attempted }));
+    ScriptApp.newTrigger(PAYSLIP_CONTINUE_FN).timeBased().after(60 * 1000).create();
+    continuing = true;
+  } else {
+    PropertiesService.getScriptProperties().deleteProperty(PAYSLIP_JOB_PROP);
+  }
+  var summary = { period: period, population: population, lockId: pre.lockId, generated: ok, failed: failed,
+    remaining: remaining, continuationScheduled: continuing };
+  audit('PAYSLIPS_GENERATED', period, population, summary);
+  return summary;
+}
+
+/** Time-trigger entry: resume the stored job and remove its own trigger(s). */
+function continuePayslips_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === PAYSLIP_CONTINUE_FN) ScriptApp.deleteTrigger(t);
+  });
+  var raw = PropertiesService.getScriptProperties().getProperty(PAYSLIP_JOB_PROP);
+  if (!raw) return null;
+  var job = JSON.parse(raw);
+  try {
+    return generatePayslips(job.period, job.population, job.lockId, job);
+  } catch (e) {
+    PropertiesService.getScriptProperties().deleteProperty(PAYSLIP_JOB_PROP);
+    audit('PAYSLIPS_CONTINUE_FAILED', job.period, job.population, String(e && e.message ? e.message : e));
+    throw e;
+  }
+}
