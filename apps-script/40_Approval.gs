@@ -269,3 +269,56 @@ function approveStatutoryConfig(period) {
     alreadyApproved: res.alreadyApproved, keys: plan.toStamp.map(function (t) { return t.key; }) });
   return res;
 }
+
+// ================================================================ category config sign-off (owner)
+
+/** Pure. Rows of PAYROLL_CATEGORY_CONFIG that still need the owner's stamp, and configuration problems that refuse it. */
+function categoryApprovalPlan(configRows) {
+  var plan = { rows: 0, alreadyApproved: 0, toStamp: [], problems: [] };
+  var seen = {};
+  (configRows || []).forEach(function (r) {
+    var e = categoryEntryFromRow(r);
+    if (!e) return;
+    plan.rows++;
+    if (seen[e.code]) { plan.problems.push(e.code + ': duplicate CATEGORY_CODE'); return; }
+    seen[e.code] = true;
+    categoryEntryProblems(e).forEach(function (p) { plan.problems.push(p); });
+    if (e.approvedBy) plan.alreadyApproved++; else plan.toStamp.push({ row: r._row, code: e.code });
+  });
+  return plan;
+}
+
+/** Read-only counts for the owner's confirmation dialog. */
+function planCategoryApproval() {
+  return categoryApprovalPlan(getSheet(TABS.PAYROLL_CATEGORY_CONFIG) ? readObjects(TABS.PAYROLL_CATEGORY_CONFIG) : []);
+}
+
+/**
+ * The owner signs off PAYROLL_CATEGORY_CONFIG: stamps APPROVED_BY / APPROVED_AT on the rows still blank. Runner must be
+ * OWNER_APPROVER_EMAIL. Refused while a row is misconfigured (unknown CALC_METHOD / SITE / RATE_SOURCE, PAYSLIP=Y without a
+ * template key). Until a category row is approved its population is BLOCKED in readiness (CATEGORY_CONFIG).
+ */
+function approveCategoryConfig() {
+  var plan = planCategoryApproval();
+  var user = approval_userEmail_();
+  var owner = getOwnerApproverEmail();
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(owner) || approval_email_(user) !== approval_email_(owner)) {
+    audit('CATEGORY_APPROVE', '', '', { result: 'REFUSED', reason: 'USER_NOT_OWNER', user: user });
+    return { ok: false, reason: 'USER_NOT_OWNER' };
+  }
+  if (plan.problems.length) {
+    audit('CATEGORY_APPROVE', '', '', { result: 'REFUSED', reason: 'CONFIG_PROBLEMS', problems: plan.problems });
+    return { ok: false, reason: 'CONFIG_PROBLEMS', problems: plan.problems };
+  }
+  approval_requireStampColumns_(TABS.PAYROLL_CATEGORY_CONFIG, ['APPROVED_BY', 'APPROVED_AT']);
+  var now = nowIso_();
+  updateRows(TABS.PAYROLL_CATEGORY_CONFIG, plan.toStamp.map(function (t) {
+    return { row: t.row, values: { APPROVED_BY: user, APPROVED_AT: now } };
+  }));
+  categoryConfigReset_();
+  var res = { ok: true, reason: 'OK', stamped: plan.toStamp.length, alreadyApproved: plan.alreadyApproved };
+  audit('CATEGORY_APPROVE', '', '', { result: 'APPROVED', user: user, stamped: res.stamped,
+    categories: plan.toStamp.map(function (t) { return t.code; }) });
+  return res;
+}

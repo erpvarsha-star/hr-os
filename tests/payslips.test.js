@@ -393,23 +393,10 @@ test('generatePayslips: RATE tokens come from effective-dated SALARY_STRUCTURE; 
   assert.equal(g.calls.created.length, 1);
 });
 
-// ---- identity tokens from the hidden RAW masters (generation time only)
-function rawMaster(w, name, rows, opts = {}) {
-  // real layout: row 2 holds Bank Name .. ESI No., row 4 holds EMP CODE / Name / Email, data from row 5
-  const s = w.put(name, ['x']);
-  const width = 16;
-  const blankRow = () => new Array(width).fill('');
-  const r1 = blankRow(), r2 = blankRow(), r3 = blankRow(), r4 = blankRow();
-  r1[0] = 'CEOITBOX MASTERS SALARY SHEET';
-  ['Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN', 'ESI No.'].forEach((h, i) => { r2[3 + i] = h; });
-  r4[0] = 'EMP\nCODE'; r4[1] = 'Name'; r4[2] = 'Email ID'; r4[13] = 'CTC P.A.';
-  r4[14] = 'Mobile number'; r4[15] = 'Aadhar Number';
-  s.data = [r1, r2, r3, r4].concat(rows.map((o) => {
-    const r = blankRow();
-    r[0] = o.id; r[1] = 'NAME-NOT-READ'; r[2] = 'mail-not-read@x'; r[7] = o.bank; r[8] = o.ifsc; r[9] = o.acct; r[10] = o.uan; r[11] = o.pan; r[12] = o.esi;
-    r[14] = 'MOBILE-NOT-READ'; r[15] = 'AADHAAR-NOT-READ';
-    return r;
-  }));
+// ---- identity tokens from the hidden EMPLOYEE_STATUTORY_IDS tab (generation time only)
+const IDS_HDR = ['EMP_ID', 'UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'IFSC'];
+function idsTab(w, rows) {
+  const s = w.put('EMPLOYEE_STATUTORY_IDS', IDS_HDR, rows.map((o) => ({ EMP_ID: o.id, UAN: o.uan, ESI_NO: o.esi, PAN: o.pan, BANK_NAME: o.bank, BANK_ACCOUNT: o.acct, IFSC: o.ifsc })));
   const reads = [];
   const orig = s.getRange;
   s.getRange = (r, c, nr, nc) => { reads.push({ r, c, nr, nc }); return orig(r, c, nr, nc); };
@@ -417,40 +404,31 @@ function rawMaster(w, name, rows, opts = {}) {
   return s;
 }
 
-test('payslipIdentityColumns: header split over rows 2 and 4 is combined; unknown layout is tolerated', () => {
+test('payslipIdentityColumns: flat EMPLOYEE_STATUTORY_IDS header is mapped by exact name; unknown layout is tolerated', () => {
   const c = load(null);
-  const sec = ['', '', '', 'Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN NO', 'ESI No.', 'TOTAL GROSS'];
-  const pri = ['EMP\nCODE', 'Name', 'Email ID', '', '', '', '', '', '', '', '', '', '', 'CTC PA'];
-  assert.deepEqual(plain(c.payslipIdentityColumns(sec, pri)), { emp: 0, UAN: 10, PAN: 11, ESI_NO: 12, BANK_NAME: 7, IFSC: 8, BANK_ACCOUNT: 9 });
-  assert.deepEqual(plain(c.payslipIdentityColumns([], [])), { emp: -1, UAN: -1, PAN: -1, ESI_NO: -1, BANK_NAME: -1, IFSC: -1, BANK_ACCOUNT: -1 });
+  assert.deepEqual(plain(c.payslipIdentityColumns(IDS_HDR)), { emp: 0, UAN: 1, ESI_NO: 2, PAN: 3, BANK_NAME: 4, BANK_ACCOUNT: 5, IFSC: 6 });
+  assert.deepEqual(plain(c.payslipIdentityColumns([])), { emp: -1, UAN: -1, PAN: -1, ESI_NO: -1, BANK_NAME: -1, IFSC: -1, BANK_ACCOUNT: -1 });
   assert.equal(c.payslipIdentityValue(123456789012), '123456789012');
   assert.equal(c.payslipIdentityValue(' ABCDE1234F '), 'ABCDE1234F');
   assert.equal(c.payslipIdentityValue(''), '');
   assert.equal(c.payslipIdentityValue(null), '');
 });
 
-test('payslipReadIdentity_: matches EMP CODE, reads only the needed columns, missing tab/employee -> blank', () => {
+test('payslipReadIdentity_: matches EMP_ID, reads one column at a time, missing tab/employee -> blank', () => {
   const w = world();
-  const raw = rawMaster(w, 'RAW_STAFF_MASTER', [
-    { id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: 111122223333, uan: 100200300400, pan: 'ABCDE1234F', esi: '5555' },
-    { id: 'VFL9', bank: 'Other', ifsc: 'X', acct: 1, uan: 2, pan: 'Y', esi: '3' }]);
+  const raw = idsTab(w, [
+    { id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: '111122223333', uan: '100200300400', pan: 'ABCDE1234F', esi: '5555' },
+    { id: 'VFL9', bank: 'Other', ifsc: 'X', acct: '1', uan: '2', pan: 'Y', esi: '3' }]);
   const c = load(w, fakeGoogle());
   const r = plain(c.payslipReadIdentity_('STAFF', ['vfl1', 'NOPE']));
   assert.equal(r.matched, 1);
   assert.deepEqual(r.byEmp, { VFL1: { UAN: '100200300400', PAN: 'ABCDE1234F', ESI_NO: '5555', BANK_NAME: 'Test Bank', IFSC: 'TEST0001', BANK_ACCOUNT: '111122223333' } });
-  // only header rows 2 and 4 plus the EMP CODE / UAN / PAN / ESI / bank columns (D..M => 4..13 minus non-identity, A) are touched
-  raw.reads.forEach((x) => {
-    if (x.r === 2 || x.r === 4) return;
-    const lastCol = x.c + x.nc - 1;
-    assert.equal(x.nc, 1, 'one column at a time');
-    assert.ok([1, 8, 9, 10, 11, 12, 13].includes(x.c) && lastCol === x.c, 'column ' + x.c + ' is an identity column');
-  });
-  assert.ok(!JSON.stringify(r).includes('NOT-READ'));
-  assert.deepEqual(plain(c.payslipReadIdentity_('PERMANENT_WORKER', ['VFL2'])), { byEmp: {}, matched: 0, note: 'identity tab RAW_WORKER_MASTER not found' });
+  raw.reads.forEach((x) => { if (x.r !== 1) assert.equal(x.nc, 1, 'one column at a time'); });
+  assert.deepEqual(plain(load(makeWorld(), fakeGoogle()).payslipReadIdentity_('PERMANENT_WORKER', ['VFL2'])), { byEmp: {}, matched: 0, note: 'identity tab EMPLOYEE_STATUTORY_IDS not found' });
   assert.deepEqual(plain(c.payslipReadIdentity_('STAFF', ['ZZZ'])).byEmp, {});
 });
 
-test('identity tokens: printed from the RAW master; missing employee -> blank; leave-available tokens stay blank; never stored', () => {
+test('identity tokens: printed from EMPLOYEE_STATUTORY_IDS; missing employee -> blank; leave-available tokens stay blank; never stored', () => {
   const c = load(null);
   const ident = { UAN: '100200300400', PAN: 'ABCDE1234F', ESI_NO: '5555', BANK_NAME: 'Test Bank', IFSC: 'TEST0001', BANK_ACCOUNT: '111122223333' };
   const r = plain(c.buildReplacements('STAFF', staffRow, emp1, salStaff, ident));
@@ -464,13 +442,13 @@ test('identity tokens: printed from the RAW master; missing employee -> blank; l
   assert.equal(wk.PRODUCTION_ALLOWANCE_OFFSET, '0');
   // generatePayslips: identity read per batch, only counts are reported, nothing written to any tab / audit
   const w = world();
-  rawMaster(w, 'RAW_STAFF_MASTER', [{ id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: 111122223333, uan: 100200300400, pan: 'ABCDE1234F', esi: '5555' }]);
+  idsTab(w, [{ id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: '111122223333', uan: '100200300400', pan: 'ABCDE1234F', esi: '5555' }]);
   const g = fakeGoogle();
   const cc = load(w, g);
   const res = plain(cc.generatePayslips(P, 'STAFF'));
   assert.equal(res.generated, 1);
   assert.equal(res.identityMatched, '1 of 1');
-  Object.keys(w.sheets).filter((n) => n !== 'RAW_STAFF_MASTER').forEach((n) => {
+  Object.keys(w.sheets).filter((n) => n !== 'EMPLOYEE_STATUTORY_IDS').forEach((n) => {
     ['100200300400', 'ABCDE1234F', '111122223333', 'TEST0001', 'Test Bank'].forEach((secret) => assert.ok(!JSON.stringify(w.sheets[n].data).includes(secret), n + ' must not contain identity data'));
   });
 });

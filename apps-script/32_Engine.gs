@@ -7,8 +7,12 @@
  * Feed readers come from 20_Feeds.gs: sumOtHours, canteenByEmp, efficiencyByEmp, advanceByEmp, societyByEmp.
  * Helpers are prefixed engine_.
  */
-var ENGINE_POP_TABS = { STAFF: 'PAYROLL_STAFF', PERMANENT_WORKER: 'PAYROLL_WORKER', CONSULTANT: 'PAYROLL_CONSULTANT',
-  PUNE_STAFF: 'PAYROLL_PUNE_STAFF' };
+/** Output tab per category: built-in names for the four defaults, PAYROLL_<CODE> for a configured new category. */
+function engine_popTab_(pop) { return populationTab(pop); }
+/** RUN_ID prefix of supplementary (top-up) runs written to PAYROLL_DRAFT (42_Supplementary.gs). */
+var ENGINE_SUPP_PREFIX = 'SUPP-';
+/** RUN type of a PAYROLL_DRAFT row from its RUN_ID: SUPPLEMENTARY for top-up runs, else NORMAL. */
+function engine_runType_(runId) { return String(runId == null ? '' : runId).indexOf(ENGINE_SUPP_PREFIX) === 0 ? 'SUPPLEMENTARY' : 'NORMAL'; }
 var ENGINE_EXCEPTION_COLUMNS = ['RUN_ID', 'PERIOD', 'POPULATION', 'EMP_ID', 'SEVERITY', 'CODE', 'MESSAGE'];
 var ENGINE_RECON_COLUMNS = ['PERIOD', 'POPULATION', 'HEADCOUNT', 'TOTAL_GROSS', 'TOTAL_DEDUCTIONS', 'TOTAL_NET',
   'PREV_PERIOD_NET', 'DELTA_PCT', 'RUN_ID'];
@@ -56,10 +60,29 @@ function engine_pickSalary(rows, period) {
   return out;
 }
 
-/** Rate profile: single current row per EMP_ID (last row wins). */
-function engine_pickRate(rows) {
+/**
+ * Rate profile. Without a period: single current row per EMP_ID (last row wins). With a period the rows are effective-
+ * dated like SALARY_STRUCTURE: per EMP_ID the row with the latest EFFECTIVE_FROM <= period end (a blank EFFECTIVE_FROM is a
+ * legacy row that is always effective, oldest) and EFFECTIVE_TO blank or >= period start; ties: the later row. A salary
+ * revision is therefore a new row, older rows stay untouched.
+ */
+function engine_pickRate(rows, period) {
   var out = {};
-  (rows || []).forEach(function (r) { var id = engine_id_(r.EMP_ID); if (id) out[id] = r; });
+  if (!period) {
+    (rows || []).forEach(function (r) { var id = engine_id_(r.EMP_ID); if (id) out[id] = r; });
+    return out;
+  }
+  var start = periodStart(period), end = periodEnd(period), best = {};
+  (rows || []).forEach(function (r, i) {
+    var id = engine_id_(r.EMP_ID);
+    if (!id) return;
+    var from = engine_dateLo_(r.EFFECTIVE_FROM) || '0000-00-00', to = engine_dateHi_(r.EFFECTIVE_TO);
+    if (from > end) return;
+    if (to && to < start) return;
+    var cur = best[id];
+    if (!cur || from > cur.from || (from === cur.from && i >= cur.i)) best[id] = { from: from, i: i, row: r };
+  });
+  Object.keys(best).forEach(function (k) { out[k] = best[k].row; });
   return out;
 }
 
@@ -83,13 +106,26 @@ function engine_ptExemptSet(rows, period) {
  * ambiguous / unparseable DOJ keeps the employee in with DOJ_WARN set (DOJ_AMBIGUOUS / DOJ_UNPARSEABLE warning).
  */
 function engine_rosterFromMaster(rows, period) {
-  var all = [], counts = {}, excluded = [], warnings = [];
+  var all = [], counts = {}, excluded = [], warnings = [], unknownCategory = [], unkSeen = {};
   var end = period ? periodEnd(period) : '';
   var start = period ? periodStart(period) : '';
   (rows || []).forEach(function (r) {
     var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = engine_id_(r.PAYROLL_CATEGORY), id = engine_id_(r.EMP_ID);
-    if (!id || !isKnownPopulation(pop)) return;
+    if (!id) return;
+    if (!isKnownPopulation(pop)) {
+      // a category that is not in PAYROLL_CATEGORY_CONFIG at all (typo, new category not configured yet) -> employee HOLD
+      // UNKNOWN_CATEGORY; a configured but INACTIVE category is simply not paid
+      if (start && !isConfiguredCategory(pop) && !unkSeen[id]) {
+        var okRoster = active;
+        if (!active) okRoster = leaverRosterDecision(masterLastWorkingDay_(r), start).include;
+        if (okRoster && (!end || dojRosterDecision(r.DOJ_AS_SOURCE, end).include)) {
+          unkSeen[id] = true;
+          unknownCategory.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || '') });
+        }
+      }
+      return;
+    }
     var lv = { include: false, warn: '', lwd: '' };
     if (!active) { // leaver with a last working day on/after the period start (same rule as buildRoster)
       if (!start) return;
@@ -109,7 +145,7 @@ function engine_rosterFromMaster(rows, period) {
     all.push(entry);
   });
   return { all: all, duplicateIds: Object.keys(counts).filter(function (k) { return counts[k] > 1; }),
-    allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings };
+    allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings, unknownCategory: unknownCategory };
 }
 
 /**
@@ -120,6 +156,7 @@ function engine_rosterFromMaster(rows, period) {
  */
 function buildEngineContexts(args) {
   var pop = args.population, period = args.period;
+  var method = args.method || (typeof categoryMethod === 'function' ? categoryMethod(pop) : '') || pop;
   var num = function (map, id) { var v = map ? map[id] : undefined; return v === undefined || v === null || v === '' ? 0 : v; };
   return (args.employees || []).map(function (e) {
     var id = engine_id_(e.EMP_ID);
@@ -129,6 +166,7 @@ function buildEngineContexts(args) {
     var ctx = {
       period: period,
       population: pop,
+      method: method,
       emp: { EMP_ID: id, EMPLOYEE_NAME: e.EMPLOYEE_NAME !== undefined ? e.EMPLOYEE_NAME : (e.NAME || ''),
         DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '' },
       workingDays: args.workingDays,
@@ -143,9 +181,9 @@ function buildEngineContexts(args) {
       hasAttendance: !!attRow,
       attendanceApproved: !!attRow && engine_id_(attRow.APPROVAL_STATUS).toUpperCase() === 'APPROVED'
     };
-    if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') ctx.salary = (args.salaryByEmp || {})[id] || null;
+    if (method === 'STAFF' || method === 'PERMANENT_WORKER') ctx.salary = (args.salaryByEmp || {})[id] || null;
     else ctx.rate = (args.rateByEmp || {})[id] || null;
-    if (pop === 'PERMANENT_WORKER') {
+    if (method === 'PERMANENT_WORKER') {
       var pct = args.efficiencyByEmp ? args.efficiencyByEmp[id] : undefined;
       var override = null;
       // real efficiencyByEmp (20_Feeds.gs) returns {pct, physicalDaysOverride, source}; calcWorker wants the number
@@ -199,10 +237,11 @@ function engine_callOpt_(name, args, dflt) {
 /** Everything derived from the raw sheet bundle for one population. */
 function engine_derive_(src, pop) {
   var period = src.period;
+  var method = categoryMethod(pop) || pop;
   var roster = src.roster.all.filter(function (e) { return e.PAYROLL_CATEGORY === pop; });
   var seen = {}, employees = [];
   roster.forEach(function (e) { if (!seen[e.EMP_ID]) { seen[e.EMP_ID] = true; employees.push(e); } });
-  var workerIds = pop === 'PERMANENT_WORKER' ? employees.map(function (e) { return e.EMP_ID; }) : [];
+  var workerIds = method === 'PERMANENT_WORKER' ? employees.map(function (e) { return e.EMP_ID; }) : [];
   var attendanceRows = src.attendance.filter(function (r) {
     return engine_id_(r.PAYROLL_CATEGORY) === pop || seen[engine_id_(r.EMP_ID)];
   });
@@ -226,7 +265,7 @@ function engine_derive_(src, pop) {
     attendanceCount: attCount,
     otExByEmp: exBy(otExRows),
     canteenExByEmp: exBy(engine_callOpt_('canteenExceptions', [src.canteenRows || [], period], [])),
-    efficiencyExByEmp: pop === 'PERMANENT_WORKER'
+    efficiencyExByEmp: method === 'PERMANENT_WORKER'
       ? exBy(engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], period], [])) : {},
     leaveExByEmp: exBy(engine_callOpt_('leaveExceptions', [src.leaveRows || [], period], [])),
     roster: roster, employees: employees, attendanceRows: attendanceRows, attendanceByEmp: attendanceByEmp,
@@ -234,15 +273,16 @@ function engine_derive_(src, pop) {
     canteenByEmp: engine_call_('canteenByEmp', [src.canteenRows, period]),
     societyByEmp: engine_call_('societyByEmp', [src.societyRows, period]),
     advanceByEmp: engine_call_('advanceByEmp', [src.advanceRows, period]),
-    efficiencyByEmp: pop === 'PERMANENT_WORKER' ? engine_call_('efficiencyByEmp', [src.efficiencyRows, period, workerIds]) : {},
-    statutory: resolveStatutory(src.statutoryRows, period, pop),
+    efficiencyByEmp: method === 'PERMANENT_WORKER' ? engine_call_('efficiencyByEmp', [src.efficiencyRows, period, workerIds]) : {},
+    statutory: resolveStatutory(src.statutoryRows, period, method),
     salaryByEmp: engine_pickSalary(src.salaryRows, period),
-    rateByEmp: engine_pickRate(src.rateRows),
+    rateByEmp: engine_pickRate(src.rateRows, period),
     ptExemptSet: engine_ptExemptSet(src.ptExemptRows, period),
     feedIssues: engine_callOpt_('advanceIssues', [src.advanceRows || [], period], [])
       .concat(engine_callOpt_('societyIssues', [src.societyRows || [], period], [])),
     dailyMissingByEmp: null
   };
+  d.method = method;
   d.disputes = [];
   if (src.dailyRows && src.dailyRows.length) {
     var missing = {};
@@ -263,6 +303,12 @@ function engine_periodCatRow_(src, pop) {
   return null;
 }
 
+/** True when the category row comes from PAYROLL_CATEGORY_CONFIG and its APPROVED_BY is blank (owner sign-off missing). */
+function engine_categoryUnapproved_(pop) {
+  var e = categoryEntry(pop);
+  return !!e && e.fromSheet === true && !e.approvedBy;
+}
+
 /** Pending OT events for pop (+ unattributable ones) from the OT_PENDING_<period> control value written by syncOtFromForm. */
 function engine_pendingOt_(src, pop) {
   var o = {};
@@ -279,7 +325,8 @@ function engine_readinessInputs_(src, pop, calcResults) {
     return engine_id_(r.ELIGIBILITY).toUpperCase() === 'EXCEPTION' && normalizePeriod(r.PAYROLL_MONTH) === src.period;
   });
   return {
-    period: src.period, population: pop, roster: d.roster, allActiveIds: src.roster.allActiveIds,
+    period: src.period, population: pop, method: d.method, roster: d.roster,
+    categoryUnapproved: engine_categoryUnapproved_(pop), allActiveIds: src.roster.allActiveIds,
     masterDuplicateIds: src.roster.duplicateIds, periodCategoryRow: engine_periodCatRow_(src, pop),
     attendanceRows: src.attendance, dailyMissingByEmp: d.dailyMissingByEmp, salaryByEmp: d.salaryByEmp,
     rateByEmp: d.rateByEmp, feedStatus: src.feedStatus, otExceptionRows: otEx, otHoursByEmp: d.otByEmp,
@@ -305,7 +352,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
   (src.roster.duplicateIds || []).forEach(function (x) { dupSet[x] = true; });
   d.employees.forEach(function (e) { if (e.DOJ_WARN) dojWarn[e.EMP_ID] = e.DOJ_WARN; });
   var ctxs = buildEngineContexts({
-    period: src.period, population: pop, workingDays: pc ? pc.WORKING_DAYS : '', employees: d.employees,
+    period: src.period, population: pop, method: d.method, workingDays: pc ? pc.WORKING_DAYS : '', employees: d.employees,
     attendanceByEmp: d.attendanceByEmp, salaryByEmp: d.salaryByEmp, rateByEmp: d.rateByEmp, otByEmp: d.otByEmp,
     canteenByEmp: d.canteenByEmp, societyByEmp: d.societyByEmp, advanceByEmp: d.advanceByEmp,
     efficiencyByEmp: d.efficiencyByEmp, adjustmentRows: src.adjustmentRows, cfg: d.statutory.values,
@@ -316,6 +363,12 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
   d.employees.forEach(function (e) { if (e.LEAVER) leaverBy[e.EMP_ID] = e; });
   var disputeBy = {};
   (d.disputes || []).forEach(function (x) { disputeBy[engine_id_(x.EMP_ID)] = x; });
+  // pay-structure approval: once part of the population is approved, an unapproved row (new joiner / salary revision)
+  // holds only that employee; when NOTHING is approved the readiness check blocks the population instead
+  var salaryBased = rdy_salaryBased_(d.method);
+  var payGate = rdy_payGate_(d.employees.map(function (e) { return e.EMP_ID; }), salaryBased ? d.salaryByEmp : d.rateByEmp, salaryBased);
+  var payHold = {};
+  if (payGate.mode === 'HOLD') payGate.unapproved.forEach(function (x) { payHold[x] = true; });
   ctxs.forEach(function (ctx) {
     var res = calcEmployee(ctx);
     var id = ctx.emp.EMP_ID;
@@ -326,6 +379,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
       if ((d.attendanceCount[id] || 0) > 1) hold('DUPLICATE_ATTENDANCE_ROWS', 'More than one INPUT_ATTENDANCE row for the period');
       attendanceRowProblems(d.attendanceByEmp[id], pop, src.period).forEach(function (p) { hold(p.code, p.message); });
     }
+    if (payHold[id]) hold('SALARY_NOT_APPROVED', (salaryBased ? 'SALARY_STRUCTURE row not HR-approved (HR_APPROVED_BY blank)' : 'PAYROLL_RATE_PROFILE row not approved (VERSION_STATE)') + ' - HR OS > Payroll > Approve salary structure');
     if (dupSet[id]) hold('DUPLICATE_MASTER_ID', 'EMP_ID appears more than once among active master rows');
     if (d.dailyMissingByEmp && d.dailyMissingByEmp[id] && d.dailyMissingByEmp[id].length) {
       hold('DAILY_ATTENDANCE_MISSING', 'Daily attendance missing for ' + d.dailyMissingByEmp[id].length + ' date(s), from ' + d.dailyMissingByEmp[id][0]);
@@ -434,8 +488,8 @@ function engine_readSources_(period) {
     attendance: engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
     dailyRows: daily,
     holidayRows: engine_readOpt_(TABS.HOLIDAY_CALENDAR),
-    salaryRows: engine_readOpt_('SALARY_STRUCTURE'),
-    rateRows: engine_readOpt_('PAYROLL_RATE_PROFILE'),
+    salaryRows: engine_readOpt_(TABS.SALARY_STRUCTURE),
+    rateRows: engine_readOpt_(TABS.PAYROLL_RATE_PROFILE),
     feedStatus: engine_feedStatusMap(engine_readOpt_(TABS.FEED_STATUS), period),
     otRows: engine_readOpt_(TABS.INPUT_OT),
     canteenRows: engine_readOpt_(TABS.INPUT_CANTEEN),
@@ -512,7 +566,7 @@ function engine_replaceRows_(sheetName, wantedHeaders, newObjs, matchFn) {
  */
 function calculateDraft(period, population) {
   guardPeriod_(period);
-  var pops = population ? [population] : POPULATION_LIST.slice();
+  var pops = population ? [population] : populationList();
   pops.forEach(function (p) { if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"'); });
   // the leave source is a separate spreadsheet: re-read it now; a failure is recorded (LEAVE feed OPEN + population BLOCKER)
   var leaveSync = engine_callOpt_('leaveAutoSync_', [period], null);
@@ -562,12 +616,24 @@ function calculateDraft(period, population) {
   });
 
   var inActive = function (o) { return normalizePeriod(o.PERIOD) === period && active.indexOf(engine_id_(o.POPULATION)) >= 0; };
-  engine_replaceRows_(TABS.PAYROLL_DRAFT, OUTPUT_COLUMNS, allRows, inActive);
+  // supplementary (top-up) rows share PAYROLL_DRAFT: a normal run never removes them
+  var inActiveNormal = function (o) { return inActive(o) && engine_runType_(o.RUN_ID) === 'NORMAL'; };
+  engine_replaceRows_(TABS.PAYROLL_DRAFT, OUTPUT_COLUMNS, allRows, inActiveNormal);
   active.forEach(function (pop) {
-    engine_replaceRows_(ENGINE_POP_TABS[pop], OUTPUT_COLUMNS, byPop[pop].rows,
+    engine_replaceRows_(engine_popTab_(pop), OUTPUT_COLUMNS, byPop[pop].rows,
       function (o) { return normalizePeriod(o.PERIOD) === period; });
   });
-  engine_replaceRows_(TABS.PAYROLL_EXCEPTIONS, ENGINE_EXCEPTION_COLUMNS, allEx, inActive);
+  // employees whose category is not configured: HOLD exception rows (no draft row, no population involved)
+  var unknownCat = (src.roster.unknownCategory || []);
+  var unkEx = unknownCat.map(function (u) {
+    return { RUN_ID: runId, PERIOD: period, POPULATION: u.PAYROLL_CATEGORY || RDY_UNASSIGNED, EMP_ID: u.EMP_ID, SEVERITY: 'HOLD',
+      CODE: 'UNKNOWN_CATEGORY', MESSAGE: 'PAYROLL_CATEGORY "' + u.PAYROLL_CATEGORY + '" is not in PAYROLL_CATEGORY_CONFIG' };
+  });
+  if (!population) allEx = allEx.concat(unkEx);
+  var inActiveEx = function (o) {
+    return inActive(o) || (!population && normalizePeriod(o.PERIOD) === period && engine_id_(o.CODE) === 'UNKNOWN_CATEGORY');
+  };
+  engine_replaceRows_(TABS.PAYROLL_EXCEPTIONS, ENGINE_EXCEPTION_COLUMNS, allEx, inActiveEx);
   engine_replaceRows_(TABS.PAYROLL_RECON, ENGINE_RECON_COLUMNS, recon, inActive);
 
   active.forEach(function (pop) {
@@ -600,5 +666,6 @@ function calculateDraft(period, population) {
 
   var readiness = checkReadiness(period, population, { sources: src, calcResultsByPop: calcByPop });
   return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
+    unknownCategory: population ? [] : unknownCat.map(function (u) { return u.EMP_ID; }),
     readiness: { blocked: readiness.blocked, hold: readiness.hold, warn: readiness.warn, ready: readiness.ready } };
 }

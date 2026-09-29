@@ -173,12 +173,15 @@ function aggregateDaily(dailyRows, period, roster, holidays, weeklyOff) {
   });
 }
 
+/** True when the category's CALC_METHOD is PERMANENT_WORKER (no week-off component, worked <= working days ...). */
+function att_isWorker_(population) { return (categoryMethod(population) || population) === POP.PERMANENT_WORKER; }
+
 /** WORKED_DAYS. Workers exclude WEEK_OFF (matches Aug worker template); everyone else includes it. */
 function computeWorkedDays(record, population) {
   if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
   var n = function (k) { return attNum_(record[k]); };
   var sum = n('PRESENT_DAYS') + n('EL_AVAILED') + n('CL_AVAILED') + n('SL_AVAILED') + n('PH') + n('PAID_LEAVE_OTHER');
-  if (population !== POP.PERMANENT_WORKER) sum += n('WEEK_OFF');
+  if (!att_isWorker_(population)) sum += n('WEEK_OFF');
   return sum;
 }
 
@@ -349,7 +352,7 @@ function isRegisterRow_(row) {
 function periodPopulationsOpen_(period) {
   var st = getPeriodStatusMap(period);
   var open = [], locked = [];
-  POPULATION_LIST.forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
+  populationList().forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
   return { open: open, locked: locked, status: st };
 }
 

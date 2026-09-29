@@ -6,12 +6,18 @@ var ATT_GRID_TITLE_PREFIX = 'Attendance – ';
 var ATT_ACK_TEXT = 'All employees left blank were present (or on weekly off / holiday as per calendar)';
 var ATT_MAX_TRIGGERS = 5;
 
+/**
+ * One daily form per SITE. `populations` are the built-in defaults; the forms use attFormPopulations_(site), the ACTIVE
+ * categories of that site in PAYROLL_CATEGORY_CONFIG (so a new category shows up in the form of its site).
+ */
 var ATT_FORM_DEFS = {
   NASHIK: { site: 'NASHIK', title: 'Daily Attendance – Nashik', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
     idKey: 'ATT_FORM_NASHIK_ID', rawTab: 'ATT_FORM_NASHIK_RAW' },
   PUNE: { site: 'PUNE', title: 'Daily Attendance – Pune', populations: ['PUNE_STAFF'],
     idKey: 'ATT_FORM_PUNE_ID', rawTab: 'ATT_FORM_PUNE_RAW' }
 };
+
+function attFormPopulations_(def) { return populationsOfSite(def.site); }
 
 /** Pure. */
 function formRowLabel(empId, name) { return String(empId).trim() + ATT_ROW_SEPARATOR + String(name || '').trim(); }
@@ -47,7 +53,7 @@ function buildAttendanceForm_(def, roster) {
   form.setLimitOneResponsePerUser(false);
   form.setAllowResponseEdits(false);
   form.addDateItem().setTitle('Date').setRequired(true);
-  var groups = groupRosterByDepartment(roster, def.populations);
+  var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
   Object.keys(groups).sort().forEach(function (d) { addGridForDepartment_(form, d, groups[d]); });
   form.addCheckboxItem().setTitle(ATT_ACK_TEXT).setChoiceValues(['Confirmed']).setRequired(true);
   return form;
@@ -92,7 +98,7 @@ function refreshAttendanceFormRosters() {
     var id = String(getControl(def.idKey, '')).trim();
     if (!id) { res.skipped.push(k + ' (no form id)'); return; }
     var form = FormApp.openById(id);
-    var groups = groupRosterByDepartment(roster, def.populations);
+    var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
     var seen = {};
     form.getItems(FormApp.ItemType.GRID).forEach(function (item) {
       var title = item.getTitle();

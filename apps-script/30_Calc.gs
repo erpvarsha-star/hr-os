@@ -339,12 +339,23 @@ function hashRows(rows, columns, sha256Fn) {
 /* Shared calc plumbing                                                */
 /* ------------------------------------------------------------------ */
 
-function calc_newRow_(ctx, population) {
+/** Built-in category code -> calc method, used when the caller (a test, or the engine before config) gives no ctx.method. */
+var CALC_DEFAULT_METHODS = { STAFF: 'STAFF', PERMANENT_WORKER: 'PERMANENT_WORKER', CONSULTANT: 'CONSULTANT', PUNE_STAFF: 'PUNE_STAFF' };
+
+/** ctx.method (the CALC_METHOD of the category, set by the engine) or the built-in method of the population code. */
+function calc_methodOf_(ctx) {
+  if (ctx && ctx.method) return String(ctx.method).trim().toUpperCase();
+  var p = ctx && ctx.population ? String(ctx.population).trim() : '';
+  return Object.prototype.hasOwnProperty.call(CALC_DEFAULT_METHODS, p) ? CALC_DEFAULT_METHODS[p] : '';
+}
+
+/** The output ROW's POPULATION is the category code (ctx.population); falls back to the method name. */
+function calc_newRow_(ctx, method) {
   var row = {};
   OUTPUT_COLUMNS.forEach(function (c) { row[c] = null; });
   var emp = ctx.emp || {};
   row.PERIOD = ctx.period;
-  row.POPULATION = population;
+  row.POPULATION = ctx.population || method;
   row.EMP_ID = emp.EMP_ID === undefined ? null : emp.EMP_ID;
   row.EMPLOYEE_NAME = emp.EMPLOYEE_NAME === undefined ? null : emp.EMPLOYEE_NAME;
   row.DEPARTMENT = emp.DEPARTMENT === undefined ? null : emp.DEPARTMENT;
@@ -357,7 +368,8 @@ function calc_newRow_(ctx, population) {
  * Reads and validates attendance/feeds/adjustments. Writes attendance columns onto row.
  * Returns plain numbers (0 for blank), pp = null if blank.
  */
-function calc_readInputs_(ctx, population, row, ex) {
+function calc_readInputs_(ctx, method, row, ex) {
+  var population = ctx.population || method;
   var att = ctx.attendance || {};
   var adj = ctx.adjustments || {};
   var inp = {};
@@ -397,7 +409,7 @@ function calc_readInputs_(ctx, population, row, ex) {
   var types = CALC_EARNING_TYPES.concat(CALC_DEDUCTION_TYPES);
   types.forEach(function (t) { inp[t] = read('ADJUSTMENT ' + t, adj[t], true); });
 
-  inp.w = inp.present + inp.ph + inp.el + inp.cl + inp.sl + inp.plo + (population === 'PERMANENT_WORKER' ? 0 : inp.wo);
+  inp.w = inp.present + inp.ph + inp.el + inp.cl + inp.sl + inp.plo + (method === 'PERMANENT_WORKER' ? 0 : inp.wo);
 
   row.WORKING_DAYS = wd || null;
   row.PRESENT_DAYS = inp.present;
@@ -412,7 +424,7 @@ function calc_readInputs_(ctx, population, row, ex) {
   row.WORKED_PAYABLE_DAYS = inp.w;
 
   if (wd > 0 && inp.w > wd) {
-    if (population === 'PERMANENT_WORKER') {
+    if (method === 'PERMANENT_WORKER') {
       calc_ex_(ex, 'BLOCKER', 'WORKED_EXCEEDS_WORKING_DAYS', 'Worked days ' + inp.w + ' exceed working days ' + wd);
     } else {
       calc_ex_(ex, 'WARN', 'WORKED_EXCEEDS_WORKING_DAYS', 'Worked days ' + inp.w + ' exceed working days ' + wd);
@@ -421,8 +433,8 @@ function calc_readInputs_(ctx, population, row, ex) {
   return inp;
 }
 
-function calc_checkCfg_(population, cfg, ex) {
-  var missing = requiredStatutoryKeys(population).filter(function (k) {
+function calc_checkCfg_(method, cfg, ex) {
+  var missing = requiredStatutoryKeys(method).filter(function (k) {
     return !cfg || cfg[k] === undefined || cfg[k] === null;
   });
   if (missing.length) {
@@ -653,10 +665,11 @@ function calcWorker(ctx) {
 /* CONSULTANT / PUNE_STAFF                                             */
 /* ------------------------------------------------------------------ */
 
-function calc_simple_(ctx, population) {
+function calc_simple_(ctx, method) {
   var ex = [];
-  var row = calc_newRow_(ctx, population);
-  var inp = calc_readInputs_(ctx, population, row, ex);
+  var population = ctx.population || method;
+  var row = calc_newRow_(ctx, method);
+  var inp = calc_readInputs_(ctx, method, row, ex);
   var r = ctx.rate;
   var basis = null, rate = 0, mg = 0;
   if (!r) {
@@ -665,9 +678,9 @@ function calc_simple_(ctx, population) {
     basis = String(r.PAY_BASIS || '').trim().toUpperCase();
     rate = calc_num(r.RATE_AMOUNT_INR);
     mg = calc_num(r.MONTHLY_GROSS_INR);
-    if (population === 'PUNE_STAFF') {
+    if (method === 'PUNE_STAFF') {
       if (basis !== 'MONTHLY_GROSS_PRORATED') {
-        calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', 'PUNE_STAFF requires MONTHLY_GROSS_PRORATED, got "' + basis + '"');
+        calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', population + ' requires MONTHLY_GROSS_PRORATED, got "' + basis + '"');
       }
     } else if (basis !== 'DAILY_RATE' && basis !== 'MONTHLY_GROSS_PRORATED') {
       calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', 'Unknown PAY_BASIS "' + basis + '"');
@@ -678,7 +691,7 @@ function calc_simple_(ctx, population) {
     if (basis === 'MONTHLY_GROSS_PRORATED' && (isNaN(mg) || mg <= 0)) {
       calc_ex_(ex, 'BLOCKER', 'ZERO_RATE', 'MONTHLY_GROSS_INR is zero or invalid');
     }
-    if (basis === 'MONTHLY_GROSS_PRORATED' && population === 'CONSULTANT' && inp.ot > 0) {
+    if (basis === 'MONTHLY_GROSS_PRORATED' && method === 'CONSULTANT' && inp.ot > 0) {
       calc_ex_(ex, 'BLOCKER', 'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM', 'Monthly-gross consultant has OT hours');
     }
     if (calc_isProxyRate(r)) {
@@ -699,7 +712,7 @@ function calc_simple_(ctx, population) {
     row.RATE = rate;
   } else {
     gross = mg * w / wd;
-    ot = population === 'PUNE_STAFF' ? mg / wd / 8 * inp.ot : 0;
+    ot = method === 'PUNE_STAFF' ? mg / wd / 8 * inp.ot : 0;
     row.FIXED_GROSS = mg;
   }
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA + inp.TDS;
@@ -722,7 +735,7 @@ function calcConsultant(ctx) { return calc_simple_(ctx, 'CONSULTANT'); }
 function calcPune(ctx) { return calc_simple_(ctx, 'PUNE_STAFF'); }
 
 function calcEmployee(ctx) {
-  switch (ctx && ctx.population) {
+  switch (calc_methodOf_(ctx)) {
     case 'STAFF': return calcStaff(ctx);
     case 'PERMANENT_WORKER': return calcWorker(ctx);
     case 'CONSULTANT': return calcConsultant(ctx);

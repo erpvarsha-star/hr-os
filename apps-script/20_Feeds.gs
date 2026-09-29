@@ -439,7 +439,7 @@ function mapEfficiencyRows(headerRow, rows, period, roster, existingRefs, opts) 
     var r = rosterMap[it.emp];
     if (feeds_isBlanketKey_(it.emp)) reason = 'ALL_WORKERS_NOT_SUPPORTED';
     else if (!r) reason = 'UNKNOWN_OR_INACTIVE_EMP_ID';
-    else if (r.PAYROLL_CATEGORY && r.PAYROLL_CATEGORY !== POP.PERMANENT_WORKER) reason = 'NOT_A_PERMANENT_WORKER';
+    else if (r.PAYROLL_CATEGORY && (categoryMethod(r.PAYROLL_CATEGORY) || r.PAYROLL_CATEGORY) !== POP.PERMANENT_WORKER) reason = 'NOT_A_PERMANENT_WORKER';
     if (!reason) {
       if (isNaN(pct)) reason = 'EFFICIENCY_NOT_NUMERIC';
       else if (pct < 0 || pct > 100) reason = 'EFFICIENCY_OUT_OF_RANGE';
@@ -719,7 +719,7 @@ function feeds_readFormColumns_(sheet) {
 
 function feeds_lockedPops_(period) {
   var st = getPeriodStatusMap(period), locked = {};
-  POPULATION_LIST.forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) locked[p] = true; });
+  populationList().forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) locked[p] = true; });
   return locked;
 }
 
@@ -736,7 +736,7 @@ function feeds_existingValues_(tab, col) {
 /** Pure: pending OT events -> {population: count}. Events of unknown/inactive EMP_IDs go under UNKNOWN (only when > 0). */
 function feeds_pendingByPopulation(pendingEmpIds, popOf) {
   var out = {};
-  POPULATION_LIST.forEach(function (p) { out[p] = 0; });
+  populationList().forEach(function (p) { out[p] = 0; });
   var unknown = 0;
   (pendingEmpIds || []).forEach(function (id) {
     var p = popOf[feeds_empId_(id)];

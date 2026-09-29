@@ -42,7 +42,12 @@ var TABS = {
   PAYSLIP_EMAIL_LOG: 'PAYSLIP_EMAIL_LOG',
   AUDIT_LOG: 'AUDIT_LOG',
   ATT_FORM_NASHIK_RAW: 'ATT_FORM_NASHIK_RAW',
-  ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW'
+  ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW',
+  PAYROLL_CATEGORY_CONFIG: 'PAYROLL_CATEGORY_CONFIG',
+  PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
+  EMPLOYEE_STATUTORY_IDS: 'EMPLOYEE_STATUTORY_IDS',
+  SALARY_STRUCTURE: 'SALARY_STRUCTURE',
+  PAYROLL_RATE_PROFILE: 'PAYROLL_RATE_PROFILE'
 };
 
 var POP = {
@@ -51,6 +56,7 @@ var POP = {
   CONSULTANT: 'CONSULTANT',
   PUNE_STAFF: 'PUNE_STAFF'
 };
+/** Defaults used when the PAYROLL_CATEGORY_CONFIG tab is absent (or empty). With the tab, the configured ACTIVE rows rule. */
 var POPULATION_LIST = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
 var SITE_NASHIK = 'NASHIK';
 var SITE_PUNE = 'PUNE';
@@ -167,13 +173,130 @@ function assertPeriodAllowed(period, minPeriod) {
   return true;
 }
 
-function isKnownPopulation(pop) { return POPULATION_LIST.indexOf(pop) >= 0; }
+// ---------------------------------------------------------------- payroll categories (PAYROLL_CATEGORY_CONFIG)
+// Adding a category = adding a row to PAYROLL_CATEGORY_CONFIG. Everything that used to iterate the four hard-coded
+// populations (period rows, feeds, readiness, engine, approvals, lock, payslips, register, daily forms) iterates the
+// configured ACTIVE categories. CALC_METHOD picks which of the four calculation functions is used.
+
+var CATEGORY_CONFIG_HEADERS = ['CATEGORY_CODE', 'DISPLAY_NAME', 'CALC_METHOD', 'SITE', 'PAYSLIP', 'PAYSLIP_TEMPLATE_KEY',
+  'RATE_SOURCE', 'ACTIVE', 'APPROVED_BY', 'APPROVED_AT'];
+var CALC_METHODS = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
+var RATE_SOURCES = ['SALARY_STRUCTURE', 'RATE_PROFILE'];
+var PAYSLIP_TEMPLATE_KEYS = ['STAFF', 'WORKER'];
+/** Seed rows of PAYROLL_CATEGORY_CONFIG = the built-in defaults (APPROVED_BY blank: the owner signs them off once). */
+var CATEGORY_DEFAULTS = [
+  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'NASHIK', PAYSLIP: 'Y',
+    PAYSLIP_TEMPLATE_KEY: 'STAFF', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'NASHIK',
+    PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'WORKER', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'NASHIK', PAYSLIP: 'N',
+    PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'PUNE_STAFF', DISPLAY_NAME: 'Pune staff', CALC_METHOD: 'PUNE_STAFF', SITE: 'PUNE', PAYSLIP: 'N',
+    PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }
+];
+/** Population tab names of the four built-in categories; any other category writes to PAYROLL_<CODE>. */
+var CATEGORY_TABS_DEFAULT = { STAFF: 'PAYROLL_STAFF', PERMANENT_WORKER: 'PAYROLL_WORKER', CONSULTANT: 'PAYROLL_CONSULTANT',
+  PUNE_STAFF: 'PAYROLL_PUNE_STAFF' };
+
+var HROS_CATEGORY_CACHE_ = null;
+
+/** Forget the per-execution category cache (Apps Script runs each execution in a fresh scope; tests call this after editing the tab). */
+function categoryConfigReset_() { HROS_CATEGORY_CACHE_ = null; }
+
+function cat_yn_(v) { return String(v == null ? '' : v).trim().toUpperCase() === 'Y'; }
+
+/** Pure: one PAYROLL_CATEGORY_CONFIG row object -> normalized entry (or null when the code is blank). */
+function categoryEntryFromRow(r) {
+  var code = String(r.CATEGORY_CODE == null ? '' : r.CATEGORY_CODE).trim();
+  if (!code) return null;
+  return { code: code, displayName: String(r.DISPLAY_NAME == null ? '' : r.DISPLAY_NAME).trim() || code,
+    method: String(r.CALC_METHOD == null ? '' : r.CALC_METHOD).trim().toUpperCase(),
+    site: String(r.SITE == null ? '' : r.SITE).trim().toUpperCase(),
+    payslip: cat_yn_(r.PAYSLIP), templateKey: String(r.PAYSLIP_TEMPLATE_KEY == null ? '' : r.PAYSLIP_TEMPLATE_KEY).trim().toUpperCase(),
+    rateSource: String(r.RATE_SOURCE == null ? '' : r.RATE_SOURCE).trim().toUpperCase() || 'SALARY_STRUCTURE',
+    active: cat_yn_(r.ACTIVE), approvedBy: String(r.APPROVED_BY == null ? '' : r.APPROVED_BY).trim(), fromSheet: true };
+}
+
+/** Pure: problems in a category entry (used by the setup / approval and by tests). */
+function categoryEntryProblems(e) {
+  var out = [];
+  if (CALC_METHODS.indexOf(e.method) < 0) out.push(e.code + ': CALC_METHOD must be one of ' + CALC_METHODS.join(', '));
+  if (e.site !== SITE_NASHIK && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be NASHIK or PUNE');
+  if (RATE_SOURCES.indexOf(e.rateSource) < 0) out.push(e.code + ': RATE_SOURCE must be SALARY_STRUCTURE or RATE_PROFILE');
+  if (e.payslip && PAYSLIP_TEMPLATE_KEYS.indexOf(e.templateKey) < 0) out.push(e.code + ': PAYSLIP=Y needs PAYSLIP_TEMPLATE_KEY STAFF or WORKER');
+  return out;
+}
+
+function categoryDefaults_() {
+  return CATEGORY_DEFAULTS.map(function (r) { var e = categoryEntryFromRow(r); e.fromSheet = false; return e; });
+}
+
+/**
+ * All configured categories (active or not). Tab absent / empty / unreadable -> the built-in defaults (approved = true).
+ * A first row with a blank CATEGORY_CODE is skipped; a duplicate code keeps the first row.
+ */
+function categoryConfigAll_() {
+  if (HROS_CATEGORY_CACHE_) return HROS_CATEGORY_CACHE_;
+  var list = null;
+  try {
+    var sheet = getSheet(TABS.PAYROLL_CATEGORY_CONFIG);
+    if (sheet) {
+      var rows = readObjects(sheet), seen = {};
+      list = [];
+      rows.forEach(function (r) {
+        var e = categoryEntryFromRow(r);
+        if (!e || seen[e.code]) return;
+        seen[e.code] = true;
+        list.push(e);
+      });
+      if (!list.length) list = null;
+    }
+  } catch (err) { list = null; }
+  HROS_CATEGORY_CACHE_ = list || categoryDefaults_();
+  return HROS_CATEGORY_CACHE_;
+}
+
+/** ACTIVE configured categories in configured order. */
+function categoryList() { return categoryConfigAll_().filter(function (e) { return e.active; }); }
+
+/** Codes of the ACTIVE categories (replaces the former hard-coded POPULATION_LIST). */
+function populationList() { return categoryList().map(function (e) { return e.code; }); }
+
+/** Config entry (active or not) of a category code, or null. */
+function categoryEntry(code) {
+  var all = categoryConfigAll_(), c = String(code == null ? '' : code).trim();
+  for (var i = 0; i < all.length; i++) if (all[i].code === c) return all[i];
+  return null;
+}
+
+/** True when the code is a configured category, active or not (an unconfigured one is UNKNOWN_CATEGORY). */
+function isConfiguredCategory(code) { return !!categoryEntry(code); }
+
+/** CALC_METHOD of a category ('' when the category is not configured). */
+function categoryMethod(code) {
+  var e = categoryEntry(code);
+  return e ? e.method : '';
+}
+
+function isKnownPopulation(pop) { var e = categoryEntry(pop); return !!e && e.active; }
 
 function siteForPopulation(pop) {
-  if (pop === POP.PUNE_STAFF) return SITE_PUNE;
-  if (isKnownPopulation(pop)) return SITE_NASHIK;
+  var e = categoryEntry(pop);
+  if (e && e.active && (e.site === SITE_NASHIK || e.site === SITE_PUNE)) return e.site;
   throw new Error('Unknown population "' + pop + '"');
 }
+
+/** Name of the population output tab (PAYROLL_STAFF ...; PAYROLL_<CODE> for a new category, max 100 chars). */
+function populationTab(code) {
+  var c = String(code == null ? '' : code).trim();
+  return CATEGORY_TABS_DEFAULT[c] || ('PAYROLL_' + c).slice(0, 100);
+}
+
+/** Active categories that get a payslip (PAYSLIP = Y). */
+function payslipPopulations() { return categoryList().filter(function (e) { return e.payslip; }).map(function (e) { return e.code; }); }
+
+/** Codes of the ACTIVE categories of a site. */
+function populationsOfSite(site) { return categoryList().filter(function (e) { return e.site === site; }).map(function (e) { return e.code; }); }
 
 function nowIso_() { return Utilities.formatDate(new Date(), HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss"); }
 
@@ -606,7 +729,7 @@ function hrosSetup() {
   return log;
 }
 
-/** Insert the 4 PAYROLL_PERIOD_CATEGORY rows and 8 FEED_STATUS rows for a period if absent. */
+/** Insert one PAYROLL_PERIOD_CATEGORY row per ACTIVE category and the FEED_STATUS rows for a period if absent. */
 function prepareMonth(period) {
   guardPeriod_(period);
   var ppc = ensureSheet(TABS.PAYROLL_PERIOD_CATEGORY);
@@ -614,7 +737,7 @@ function prepareMonth(period) {
   readObjects(ppc).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) === period) haveP[String(r.PAYROLL_CATEGORY).trim()] = true;
   });
-  var newP = POPULATION_LIST.filter(function (p) { return !haveP[p]; }).map(function (p) {
+  var newP = populationList().filter(function (p) { return !haveP[p]; }).map(function (p) {
     return { PAYROLL_MONTH: period, PAYROLL_CATEGORY: p, WORKING_DAYS: '', STATUS: PERIOD_STATUS.PENDING,
       NOTE: 'HR enters WORKING_DAYS for ' + period + '.' };
   });
@@ -829,12 +952,15 @@ function aggregateDaily(dailyRows, period, roster, holidays, weeklyOff) {
   });
 }
 
+/** True when the category's CALC_METHOD is PERMANENT_WORKER (no week-off component, worked <= working days ...). */
+function att_isWorker_(population) { return (categoryMethod(population) || population) === POP.PERMANENT_WORKER; }
+
 /** WORKED_DAYS. Workers exclude WEEK_OFF (matches Aug worker template); everyone else includes it. */
 function computeWorkedDays(record, population) {
   if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
   var n = function (k) { return attNum_(record[k]); };
   var sum = n('PRESENT_DAYS') + n('EL_AVAILED') + n('CL_AVAILED') + n('SL_AVAILED') + n('PH') + n('PAID_LEAVE_OTHER');
-  if (population !== POP.PERMANENT_WORKER) sum += n('WEEK_OFF');
+  if (!att_isWorker_(population)) sum += n('WEEK_OFF');
   return sum;
 }
 
@@ -1005,7 +1131,7 @@ function isRegisterRow_(row) {
 function periodPopulationsOpen_(period) {
   var st = getPeriodStatusMap(period);
   var open = [], locked = [];
-  POPULATION_LIST.forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
+  populationList().forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
   return { open: open, locked: locked, status: st };
 }
 
@@ -1266,12 +1392,18 @@ var ATT_GRID_TITLE_PREFIX = 'Attendance – ';
 var ATT_ACK_TEXT = 'All employees left blank were present (or on weekly off / holiday as per calendar)';
 var ATT_MAX_TRIGGERS = 5;
 
+/**
+ * One daily form per SITE. `populations` are the built-in defaults; the forms use attFormPopulations_(site), the ACTIVE
+ * categories of that site in PAYROLL_CATEGORY_CONFIG (so a new category shows up in the form of its site).
+ */
 var ATT_FORM_DEFS = {
   NASHIK: { site: 'NASHIK', title: 'Daily Attendance – Nashik', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
     idKey: 'ATT_FORM_NASHIK_ID', rawTab: 'ATT_FORM_NASHIK_RAW' },
   PUNE: { site: 'PUNE', title: 'Daily Attendance – Pune', populations: ['PUNE_STAFF'],
     idKey: 'ATT_FORM_PUNE_ID', rawTab: 'ATT_FORM_PUNE_RAW' }
 };
+
+function attFormPopulations_(def) { return populationsOfSite(def.site); }
 
 /** Pure. */
 function formRowLabel(empId, name) { return String(empId).trim() + ATT_ROW_SEPARATOR + String(name || '').trim(); }
@@ -1307,7 +1439,7 @@ function buildAttendanceForm_(def, roster) {
   form.setLimitOneResponsePerUser(false);
   form.setAllowResponseEdits(false);
   form.addDateItem().setTitle('Date').setRequired(true);
-  var groups = groupRosterByDepartment(roster, def.populations);
+  var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
   Object.keys(groups).sort().forEach(function (d) { addGridForDepartment_(form, d, groups[d]); });
   form.addCheckboxItem().setTitle(ATT_ACK_TEXT).setChoiceValues(['Confirmed']).setRequired(true);
   return form;
@@ -1352,7 +1484,7 @@ function refreshAttendanceFormRosters() {
     var id = String(getControl(def.idKey, '')).trim();
     if (!id) { res.skipped.push(k + ' (no form id)'); return; }
     var form = FormApp.openById(id);
-    var groups = groupRosterByDepartment(roster, def.populations);
+    var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
     var seen = {};
     form.getItems(FormApp.ItemType.GRID).forEach(function (item) {
       var title = item.getTitle();
@@ -1508,7 +1640,7 @@ function reg_leaveNum_(v) {
  *  the month.
  * @param {number} registerDays 0..days in month, step 0.5
  * @param {boolean|string} includesWO true / 'Y' when the entered days INCLUDE weekly offs
- * @param {string} population one of POPULATION_LIST
+ * @param {string} population an active category code (PAYROLL_CATEGORY_CONFIG)
  * @param {string} period 'YYYY-MM'
  * @param {string} site 'NASHIK' | 'PUNE'
  * @param {Array} holidays HOLIDAY_CALENDAR rows {DATE, SITE, PAID}
@@ -1545,7 +1677,7 @@ function deriveMonthlyAttendance(registerDays, includesWO, population, period, s
     out.exceptions.push({ severity: 'BLOCKER', code: 'LEAVE_DAYS_INVALID', message: 'Approved leave days are not non-negative numbers' });
     return out;
   }
-  var isWorker = population === POP.PERMANENT_WORKER;
+  var isWorker = att_isWorker_(population);
   var dates = enumerateDates(period);
   var phSet = {};
   dates.forEach(function (d) { if (isPaidHoliday_(holidays, d, site)) phSet[d] = true; });
@@ -1734,7 +1866,8 @@ function registerLoad(period) {
   guardPeriod_(p);
   var ctx = register_ctx_(p);
   var incBy = {};
-  POPULATION_LIST.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
+  var popList = populationList();
+  popList.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
   var employees = ctx.roster.map(function (e) {
     var row = ctx.existing[e.EMP_ID];
     var days = '';
@@ -1747,10 +1880,10 @@ function registerLoad(period) {
     return { empId: e.EMP_ID, name: e.NAME, department: e.DEPARTMENT, population: e.PAYROLL_CATEGORY, days: days, state: state };
   });
   employees.sort(function (a, b) {
-    var pa = POPULATION_LIST.indexOf(a.population), pb = POPULATION_LIST.indexOf(b.population);
+    var pa = popList.indexOf(a.population), pb = popList.indexOf(b.population);
     return pa - pb || (a.empId < b.empId ? -1 : (a.empId > b.empId ? 1 : 0));
   });
-  var pops = POPULATION_LIST.filter(function (pop) { return employees.some(function (e) { return e.population === pop; }); })
+  var pops = popList.filter(function (pop) { return employees.some(function (e) { return e.population === pop; }); })
     .map(function (pop) { return { population: pop, includesWO: (incBy[pop].Y > 0 && incBy[pop].N === 0) ? 'Y' : 'N' }; });
   return { period: p, daysInMonth: daysInMonth(p), defaultPeriod: def, populations: pops, employees: employees };
 }
@@ -2378,7 +2511,7 @@ function mapEfficiencyRows(headerRow, rows, period, roster, existingRefs, opts) 
     var r = rosterMap[it.emp];
     if (feeds_isBlanketKey_(it.emp)) reason = 'ALL_WORKERS_NOT_SUPPORTED';
     else if (!r) reason = 'UNKNOWN_OR_INACTIVE_EMP_ID';
-    else if (r.PAYROLL_CATEGORY && r.PAYROLL_CATEGORY !== POP.PERMANENT_WORKER) reason = 'NOT_A_PERMANENT_WORKER';
+    else if (r.PAYROLL_CATEGORY && (categoryMethod(r.PAYROLL_CATEGORY) || r.PAYROLL_CATEGORY) !== POP.PERMANENT_WORKER) reason = 'NOT_A_PERMANENT_WORKER';
     if (!reason) {
       if (isNaN(pct)) reason = 'EFFICIENCY_NOT_NUMERIC';
       else if (pct < 0 || pct > 100) reason = 'EFFICIENCY_OUT_OF_RANGE';
@@ -2658,7 +2791,7 @@ function feeds_readFormColumns_(sheet) {
 
 function feeds_lockedPops_(period) {
   var st = getPeriodStatusMap(period), locked = {};
-  POPULATION_LIST.forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) locked[p] = true; });
+  populationList().forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) locked[p] = true; });
   return locked;
 }
 
@@ -2675,7 +2808,7 @@ function feeds_existingValues_(tab, col) {
 /** Pure: pending OT events -> {population: count}. Events of unknown/inactive EMP_IDs go under UNKNOWN (only when > 0). */
 function feeds_pendingByPopulation(pendingEmpIds, popOf) {
   var out = {};
-  POPULATION_LIST.forEach(function (p) { out[p] = 0; });
+  populationList().forEach(function (p) { out[p] = 0; });
   var unknown = 0;
   (pendingEmpIds || []).forEach(function (id) {
     var p = popOf[feeds_empId_(id)];
@@ -3741,12 +3874,23 @@ function hashRows(rows, columns, sha256Fn) {
 /* Shared calc plumbing                                                */
 /* ------------------------------------------------------------------ */
 
-function calc_newRow_(ctx, population) {
+/** Built-in category code -> calc method, used when the caller (a test, or the engine before config) gives no ctx.method. */
+var CALC_DEFAULT_METHODS = { STAFF: 'STAFF', PERMANENT_WORKER: 'PERMANENT_WORKER', CONSULTANT: 'CONSULTANT', PUNE_STAFF: 'PUNE_STAFF' };
+
+/** ctx.method (the CALC_METHOD of the category, set by the engine) or the built-in method of the population code. */
+function calc_methodOf_(ctx) {
+  if (ctx && ctx.method) return String(ctx.method).trim().toUpperCase();
+  var p = ctx && ctx.population ? String(ctx.population).trim() : '';
+  return Object.prototype.hasOwnProperty.call(CALC_DEFAULT_METHODS, p) ? CALC_DEFAULT_METHODS[p] : '';
+}
+
+/** The output ROW's POPULATION is the category code (ctx.population); falls back to the method name. */
+function calc_newRow_(ctx, method) {
   var row = {};
   OUTPUT_COLUMNS.forEach(function (c) { row[c] = null; });
   var emp = ctx.emp || {};
   row.PERIOD = ctx.period;
-  row.POPULATION = population;
+  row.POPULATION = ctx.population || method;
   row.EMP_ID = emp.EMP_ID === undefined ? null : emp.EMP_ID;
   row.EMPLOYEE_NAME = emp.EMPLOYEE_NAME === undefined ? null : emp.EMPLOYEE_NAME;
   row.DEPARTMENT = emp.DEPARTMENT === undefined ? null : emp.DEPARTMENT;
@@ -3759,7 +3903,8 @@ function calc_newRow_(ctx, population) {
  * Reads and validates attendance/feeds/adjustments. Writes attendance columns onto row.
  * Returns plain numbers (0 for blank), pp = null if blank.
  */
-function calc_readInputs_(ctx, population, row, ex) {
+function calc_readInputs_(ctx, method, row, ex) {
+  var population = ctx.population || method;
   var att = ctx.attendance || {};
   var adj = ctx.adjustments || {};
   var inp = {};
@@ -3799,7 +3944,7 @@ function calc_readInputs_(ctx, population, row, ex) {
   var types = CALC_EARNING_TYPES.concat(CALC_DEDUCTION_TYPES);
   types.forEach(function (t) { inp[t] = read('ADJUSTMENT ' + t, adj[t], true); });
 
-  inp.w = inp.present + inp.ph + inp.el + inp.cl + inp.sl + inp.plo + (population === 'PERMANENT_WORKER' ? 0 : inp.wo);
+  inp.w = inp.present + inp.ph + inp.el + inp.cl + inp.sl + inp.plo + (method === 'PERMANENT_WORKER' ? 0 : inp.wo);
 
   row.WORKING_DAYS = wd || null;
   row.PRESENT_DAYS = inp.present;
@@ -3814,7 +3959,7 @@ function calc_readInputs_(ctx, population, row, ex) {
   row.WORKED_PAYABLE_DAYS = inp.w;
 
   if (wd > 0 && inp.w > wd) {
-    if (population === 'PERMANENT_WORKER') {
+    if (method === 'PERMANENT_WORKER') {
       calc_ex_(ex, 'BLOCKER', 'WORKED_EXCEEDS_WORKING_DAYS', 'Worked days ' + inp.w + ' exceed working days ' + wd);
     } else {
       calc_ex_(ex, 'WARN', 'WORKED_EXCEEDS_WORKING_DAYS', 'Worked days ' + inp.w + ' exceed working days ' + wd);
@@ -3823,8 +3968,8 @@ function calc_readInputs_(ctx, population, row, ex) {
   return inp;
 }
 
-function calc_checkCfg_(population, cfg, ex) {
-  var missing = requiredStatutoryKeys(population).filter(function (k) {
+function calc_checkCfg_(method, cfg, ex) {
+  var missing = requiredStatutoryKeys(method).filter(function (k) {
     return !cfg || cfg[k] === undefined || cfg[k] === null;
   });
   if (missing.length) {
@@ -4055,10 +4200,11 @@ function calcWorker(ctx) {
 /* CONSULTANT / PUNE_STAFF                                             */
 /* ------------------------------------------------------------------ */
 
-function calc_simple_(ctx, population) {
+function calc_simple_(ctx, method) {
   var ex = [];
-  var row = calc_newRow_(ctx, population);
-  var inp = calc_readInputs_(ctx, population, row, ex);
+  var population = ctx.population || method;
+  var row = calc_newRow_(ctx, method);
+  var inp = calc_readInputs_(ctx, method, row, ex);
   var r = ctx.rate;
   var basis = null, rate = 0, mg = 0;
   if (!r) {
@@ -4067,9 +4213,9 @@ function calc_simple_(ctx, population) {
     basis = String(r.PAY_BASIS || '').trim().toUpperCase();
     rate = calc_num(r.RATE_AMOUNT_INR);
     mg = calc_num(r.MONTHLY_GROSS_INR);
-    if (population === 'PUNE_STAFF') {
+    if (method === 'PUNE_STAFF') {
       if (basis !== 'MONTHLY_GROSS_PRORATED') {
-        calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', 'PUNE_STAFF requires MONTHLY_GROSS_PRORATED, got "' + basis + '"');
+        calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', population + ' requires MONTHLY_GROSS_PRORATED, got "' + basis + '"');
       }
     } else if (basis !== 'DAILY_RATE' && basis !== 'MONTHLY_GROSS_PRORATED') {
       calc_ex_(ex, 'BLOCKER', 'INVALID_PAY_BASIS', 'Unknown PAY_BASIS "' + basis + '"');
@@ -4080,7 +4226,7 @@ function calc_simple_(ctx, population) {
     if (basis === 'MONTHLY_GROSS_PRORATED' && (isNaN(mg) || mg <= 0)) {
       calc_ex_(ex, 'BLOCKER', 'ZERO_RATE', 'MONTHLY_GROSS_INR is zero or invalid');
     }
-    if (basis === 'MONTHLY_GROSS_PRORATED' && population === 'CONSULTANT' && inp.ot > 0) {
+    if (basis === 'MONTHLY_GROSS_PRORATED' && method === 'CONSULTANT' && inp.ot > 0) {
       calc_ex_(ex, 'BLOCKER', 'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM', 'Monthly-gross consultant has OT hours');
     }
     if (calc_isProxyRate(r)) {
@@ -4101,7 +4247,7 @@ function calc_simple_(ctx, population) {
     row.RATE = rate;
   } else {
     gross = mg * w / wd;
-    ot = population === 'PUNE_STAFF' ? mg / wd / 8 * inp.ot : 0;
+    ot = method === 'PUNE_STAFF' ? mg / wd / 8 * inp.ot : 0;
     row.FIXED_GROSS = mg;
   }
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA + inp.TDS;
@@ -4124,7 +4270,7 @@ function calcConsultant(ctx) { return calc_simple_(ctx, 'CONSULTANT'); }
 function calcPune(ctx) { return calc_simple_(ctx, 'PUNE_STAFF'); }
 
 function calcEmployee(ctx) {
-  switch (ctx && ctx.population) {
+  switch (calc_methodOf_(ctx)) {
     case 'STAFF': return calcStaff(ctx);
     case 'PERMANENT_WORKER': return calcWorker(ctx);
     case 'CONSULTANT': return calcConsultant(ctx);
@@ -4146,6 +4292,7 @@ function calcEmployee(ctx) {
  * the population continues. Helpers are prefixed rdy_.
  */
 var RDY_MAX_IDS = 20;
+var RDY_UNASSIGNED = '(UNASSIGNED)';
 var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'LEAVE'];
 var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED',
   'SL_AVAILED', 'PAID_LEAVE_OTHER', 'ABSENT_LWP_DAYS'];
@@ -4154,7 +4301,7 @@ var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE
   'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
   'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'LEAVE_EXCEPTIONS', 'ATTENDANCE_DISPUTES'];
 /** Engine HOLD codes that already have their own readiness check (CALC_BLOCKERS lists only the others). */
-var RDY_COVERED_CODES = ['NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
+var RDY_COVERED_CODES = ['SALARY_NOT_APPROVED', 'NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
   'ATTENDANCE_INVALID_VALUE', 'ATTENDANCE_OVER_MONTH', 'HR_OVERRIDE_WITHOUT_REASON', 'DAILY_ATTENDANCE_MISSING',
   'DUPLICATE_MASTER_ID', 'OT_EXCEPTION', 'CANTEEN_EXCEPTION', 'EFFICIENCY_EXCEPTION', 'LEAVE_EXCEPTION',
   'ATTENDANCE_DISPUTE', 'MISSING_SALARY_STRUCTURE', 'ZERO_SALARY_STRUCTURE', 'MISSING_RATE_PROFILE', 'ZERO_RATE',
@@ -4206,12 +4353,41 @@ function rdy_set_(list) {
   return s;
 }
 
-function rdy_worked_(row, population) {
+function rdy_worked_(row, method) {
   var n = function (k) { return rdy_num_(row[k]); };
   var w = n('PRESENT_DAYS') + n('EL_AVAILED') + n('CL_AVAILED') + n('SL_AVAILED') + n('PH') + n('PAID_LEAVE_OTHER');
-  if (population !== 'PERMANENT_WORKER') w += n('WEEK_OFF');
+  if (method !== 'PERMANENT_WORKER') w += n('WEEK_OFF');
   return w;
 }
+
+/** CALC_METHOD of the population under check (inputs.method, else the configured / built-in method of the category). */
+function rdy_method_(inputs) {
+  if (inputs.method) return String(inputs.method).trim().toUpperCase();
+  return typeof categoryMethod === 'function' ? (categoryMethod(inputs.population) || inputs.population) : inputs.population;
+}
+
+/**
+ * Pay-structure approval gate shared by the readiness check and the engine. ids = the population's employee ids;
+ * pay = {id: SALARY_STRUCTURE row or PAYROLL_RATE_PROFILE row}; salaryBased = the method reads SALARY_STRUCTURE
+ * (STAFF / PERMANENT_WORKER), otherwise PAYROLL_RATE_PROFILE. A row counts as approved when HR_APPROVED_BY is set
+ * (salary structure) or VERSION_STATE is an approved state (rate profile; blank = no gate).
+ * Returns {unapproved:[ids], approvedCount, mode}: mode BLOCK = NO row of the population is approved (population-level
+ * blocker, the initial sign-off has not happened), HOLD = some are approved so the unapproved ones (added later, e.g.
+ * new joiners or salary revisions) are per-employee holds SALARY_NOT_APPROVED, OK = nothing unapproved.
+ */
+function rdy_payGate_(ids, pay, salaryBased) {
+  var unapproved = [], approved = 0;
+  (ids || []).forEach(function (id) {
+    var r = (pay || {})[id];
+    if (!r) return;
+    var ok = salaryBased ? rdy_id_(r.HR_APPROVED_BY) !== '' : calc_isRateApproved(r);
+    if (ok) approved++; else unapproved.push(id);
+  });
+  var mode = !unapproved.length ? 'OK' : (approved === 0 ? 'BLOCK' : 'HOLD');
+  return { unapproved: unapproved, approvedCount: approved, mode: mode };
+}
+
+function rdy_salaryBased_(method) { return method === 'STAFF' || method === 'PERMANENT_WORKER'; }
 
 /** Attendance rows relevant to this population (its category, or unknown category and not active elsewhere). */
 function rdy_popAttendance_(inputs, rosterSet) {
@@ -4222,7 +4398,7 @@ function rdy_popAttendance_(inputs, rosterSet) {
     var cat = rdy_id_(r.PAYROLL_CATEGORY);
     if (cat === pop) return true;
     if (rosterSet[id]) return true;
-    if (cat === '' || POPULATION_LIST.indexOf(cat) < 0) return !(all && all[id]);
+    if (cat === '' || !isKnownPopulation(cat)) return !(all && all[id]);
     return false;
   });
 }
@@ -4255,7 +4431,7 @@ function rdy_check2_(inputs, ctx) {
 }
 
 function rdy_check3_(inputs, ctx) {
-  var pop = inputs.population, dim = daysInMonth(inputs.period);
+  var pop = inputs.population, method = rdy_method_(inputs), dim = daysInMonth(inputs.period);
   var wd = inputs.periodCategoryRow ? rdy_num_(inputs.periodCategoryRow.WORKING_DAYS) : NaN;
   var notApproved = [], badNum = [], overDim = [], overWd = [], noReason = [];
   ctx.attRows.forEach(function (r) {
@@ -4268,7 +4444,7 @@ function rdy_check3_(inputs, ctx) {
       if (isNaN(n) || n < 0) bad = true;
     });
     if (bad) { badNum.push(id); return; }
-    var w = rdy_worked_(r, pop);
+    var w = rdy_worked_(r, method);
     if (w > dim) overDim.push(id + '(' + w + ')');
     else if (isFinite(wd) && wd > 0 && w > wd) overWd.push(id + '(' + w + ')');
     if (rdy_id_(r.HR_OVERRIDE).toUpperCase() === 'Y' && rdy_id_(r.OVERRIDE_REASON) === '') noReason.push(id);
@@ -4280,7 +4456,7 @@ function rdy_check3_(inputs, ctx) {
   if (noReason.length) h.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
   if (overWd.length) {
     var msg = 'worked days exceed WORKING_DAYS: ' + rdy_list_(overWd);
-    if (pop === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
+    if (method === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
   }
   return rdy_res_([], w, ctx.attRows.length + ' rows approved and valid', h);
 }
@@ -4294,10 +4470,10 @@ function rdy_check4_(inputs, ctx) {
 }
 
 function rdy_check5_(inputs, ctx) {
-  var pop = inputs.population;
+  var method = rdy_method_(inputs);
   var missing = [], zero = [];
   ctx.rosterIds.forEach(function (id) {
-    if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') {
+    if (rdy_salaryBased_(method)) {
       var s = (inputs.salaryByEmp || {})[id];
       if (!s) { missing.push(id); return; }
       var fg = rdy_num_(s.FIXED_GROSS_PM_AS_SOURCE_INR), basic = rdy_num_(s.BASIC_PM_INR);
@@ -4318,7 +4494,7 @@ function rdy_check5_(inputs, ctx) {
 
 function rdy_check6_(inputs) {
   var feeds = RDY_REQUIRED_FEEDS.slice();
-  if (inputs.population === 'PERMANENT_WORKER') feeds.push('EFFICIENCY');
+  if (rdy_method_(inputs) === 'PERMANENT_WORKER') feeds.push('EFFICIENCY');
   var fs = inputs.feedStatus || {};
   var open = feeds.filter(function (f) {
     var v = fs[f];
@@ -4348,7 +4524,7 @@ function rdy_check7_(inputs, ctx) {
 
 function rdy_check8_(inputs) {
   var pop = inputs.population;
-  var required = requiredStatutoryKeys(pop);
+  var required = requiredStatutoryKeys(rdy_method_(inputs));
   if (!required.length) return { status: 'READY', detail: 'No statutory keys required for ' + pop };
   var st = inputs.statutoryResolved;
   if (!st) return { status: 'BLOCKED', detail: 'Statutory config not resolved for ' + inputs.period };
@@ -4373,7 +4549,7 @@ function rdy_check9_(inputs, ctx) {
 }
 
 function rdy_check10_(inputs, ctx) {
-  if (inputs.population !== 'CONSULTANT') return { status: 'READY', detail: 'Not applicable' };
+  if (rdy_method_(inputs) !== 'CONSULTANT') return { status: 'READY', detail: 'Not applicable' };
   var ot = inputs.otHoursByEmp || {};
   var bad = ctx.rosterIds.filter(function (id) {
     var r = (inputs.rateByEmp || {})[id];
@@ -4386,7 +4562,7 @@ function rdy_check10_(inputs, ctx) {
 }
 
 function rdy_check11_(inputs) {
-  if (inputs.population !== 'PERMANENT_WORKER') return { status: 'READY', detail: 'Not applicable' };
+  if (rdy_method_(inputs) !== 'PERMANENT_WORKER') return { status: 'READY', detail: 'Not applicable' };
   var rows = inputs.efficiencyConfigRows || [];
   var unconfirmed = rows.filter(function (r) { return rdy_id_(r.IMPLEMENTATION_STATE).toUpperCase() !== 'CONFIRMED'; });
   if (!rows.length) return { status: 'WARN', detail: 'EFFICIENCY_CONFIG has no rows' };
@@ -4410,28 +4586,29 @@ function rdy_check12_(inputs) {
 
 /**
  * Sheet rules R11 / R27 / PROCESS_FLOW 1.0: pay structures must be approved before they are used.
- * STAFF / PERMANENT_WORKER: the effective SALARY_STRUCTURE row needs HR_APPROVED_BY (BLOCKER when blank).
- * CONSULTANT / PUNE_STAFF: PAYROLL_RATE_PROFILE.VERSION_STATE must be an approved state (blank = no gate);
- * USER_APPROVED_JULY_PROXY counts as approved but raises a WARN (PROXY_RATE_JUL2026, R28).
+ * SALARY_STRUCTURE categories: the effective row needs HR_APPROVED_BY. PAYROLL_RATE_PROFILE categories: VERSION_STATE
+ * must be an approved state (blank = no gate); USER_APPROVED_JULY_PROXY counts as approved but raises a WARN
+ * (PROXY_RATE_JUL2026, R28). Population-level BLOCKER only when NO row of the population is approved (the initial HR
+ * sign-off is missing); rows added after that sign-off (new joiners, salary revisions) are per-employee HOLDs
+ * (SALARY_NOT_APPROVED) - the rest of the population is not blocked.
  */
 function rdy_check13_(inputs, ctx) {
-  var pop = inputs.population, b = [], w = [];
-  if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') {
-    var unsigned = ctx.rosterIds.filter(function (id) {
-      var s = (inputs.salaryByEmp || {})[id];
-      return s && rdy_id_(s.HR_APPROVED_BY) === '';
-    });
-    if (unsigned.length) {
-      b.push('SALARY_STRUCTURE not HR-approved (HR_APPROVED_BY blank; use HR OS > Payroll > Approve salary structure): ' + rdy_list_(unsigned));
-    }
-  } else {
+  var method = rdy_method_(inputs), b = [], w = [], h = [];
+  var salaryBased = rdy_salaryBased_(method);
+  var gate = rdy_payGate_(ctx.rosterIds, salaryBased ? inputs.salaryByEmp : inputs.rateByEmp, salaryBased);
+  if (gate.mode === 'BLOCK') {
+    b.push(salaryBased
+      ? 'SALARY_STRUCTURE not HR-approved for this population (HR_APPROVED_BY blank; use HR OS > Payroll > Approve salary structure): ' + rdy_list_(gate.unapproved)
+      : 'PAYROLL_RATE_PROFILE not approved for this population (VERSION_STATE): ' + rdy_list_(gate.unapproved));
+  } else if (gate.mode === 'HOLD') {
+    h.push('SALARY_NOT_APPROVED (' + (salaryBased ? 'HR_APPROVED_BY blank' : 'VERSION_STATE not approved') + '; HR OS > Payroll > Approve salary structure): ' + rdy_list_(gate.unapproved));
+  }
+  if (!salaryBased) {
     var rates = inputs.rateByEmp || {};
-    var bad = ctx.rosterIds.filter(function (id) { return rates[id] && !calc_isRateApproved(rates[id]); });
     var proxy = ctx.rosterIds.filter(function (id) { return rates[id] && calc_isRateApproved(rates[id]) && calc_isProxyRate(rates[id]); });
-    if (bad.length) b.push('PAYROLL_RATE_PROFILE not approved (VERSION_STATE): ' + rdy_list_(bad));
     if (proxy.length) w.push('PROXY_RATE_JUL2026: ' + proxy.length + ' employee(s) paid on the approved July 2026 proxy rates');
   }
-  return rdy_res_(b, w, 'Pay structure approved');
+  return rdy_res_(b, w, 'Pay structure approved', h);
 }
 
 /** Splits exception rows into employees of this population (known) and unattributable ones (unknown). */
@@ -4455,7 +4632,7 @@ function rdy_check14_(inputs, ctx) {
   var pop = inputs.population, all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
   var unknownAll = function (id) { return all ? !all[id] : false; };
   var canteen = rdy_exceptionList_(inputs.canteenExceptions, ctx, unknownAll);
-  var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return pop === 'PERMANENT_WORKER' && unknownAll(id); });
+  var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return rdy_method_(inputs) === 'PERMANENT_WORKER' && unknownAll(id); });
   var b = [], h = [];
   if (canteen.unknown.length) b.push('canteen EXCEPTION rows for unknown EMP_ID (' + canteen.unknown.length + '): ' + rdy_list_(canteen.unknown));
   if (eff.unknown.length) b.push('efficiency EXCEPTION rows for unknown EMP_ID (' + eff.unknown.length + '): ' + rdy_list_(eff.unknown));
@@ -4534,6 +4711,10 @@ function buildReadiness(inputs) {
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
   });
+  if (inputs.categoryUnapproved) {
+    out.push({ PERIOD: inputs.period, POPULATION: pop, CHECK: 'CATEGORY_CONFIG', STATUS: 'BLOCKED',
+      DETAIL: 'PAYROLL_CATEGORY_CONFIG row of ' + pop + ' is not approved (APPROVED_BY blank; owner: HR OS > Payroll > Approve category config)' });
+  }
   if (inputs.calcResults) {
     var cb = rdy_calcBlockers_(inputs);
     out.push({ PERIOD: inputs.period, POPULATION: pop, CHECK: 'CALC_BLOCKERS', STATUS: cb.status, DETAIL: cb.detail });
@@ -4562,7 +4743,7 @@ function rdy_summarize_(rows) {
 function checkReadiness(period, population, opts) {
   guardPeriod_(period);
   opts = opts || {};
-  var pops = population ? [population] : POPULATION_LIST.slice();
+  var pops = population ? [population] : populationList();
   pops.forEach(function (p) { if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"'); });
   var src = opts.sources || engine_readSources_(period);
   var checkedAt = nowIso_();
@@ -4578,8 +4759,15 @@ function checkReadiness(period, population, opts) {
     buildReadiness(inputs).forEach(function (r) { r.CHECKED_AT = checkedAt; rows.push(r); });
     done.push(pop);
   });
+  // employees whose category is not in PAYROLL_CATEGORY_CONFIG: HOLD (not population-blocking), listed under UNASSIGNED
+  var unk = (src.roster && src.roster.unknownCategory) || [];
+  if (!population && unk.length) {
+    rows.push({ PERIOD: period, POPULATION: RDY_UNASSIGNED, CHECK: 'UNKNOWN_CATEGORY', STATUS: 'HOLD', CHECKED_AT: checkedAt,
+      DETAIL: 'employee HOLD (excluded from every run): category not in PAYROLL_CATEGORY_CONFIG: ' +
+        rdy_list_(unk.map(function (u) { return u.EMP_ID + ' (' + (u.PAYROLL_CATEGORY || 'blank') + ')'; })) });
+  }
   engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
-    function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
+    function (o) { return normalizePeriod(o.PERIOD) === period && (done.indexOf(rdy_id_(o.POPULATION)) >= 0 || (!population && rdy_id_(o.POPULATION) === RDY_UNASSIGNED)); });
   var sum = rdy_summarize_(rows);
   var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, hold: sum.hold,
     warn: sum.warn, ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };
@@ -4597,8 +4785,12 @@ function checkReadiness(period, population, opts) {
  * Feed readers come from 20_Feeds.gs: sumOtHours, canteenByEmp, efficiencyByEmp, advanceByEmp, societyByEmp.
  * Helpers are prefixed engine_.
  */
-var ENGINE_POP_TABS = { STAFF: 'PAYROLL_STAFF', PERMANENT_WORKER: 'PAYROLL_WORKER', CONSULTANT: 'PAYROLL_CONSULTANT',
-  PUNE_STAFF: 'PAYROLL_PUNE_STAFF' };
+/** Output tab per category: built-in names for the four defaults, PAYROLL_<CODE> for a configured new category. */
+function engine_popTab_(pop) { return populationTab(pop); }
+/** RUN_ID prefix of supplementary (top-up) runs written to PAYROLL_DRAFT (42_Supplementary.gs). */
+var ENGINE_SUPP_PREFIX = 'SUPP-';
+/** RUN type of a PAYROLL_DRAFT row from its RUN_ID: SUPPLEMENTARY for top-up runs, else NORMAL. */
+function engine_runType_(runId) { return String(runId == null ? '' : runId).indexOf(ENGINE_SUPP_PREFIX) === 0 ? 'SUPPLEMENTARY' : 'NORMAL'; }
 var ENGINE_EXCEPTION_COLUMNS = ['RUN_ID', 'PERIOD', 'POPULATION', 'EMP_ID', 'SEVERITY', 'CODE', 'MESSAGE'];
 var ENGINE_RECON_COLUMNS = ['PERIOD', 'POPULATION', 'HEADCOUNT', 'TOTAL_GROSS', 'TOTAL_DEDUCTIONS', 'TOTAL_NET',
   'PREV_PERIOD_NET', 'DELTA_PCT', 'RUN_ID'];
@@ -4646,10 +4838,29 @@ function engine_pickSalary(rows, period) {
   return out;
 }
 
-/** Rate profile: single current row per EMP_ID (last row wins). */
-function engine_pickRate(rows) {
+/**
+ * Rate profile. Without a period: single current row per EMP_ID (last row wins). With a period the rows are effective-
+ * dated like SALARY_STRUCTURE: per EMP_ID the row with the latest EFFECTIVE_FROM <= period end (a blank EFFECTIVE_FROM is a
+ * legacy row that is always effective, oldest) and EFFECTIVE_TO blank or >= period start; ties: the later row. A salary
+ * revision is therefore a new row, older rows stay untouched.
+ */
+function engine_pickRate(rows, period) {
   var out = {};
-  (rows || []).forEach(function (r) { var id = engine_id_(r.EMP_ID); if (id) out[id] = r; });
+  if (!period) {
+    (rows || []).forEach(function (r) { var id = engine_id_(r.EMP_ID); if (id) out[id] = r; });
+    return out;
+  }
+  var start = periodStart(period), end = periodEnd(period), best = {};
+  (rows || []).forEach(function (r, i) {
+    var id = engine_id_(r.EMP_ID);
+    if (!id) return;
+    var from = engine_dateLo_(r.EFFECTIVE_FROM) || '0000-00-00', to = engine_dateHi_(r.EFFECTIVE_TO);
+    if (from > end) return;
+    if (to && to < start) return;
+    var cur = best[id];
+    if (!cur || from > cur.from || (from === cur.from && i >= cur.i)) best[id] = { from: from, i: i, row: r };
+  });
+  Object.keys(best).forEach(function (k) { out[k] = best[k].row; });
   return out;
 }
 
@@ -4673,13 +4884,26 @@ function engine_ptExemptSet(rows, period) {
  * ambiguous / unparseable DOJ keeps the employee in with DOJ_WARN set (DOJ_AMBIGUOUS / DOJ_UNPARSEABLE warning).
  */
 function engine_rosterFromMaster(rows, period) {
-  var all = [], counts = {}, excluded = [], warnings = [];
+  var all = [], counts = {}, excluded = [], warnings = [], unknownCategory = [], unkSeen = {};
   var end = period ? periodEnd(period) : '';
   var start = period ? periodStart(period) : '';
   (rows || []).forEach(function (r) {
     var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = engine_id_(r.PAYROLL_CATEGORY), id = engine_id_(r.EMP_ID);
-    if (!id || !isKnownPopulation(pop)) return;
+    if (!id) return;
+    if (!isKnownPopulation(pop)) {
+      // a category that is not in PAYROLL_CATEGORY_CONFIG at all (typo, new category not configured yet) -> employee HOLD
+      // UNKNOWN_CATEGORY; a configured but INACTIVE category is simply not paid
+      if (start && !isConfiguredCategory(pop) && !unkSeen[id]) {
+        var okRoster = active;
+        if (!active) okRoster = leaverRosterDecision(masterLastWorkingDay_(r), start).include;
+        if (okRoster && (!end || dojRosterDecision(r.DOJ_AS_SOURCE, end).include)) {
+          unkSeen[id] = true;
+          unknownCategory.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || '') });
+        }
+      }
+      return;
+    }
     var lv = { include: false, warn: '', lwd: '' };
     if (!active) { // leaver with a last working day on/after the period start (same rule as buildRoster)
       if (!start) return;
@@ -4699,7 +4923,7 @@ function engine_rosterFromMaster(rows, period) {
     all.push(entry);
   });
   return { all: all, duplicateIds: Object.keys(counts).filter(function (k) { return counts[k] > 1; }),
-    allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings };
+    allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings, unknownCategory: unknownCategory };
 }
 
 /**
@@ -4710,6 +4934,7 @@ function engine_rosterFromMaster(rows, period) {
  */
 function buildEngineContexts(args) {
   var pop = args.population, period = args.period;
+  var method = args.method || (typeof categoryMethod === 'function' ? categoryMethod(pop) : '') || pop;
   var num = function (map, id) { var v = map ? map[id] : undefined; return v === undefined || v === null || v === '' ? 0 : v; };
   return (args.employees || []).map(function (e) {
     var id = engine_id_(e.EMP_ID);
@@ -4719,6 +4944,7 @@ function buildEngineContexts(args) {
     var ctx = {
       period: period,
       population: pop,
+      method: method,
       emp: { EMP_ID: id, EMPLOYEE_NAME: e.EMPLOYEE_NAME !== undefined ? e.EMPLOYEE_NAME : (e.NAME || ''),
         DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '' },
       workingDays: args.workingDays,
@@ -4733,9 +4959,9 @@ function buildEngineContexts(args) {
       hasAttendance: !!attRow,
       attendanceApproved: !!attRow && engine_id_(attRow.APPROVAL_STATUS).toUpperCase() === 'APPROVED'
     };
-    if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') ctx.salary = (args.salaryByEmp || {})[id] || null;
+    if (method === 'STAFF' || method === 'PERMANENT_WORKER') ctx.salary = (args.salaryByEmp || {})[id] || null;
     else ctx.rate = (args.rateByEmp || {})[id] || null;
-    if (pop === 'PERMANENT_WORKER') {
+    if (method === 'PERMANENT_WORKER') {
       var pct = args.efficiencyByEmp ? args.efficiencyByEmp[id] : undefined;
       var override = null;
       // real efficiencyByEmp (20_Feeds.gs) returns {pct, physicalDaysOverride, source}; calcWorker wants the number
@@ -4789,10 +5015,11 @@ function engine_callOpt_(name, args, dflt) {
 /** Everything derived from the raw sheet bundle for one population. */
 function engine_derive_(src, pop) {
   var period = src.period;
+  var method = categoryMethod(pop) || pop;
   var roster = src.roster.all.filter(function (e) { return e.PAYROLL_CATEGORY === pop; });
   var seen = {}, employees = [];
   roster.forEach(function (e) { if (!seen[e.EMP_ID]) { seen[e.EMP_ID] = true; employees.push(e); } });
-  var workerIds = pop === 'PERMANENT_WORKER' ? employees.map(function (e) { return e.EMP_ID; }) : [];
+  var workerIds = method === 'PERMANENT_WORKER' ? employees.map(function (e) { return e.EMP_ID; }) : [];
   var attendanceRows = src.attendance.filter(function (r) {
     return engine_id_(r.PAYROLL_CATEGORY) === pop || seen[engine_id_(r.EMP_ID)];
   });
@@ -4816,7 +5043,7 @@ function engine_derive_(src, pop) {
     attendanceCount: attCount,
     otExByEmp: exBy(otExRows),
     canteenExByEmp: exBy(engine_callOpt_('canteenExceptions', [src.canteenRows || [], period], [])),
-    efficiencyExByEmp: pop === 'PERMANENT_WORKER'
+    efficiencyExByEmp: method === 'PERMANENT_WORKER'
       ? exBy(engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], period], [])) : {},
     leaveExByEmp: exBy(engine_callOpt_('leaveExceptions', [src.leaveRows || [], period], [])),
     roster: roster, employees: employees, attendanceRows: attendanceRows, attendanceByEmp: attendanceByEmp,
@@ -4824,15 +5051,16 @@ function engine_derive_(src, pop) {
     canteenByEmp: engine_call_('canteenByEmp', [src.canteenRows, period]),
     societyByEmp: engine_call_('societyByEmp', [src.societyRows, period]),
     advanceByEmp: engine_call_('advanceByEmp', [src.advanceRows, period]),
-    efficiencyByEmp: pop === 'PERMANENT_WORKER' ? engine_call_('efficiencyByEmp', [src.efficiencyRows, period, workerIds]) : {},
-    statutory: resolveStatutory(src.statutoryRows, period, pop),
+    efficiencyByEmp: method === 'PERMANENT_WORKER' ? engine_call_('efficiencyByEmp', [src.efficiencyRows, period, workerIds]) : {},
+    statutory: resolveStatutory(src.statutoryRows, period, method),
     salaryByEmp: engine_pickSalary(src.salaryRows, period),
-    rateByEmp: engine_pickRate(src.rateRows),
+    rateByEmp: engine_pickRate(src.rateRows, period),
     ptExemptSet: engine_ptExemptSet(src.ptExemptRows, period),
     feedIssues: engine_callOpt_('advanceIssues', [src.advanceRows || [], period], [])
       .concat(engine_callOpt_('societyIssues', [src.societyRows || [], period], [])),
     dailyMissingByEmp: null
   };
+  d.method = method;
   d.disputes = [];
   if (src.dailyRows && src.dailyRows.length) {
     var missing = {};
@@ -4853,6 +5081,12 @@ function engine_periodCatRow_(src, pop) {
   return null;
 }
 
+/** True when the category row comes from PAYROLL_CATEGORY_CONFIG and its APPROVED_BY is blank (owner sign-off missing). */
+function engine_categoryUnapproved_(pop) {
+  var e = categoryEntry(pop);
+  return !!e && e.fromSheet === true && !e.approvedBy;
+}
+
 /** Pending OT events for pop (+ unattributable ones) from the OT_PENDING_<period> control value written by syncOtFromForm. */
 function engine_pendingOt_(src, pop) {
   var o = {};
@@ -4869,7 +5103,8 @@ function engine_readinessInputs_(src, pop, calcResults) {
     return engine_id_(r.ELIGIBILITY).toUpperCase() === 'EXCEPTION' && normalizePeriod(r.PAYROLL_MONTH) === src.period;
   });
   return {
-    period: src.period, population: pop, roster: d.roster, allActiveIds: src.roster.allActiveIds,
+    period: src.period, population: pop, method: d.method, roster: d.roster,
+    categoryUnapproved: engine_categoryUnapproved_(pop), allActiveIds: src.roster.allActiveIds,
     masterDuplicateIds: src.roster.duplicateIds, periodCategoryRow: engine_periodCatRow_(src, pop),
     attendanceRows: src.attendance, dailyMissingByEmp: d.dailyMissingByEmp, salaryByEmp: d.salaryByEmp,
     rateByEmp: d.rateByEmp, feedStatus: src.feedStatus, otExceptionRows: otEx, otHoursByEmp: d.otByEmp,
@@ -4895,7 +5130,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
   (src.roster.duplicateIds || []).forEach(function (x) { dupSet[x] = true; });
   d.employees.forEach(function (e) { if (e.DOJ_WARN) dojWarn[e.EMP_ID] = e.DOJ_WARN; });
   var ctxs = buildEngineContexts({
-    period: src.period, population: pop, workingDays: pc ? pc.WORKING_DAYS : '', employees: d.employees,
+    period: src.period, population: pop, method: d.method, workingDays: pc ? pc.WORKING_DAYS : '', employees: d.employees,
     attendanceByEmp: d.attendanceByEmp, salaryByEmp: d.salaryByEmp, rateByEmp: d.rateByEmp, otByEmp: d.otByEmp,
     canteenByEmp: d.canteenByEmp, societyByEmp: d.societyByEmp, advanceByEmp: d.advanceByEmp,
     efficiencyByEmp: d.efficiencyByEmp, adjustmentRows: src.adjustmentRows, cfg: d.statutory.values,
@@ -4906,6 +5141,12 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
   d.employees.forEach(function (e) { if (e.LEAVER) leaverBy[e.EMP_ID] = e; });
   var disputeBy = {};
   (d.disputes || []).forEach(function (x) { disputeBy[engine_id_(x.EMP_ID)] = x; });
+  // pay-structure approval: once part of the population is approved, an unapproved row (new joiner / salary revision)
+  // holds only that employee; when NOTHING is approved the readiness check blocks the population instead
+  var salaryBased = rdy_salaryBased_(d.method);
+  var payGate = rdy_payGate_(d.employees.map(function (e) { return e.EMP_ID; }), salaryBased ? d.salaryByEmp : d.rateByEmp, salaryBased);
+  var payHold = {};
+  if (payGate.mode === 'HOLD') payGate.unapproved.forEach(function (x) { payHold[x] = true; });
   ctxs.forEach(function (ctx) {
     var res = calcEmployee(ctx);
     var id = ctx.emp.EMP_ID;
@@ -4916,6 +5157,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
       if ((d.attendanceCount[id] || 0) > 1) hold('DUPLICATE_ATTENDANCE_ROWS', 'More than one INPUT_ATTENDANCE row for the period');
       attendanceRowProblems(d.attendanceByEmp[id], pop, src.period).forEach(function (p) { hold(p.code, p.message); });
     }
+    if (payHold[id]) hold('SALARY_NOT_APPROVED', (salaryBased ? 'SALARY_STRUCTURE row not HR-approved (HR_APPROVED_BY blank)' : 'PAYROLL_RATE_PROFILE row not approved (VERSION_STATE)') + ' - HR OS > Payroll > Approve salary structure');
     if (dupSet[id]) hold('DUPLICATE_MASTER_ID', 'EMP_ID appears more than once among active master rows');
     if (d.dailyMissingByEmp && d.dailyMissingByEmp[id] && d.dailyMissingByEmp[id].length) {
       hold('DAILY_ATTENDANCE_MISSING', 'Daily attendance missing for ' + d.dailyMissingByEmp[id].length + ' date(s), from ' + d.dailyMissingByEmp[id][0]);
@@ -5024,8 +5266,8 @@ function engine_readSources_(period) {
     attendance: engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
     dailyRows: daily,
     holidayRows: engine_readOpt_(TABS.HOLIDAY_CALENDAR),
-    salaryRows: engine_readOpt_('SALARY_STRUCTURE'),
-    rateRows: engine_readOpt_('PAYROLL_RATE_PROFILE'),
+    salaryRows: engine_readOpt_(TABS.SALARY_STRUCTURE),
+    rateRows: engine_readOpt_(TABS.PAYROLL_RATE_PROFILE),
     feedStatus: engine_feedStatusMap(engine_readOpt_(TABS.FEED_STATUS), period),
     otRows: engine_readOpt_(TABS.INPUT_OT),
     canteenRows: engine_readOpt_(TABS.INPUT_CANTEEN),
@@ -5102,7 +5344,7 @@ function engine_replaceRows_(sheetName, wantedHeaders, newObjs, matchFn) {
  */
 function calculateDraft(period, population) {
   guardPeriod_(period);
-  var pops = population ? [population] : POPULATION_LIST.slice();
+  var pops = population ? [population] : populationList();
   pops.forEach(function (p) { if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"'); });
   // the leave source is a separate spreadsheet: re-read it now; a failure is recorded (LEAVE feed OPEN + population BLOCKER)
   var leaveSync = engine_callOpt_('leaveAutoSync_', [period], null);
@@ -5152,12 +5394,24 @@ function calculateDraft(period, population) {
   });
 
   var inActive = function (o) { return normalizePeriod(o.PERIOD) === period && active.indexOf(engine_id_(o.POPULATION)) >= 0; };
-  engine_replaceRows_(TABS.PAYROLL_DRAFT, OUTPUT_COLUMNS, allRows, inActive);
+  // supplementary (top-up) rows share PAYROLL_DRAFT: a normal run never removes them
+  var inActiveNormal = function (o) { return inActive(o) && engine_runType_(o.RUN_ID) === 'NORMAL'; };
+  engine_replaceRows_(TABS.PAYROLL_DRAFT, OUTPUT_COLUMNS, allRows, inActiveNormal);
   active.forEach(function (pop) {
-    engine_replaceRows_(ENGINE_POP_TABS[pop], OUTPUT_COLUMNS, byPop[pop].rows,
+    engine_replaceRows_(engine_popTab_(pop), OUTPUT_COLUMNS, byPop[pop].rows,
       function (o) { return normalizePeriod(o.PERIOD) === period; });
   });
-  engine_replaceRows_(TABS.PAYROLL_EXCEPTIONS, ENGINE_EXCEPTION_COLUMNS, allEx, inActive);
+  // employees whose category is not configured: HOLD exception rows (no draft row, no population involved)
+  var unknownCat = (src.roster.unknownCategory || []);
+  var unkEx = unknownCat.map(function (u) {
+    return { RUN_ID: runId, PERIOD: period, POPULATION: u.PAYROLL_CATEGORY || RDY_UNASSIGNED, EMP_ID: u.EMP_ID, SEVERITY: 'HOLD',
+      CODE: 'UNKNOWN_CATEGORY', MESSAGE: 'PAYROLL_CATEGORY "' + u.PAYROLL_CATEGORY + '" is not in PAYROLL_CATEGORY_CONFIG' };
+  });
+  if (!population) allEx = allEx.concat(unkEx);
+  var inActiveEx = function (o) {
+    return inActive(o) || (!population && normalizePeriod(o.PERIOD) === period && engine_id_(o.CODE) === 'UNKNOWN_CATEGORY');
+  };
+  engine_replaceRows_(TABS.PAYROLL_EXCEPTIONS, ENGINE_EXCEPTION_COLUMNS, allEx, inActiveEx);
   engine_replaceRows_(TABS.PAYROLL_RECON, ENGINE_RECON_COLUMNS, recon, inActive);
 
   active.forEach(function (pop) {
@@ -5190,6 +5444,7 @@ function calculateDraft(period, population) {
 
   var readiness = checkReadiness(period, population, { sources: src, calcResultsByPop: calcByPop });
   return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
+    unknownCategory: population ? [] : unknownCat.map(function (u) { return u.EMP_ID; }),
     readiness: { blocked: readiness.blocked, hold: readiness.hold, warn: readiness.warn, ready: readiness.ready } };
 }
 
@@ -5742,6 +5997,59 @@ function approveStatutoryConfig(period) {
   return res;
 }
 
+// ================================================================ category config sign-off (owner)
+
+/** Pure. Rows of PAYROLL_CATEGORY_CONFIG that still need the owner's stamp, and configuration problems that refuse it. */
+function categoryApprovalPlan(configRows) {
+  var plan = { rows: 0, alreadyApproved: 0, toStamp: [], problems: [] };
+  var seen = {};
+  (configRows || []).forEach(function (r) {
+    var e = categoryEntryFromRow(r);
+    if (!e) return;
+    plan.rows++;
+    if (seen[e.code]) { plan.problems.push(e.code + ': duplicate CATEGORY_CODE'); return; }
+    seen[e.code] = true;
+    categoryEntryProblems(e).forEach(function (p) { plan.problems.push(p); });
+    if (e.approvedBy) plan.alreadyApproved++; else plan.toStamp.push({ row: r._row, code: e.code });
+  });
+  return plan;
+}
+
+/** Read-only counts for the owner's confirmation dialog. */
+function planCategoryApproval() {
+  return categoryApprovalPlan(getSheet(TABS.PAYROLL_CATEGORY_CONFIG) ? readObjects(TABS.PAYROLL_CATEGORY_CONFIG) : []);
+}
+
+/**
+ * The owner signs off PAYROLL_CATEGORY_CONFIG: stamps APPROVED_BY / APPROVED_AT on the rows still blank. Runner must be
+ * OWNER_APPROVER_EMAIL. Refused while a row is misconfigured (unknown CALC_METHOD / SITE / RATE_SOURCE, PAYSLIP=Y without a
+ * template key). Until a category row is approved its population is BLOCKED in readiness (CATEGORY_CONFIG).
+ */
+function approveCategoryConfig() {
+  var plan = planCategoryApproval();
+  var user = approval_userEmail_();
+  var owner = getOwnerApproverEmail();
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(owner) || approval_email_(user) !== approval_email_(owner)) {
+    audit('CATEGORY_APPROVE', '', '', { result: 'REFUSED', reason: 'USER_NOT_OWNER', user: user });
+    return { ok: false, reason: 'USER_NOT_OWNER' };
+  }
+  if (plan.problems.length) {
+    audit('CATEGORY_APPROVE', '', '', { result: 'REFUSED', reason: 'CONFIG_PROBLEMS', problems: plan.problems });
+    return { ok: false, reason: 'CONFIG_PROBLEMS', problems: plan.problems };
+  }
+  approval_requireStampColumns_(TABS.PAYROLL_CATEGORY_CONFIG, ['APPROVED_BY', 'APPROVED_AT']);
+  var now = nowIso_();
+  updateRows(TABS.PAYROLL_CATEGORY_CONFIG, plan.toStamp.map(function (t) {
+    return { row: t.row, values: { APPROVED_BY: user, APPROVED_AT: now } };
+  }));
+  categoryConfigReset_();
+  var res = { ok: true, reason: 'OK', stamped: plan.toStamp.length, alreadyApproved: plan.alreadyApproved };
+  audit('CATEGORY_APPROVE', '', '', { result: 'APPROVED', user: user, stamped: res.stamped,
+    categories: plan.toStamp.map(function (t) { return t.code; }) });
+  return res;
+}
+
 // ===== 41_Lock.gs =====
 /**
  * 41_Lock.gs - period x population lock (DESIGN section 7). Copies the draft rows into append-only PAYROLL_LOCKED.
@@ -5844,10 +6152,11 @@ function lockPeriod(period, population) {
  * Template placeholder syntax (read from the two template Docs): {{TOKEN}}, e.g. {{PAYROLL_PERIOD}}.
  * Pure parts (token maps, formatting, replacements, templateTokenCheck) never touch Drive/Sheets.
  * PDFs are created in the owner-only payslip folder; sharing is never changed here.
- * Identity tokens (UAN, ESI_NO, PAN, bank) come from the hidden RAW masters at generation time only.
+ * Identity tokens (UAN, ESI_NO, PAN, bank) come from the hidden EMPLOYEE_STATUTORY_IDS tab at generation time only.
  */
 var PAYSLIP_BATCH_SIZE = 25;
 var PAYSLIP_JOB_PROP = 'PAYSLIP_JOB';
+/** Built-in default; the payslip populations are the ACTIVE categories with PAYSLIP = Y (payslipPopulations()). */
 var PAYSLIP_POPULATIONS = ['STAFF', 'PERMANENT_WORKER'];
 var PAYSLIP_CONTINUE_FN = 'continuePayslips_';
 
@@ -5908,7 +6217,7 @@ function pslBal_(type) {
 
 /**
  * Sensitive identity tokens (UAN, ESI number, PAN, bank name / account / IFSC) are printed on the payslip but are only
- * ever read at generation time from the hidden RAW_STAFF_MASTER / RAW_WORKER_MASTER tabs (see payslipReadIdentity_).
+ * ever read at generation time from the hidden EMPLOYEE_STATUTORY_IDS tab (see payslipReadIdentity_).
  * They are never written to any tab, audit entry or log. token -> field of the identity record.
  */
 var PAYSLIP_IDENTITY_TOKENS = { UAN: 'UAN', ESI_NO: 'ESI_NO', PAN: 'PAN', BANK_NAME: 'BANK_NAME', BANK_ACCOUNT: 'BANK_ACCOUNT',
@@ -5984,9 +6293,19 @@ var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
   PRODUCTION_ALLOWANCE_OFFSET: pslZero_, LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
 });
 
+/** Template key (STAFF | WORKER) of a category: PAYROLL_CATEGORY_CONFIG.PAYSLIP_TEMPLATE_KEY, else the built-in default. */
+function payslipTemplateKey(population) {
+  var e = categoryEntry(population);
+  if (e && e.payslip && e.templateKey) return e.templateKey;
+  if (population === POP.STAFF) return 'STAFF';
+  if (population === POP.PERMANENT_WORKER) return 'WORKER';
+  return '';
+}
+
 function payslipTokenMap(population) {
-  if (population === POP.STAFF) return PAYSLIP_TOKEN_MAP_STAFF;
-  if (population === POP.PERMANENT_WORKER) return PAYSLIP_TOKEN_MAP_WORKER;
+  var key = payslipTemplateKey(population);
+  if (key === 'STAFF') return PAYSLIP_TOKEN_MAP_STAFF;
+  if (key === 'WORKER') return PAYSLIP_TOKEN_MAP_WORKER;
   throw new Error('No payslip for population "' + population + '"');
 }
 
@@ -6038,26 +6357,24 @@ function payslipPending(lockedRows, registerRows, lockId, attempted) {
   });
 }
 
-// ---------------------------------------------------------------- identity (UAN / ESI no / PAN / bank) from the hidden RAW masters
+// ---------------------------------------------------------------- identity (UAN / ESI no / PAN / bank) from EMPLOYEE_STATUTORY_IDS
 
-var PAYSLIP_IDENTITY_TABS = { STAFF: 'RAW_STAFF_MASTER', PERMANENT_WORKER: 'RAW_WORKER_MASTER' };
-/** In the hidden masters the header is split: EMP CODE / Name on row 4, Bank Name / IFSC / Account No / UAN / PAN / ESI No on row 2; data from row 5. */
-var PAYSLIP_IDENTITY_HEADER_ROWS = { primary: 4, secondary: 2 };
-var PAYSLIP_IDENTITY_FIRST_DATA_ROW = 5;
-var PAYSLIP_IDENTITY_FIELDS = { UAN: ['uan'], PAN: ['pan', 'panno'], ESI_NO: ['esino'], BANK_NAME: ['bankname'], IFSC: ['ifsc'],
-  BANK_ACCOUNT: ['accountno', 'accountnumber', 'bankaccountno'] };
+/**
+ * The only place the sensitive identity values live: the hidden, protected EMPLOYEE_STATUTORY_IDS tab (EMP_ID, UAN,
+ * ESI_NO, PAN, BANK_NAME, BANK_ACCOUNT, IFSC), written by the HR-only employee dialog. Read at generation time only.
+ */
+var PAYSLIP_IDENTITY_TAB = 'EMPLOYEE_STATUTORY_IDS';
+var PAYSLIP_IDENTITY_FIELDS = ['UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'IFSC'];
 
-/** Pure: combined header (primary row wins, blank -> secondary row) -> {emp, UAN, PAN, ESI_NO, BANK_NAME, IFSC, BANK_ACCOUNT} 0-based indexes (-1 = absent). */
-function payslipIdentityColumns(secondaryRow, primaryRow) {
-  var n = Math.max((secondaryRow || []).length, (primaryRow || []).length), names = [];
-  for (var i = 0; i < n; i++) {
-    var p = feeds_norm_((primaryRow || [])[i]);
-    names.push(p || feeds_norm_((secondaryRow || [])[i]));
-  }
+/** Pure: header row -> {emp, UAN, ESI_NO, PAN, BANK_NAME, BANK_ACCOUNT, IFSC} 0-based indexes (-1 = absent). Exact header names. */
+function payslipIdentityColumns(headerRow) {
   var idx = {};
-  names.forEach(function (k, i) { if (k && !(k in idx)) idx[k] = i; });
-  var cols = { emp: feeds_col_(idx, ['empcode', 'empid', 'employeecode', 'employeeid']) };
-  Object.keys(PAYSLIP_IDENTITY_FIELDS).forEach(function (f) { cols[f] = feeds_col_(idx, PAYSLIP_IDENTITY_FIELDS[f]); });
+  (headerRow || []).forEach(function (h, i) {
+    var k = String(h == null ? '' : h).trim().toUpperCase();
+    if (k && !(k in idx)) idx[k] = i;
+  });
+  var cols = { emp: 'EMP_ID' in idx ? idx.EMP_ID : -1 };
+  PAYSLIP_IDENTITY_FIELDS.forEach(function (f) { cols[f] = f in idx ? idx[f] : -1; });
   return cols;
 }
 
@@ -6070,22 +6387,20 @@ function payslipIdentityValue(v) {
 }
 
 /**
- * Reads identity values for the given EMP_IDs from the population's hidden RAW master (generation time only; values
- * live in memory for the duration of the batch and are never written anywhere). Only the EMP CODE column and the
- * needed identity columns are read (never mobile, Aadhaar, address ...). Missing tab / column -> blank tokens.
+ * Reads identity values for the given EMP_IDs from EMPLOYEE_STATUTORY_IDS (generation time only; values live in memory
+ * for the duration of the batch and are never written anywhere). Only the EMP_ID column and the identity columns of the
+ * matched rows are read, one column at a time. Missing tab / column / employee -> blank tokens (not a failure).
+ * `population` is accepted for call compatibility (the tab is shared by every category).
  * Returns {byEmp:{EMP_ID:{UAN,PAN,ESI_NO,BANK_NAME,IFSC,BANK_ACCOUNT}}, matched:n, note:''}.
  */
 function payslipReadIdentity_(population, empIds) {
   var out = { byEmp: {}, matched: 0, note: '' };
-  var tab = PAYSLIP_IDENTITY_TABS[population];
-  var sheet = tab ? getSheet(tab) : null;
-  if (!sheet) { out.note = 'identity tab ' + (tab || '?') + ' not found'; return out; }
-  var lc = sheet.getLastColumn(), lr = sheet.getLastRow(), first = PAYSLIP_IDENTITY_FIRST_DATA_ROW;
+  var sheet = getSheet(PAYSLIP_IDENTITY_TAB);
+  if (!sheet) { out.note = 'identity tab ' + PAYSLIP_IDENTITY_TAB + ' not found'; return out; }
+  var lc = sheet.getLastColumn(), lr = sheet.getLastRow(), first = 2;
   if (lc < 1 || lr < first) { out.note = 'identity tab is empty'; return out; }
-  var sec = sheet.getRange(PAYSLIP_IDENTITY_HEADER_ROWS.secondary, 1, 1, lc).getValues()[0];
-  var pri = sheet.getRange(PAYSLIP_IDENTITY_HEADER_ROWS.primary, 1, 1, lc).getValues()[0];
-  var cols = payslipIdentityColumns(sec, pri);
-  if (cols.emp < 0) { out.note = 'EMP CODE column not found'; return out; }
+  var cols = payslipIdentityColumns(sheet.getRange(1, 1, 1, lc).getValues()[0]);
+  if (cols.emp < 0) { out.note = 'EMP_ID column not found'; return out; }
   var want = {};
   (empIds || []).forEach(function (id) { want[feeds_empId_(id)] = true; });
   var n = lr - first + 1;
@@ -6093,7 +6408,7 @@ function payslipReadIdentity_(population, empIds) {
   var hits = [];
   ids.forEach(function (r, i) { var id = feeds_empId_(r[0]); if (id && want[id] && !(id in out.byEmp)) { out.byEmp[id] = {}; hits.push({ i: i, id: id }); } });
   if (!hits.length) return out;
-  Object.keys(PAYSLIP_IDENTITY_FIELDS).forEach(function (f) {
+  PAYSLIP_IDENTITY_FIELDS.forEach(function (f) {
     if (cols[f] < 0) return;
     var vals = sheet.getRange(first, cols[f] + 1, n, 1).getValues();
     hits.forEach(function (h) { out.byEmp[h.id][f] = payslipIdentityValue(vals[h.i][0]); });
@@ -6115,8 +6430,8 @@ function payslipLockId_(period, population) {
 /** Shared validation. Returns {lockId, folderId, lockedRows}. Throws (refuses) with a clear message. */
 function payslipPreflight_(period, population, lockId) {
   guardPeriod_(period);
-  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) {
-    throw new Error('Payslips are only for STAFF and PERMANENT_WORKER (got "' + population + '")');
+  if (payslipPopulations().indexOf(population) < 0) {
+    throw new Error('Payslips are only for ' + payslipPopulations().join(' and ') + ' (categories with PAYSLIP=Y), got "' + population + '"');
   }
   var st = payslipLockId_(period, population);
   if (st.status !== PERIOD_STATUS.LOCKED) {
@@ -6127,7 +6442,8 @@ function payslipPreflight_(period, population, lockId) {
   var folderId = String(getControl('PAYSLIP_FOLDER_ID', '')).trim();
   if (!folderId) throw new Error('PAYSLIP_FOLDER_ID is blank in PAYROLL_CONTROL - payslip step blocked');
   var lockedRows = readObjects(TABS.PAYROLL_LOCKED).filter(function (r) {
-    return String(r.LOCK_ID).trim() === useLock && String(r.POPULATION).trim() === population;
+    return String(r.LOCK_ID).trim() === useLock && String(r.POPULATION).trim() === population &&
+      normalizePeriod(r.PERIOD) === period;
   });
   if (!lockedRows.length) throw new Error('No PAYROLL_LOCKED rows for LOCK_ID ' + useLock);
   return { lockId: useLock, folderId: folderId, lockedRows: lockedRows };
@@ -6139,7 +6455,7 @@ function payslipSubfolder_(parent, name) {
 }
 
 function payslipTemplateId_(population) {
-  var key = population === POP.STAFF ? 'PAYSLIP_TEMPLATE_STAFF_ID' : 'PAYSLIP_TEMPLATE_WORKER_ID';
+  var key = payslipTemplateKey(population) === 'STAFF' ? 'PAYSLIP_TEMPLATE_STAFF_ID' : 'PAYSLIP_TEMPLATE_WORKER_ID';
   var id = String(getControl(key, '')).trim();
   if (!id) throw new Error(key + ' is blank in PAYROLL_CONTROL');
   return id;
@@ -6315,10 +6631,17 @@ function emailBody_(period) {
     '.\n\nThis is a system-generated email from Varsha Forgings Pvt Ltd. For any query, contact HR.\n\nRegards,\nVarsha Forgings';
 }
 
-function queuePayslipEmailsOne_(period, population) {
-  guardPeriod_(period);
-  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) throw new Error('Payslip emails are only for STAFF and PERMANENT_WORKER');
+/** LOCKED status + the LOCK_ID to work on: the given one (a supplementary lock) or the population's main LOCK_ID. */
+function email_lockOf_(period, population, lockId) {
   var st = payslipLockId_(period, population);
+  var use = String(lockId || st.lockId || '').trim();
+  return { status: st.status, lockId: use };
+}
+
+function queuePayslipEmailsOne_(period, population, lockId) {
+  guardPeriod_(period);
+  if (payslipPopulations().indexOf(population) < 0) throw new Error('Payslip emails are only for ' + payslipPopulations().join(' and '));
+  var st = email_lockOf_(period, population, lockId);
   if (st.status !== PERIOD_STATUS.LOCKED) throw new Error(period + ' x ' + population + ' is not LOCKED - queue refused');
   if (!st.lockId) throw new Error('No LOCK_ID for ' + period + ' x ' + population);
   var register = readObjects(TABS.PAYSLIP_REGISTER).filter(function (r) { return String(r.POPULATION) === population; });
@@ -6331,16 +6654,16 @@ function queuePayslipEmailsOne_(period, population) {
   return summary;
 }
 
-function sendQueuedEmailsOne_(period, population) {
+function sendQueuedEmailsOne_(period, population, lockId) {
   guardPeriod_(period);
-  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) throw new Error('Payslip emails are only for STAFF and PERMANENT_WORKER');
+  if (payslipPopulations().indexOf(population) < 0) throw new Error('Payslip emails are only for ' + payslipPopulations().join(' and '));
   var control = readControlMap();
   var gate = emailReleaseAllowed(control, period, auditUser_(), control.ACCOUNTS_APPROVER_EMAIL);
   if (!gate.allowed) {
     audit('PAYSLIP_EMAIL_REFUSED', period, population, gate.reasons);
     throw new Error('Email release refused: ' + gate.reasons.join('; '));
   }
-  var st = payslipLockId_(period, population);
+  var st = email_lockOf_(period, population, lockId);
   if (st.status !== PERIOD_STATUS.LOCKED || !st.lockId) throw new Error(period + ' x ' + population + ' is not LOCKED - send refused');
   var inPop = {};
   readObjects(TABS.PAYSLIP_REGISTER).forEach(function (r) {
@@ -6373,17 +6696,18 @@ function sendQueuedEmailsOne_(period, population) {
 }
 
 /** Menu passes only the period: with no population, handle each payslip population (errors reported per population). */
-function emailEachPopulation_(fn, period, population) {
-  if (population) return fn(period, population);
+function emailEachPopulation_(fn, period, population, lockId) {
+  if (population) return fn(period, population, lockId);
   var out = {};
-  PAYSLIP_POPULATIONS.forEach(function (p) {
+  payslipPopulations().forEach(function (p) {
     try { out[p] = fn(period, p); } catch (e) { out[p] = { refused: String(e && e.message ? e.message : e) }; }
   });
   return out;
 }
 
-function queuePayslipEmails(period, population) { return emailEachPopulation_(queuePayslipEmailsOne_, period, population); }
-function sendQueuedEmails(period, population) { return emailEachPopulation_(sendQueuedEmailsOne_, period, population); }
+/** lockId (optional, needs a population): a supplementary (top-up) LOCK_ID instead of the population's main one. */
+function queuePayslipEmails(period, population, lockId) { return emailEachPopulation_(queuePayslipEmailsOne_, period, population, lockId); }
+function sendQueuedEmails(period, population, lockId) { return emailEachPopulation_(sendQueuedEmailsOne_, period, population, lockId); }
 
 // ===== 90_Menu.gs =====
 /**
@@ -6416,6 +6740,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Payroll')
       .addItem('Approve salary structure (HR)...', 'menuApproveSalary')
       .addItem('Approve statutory config (Accounts)...', 'menuApproveStatutory')
+      .addItem('Approve category config (owner)...', 'menuApproveCategory')
       .addSeparator()
       .addItem('Check readiness', 'menuCheckReadiness')
       .addItem('Calculate draft', 'menuCalculateDraft')
@@ -6446,7 +6771,7 @@ function askPeriod_(title) {
 }
 
 function askPopulation_(title) {
-  var p = ask_(title, 'Population: ' + POPULATION_LIST.join(' / '));
+  var p = ask_(title, 'Population: ' + populationList().join(' / '));
   if (p === null) return null;
   p = p.toUpperCase();
   if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"');
@@ -6557,6 +6882,17 @@ function menuApproveStatutory() {
       ' already approved.\nYou must be logged in as ACCOUNTS_APPROVER_EMAIL. Stamp now?';
     if (!confirm_('Approve statutory config', text)) return 'Cancelled - nothing was stamped.';
     return approveStatutoryConfig(p);
+  });
+}
+function menuApproveCategory() {
+  run_('Approve category config', function () {
+    var plan = planCategoryApproval();
+    var text = plan.rows + ' PAYROLL_CATEGORY_CONFIG row(s); ' + plan.toStamp.length + ' will be stamped approved (' +
+      plan.toStamp.map(function (t) { return t.code; }).join(', ') + '), ' + plan.alreadyApproved + ' already approved' +
+      (plan.problems.length ? '.\nPROBLEMS (approval will be refused): ' + plan.problems.join('; ') : '') +
+      '.\nYou must be logged in as OWNER_APPROVER_EMAIL. Stamp now?';
+    if (!confirm_('Approve category config', text)) return 'Cancelled - nothing was stamped.';
+    return approveCategoryConfig();
   });
 }
 function menuGeneratePayslips() { popAction_('Generate payslips', 'generatePayslips', 8); }

@@ -56,10 +56,17 @@ function emailBody_(period) {
     '.\n\nThis is a system-generated email from Varsha Forgings Pvt Ltd. For any query, contact HR.\n\nRegards,\nVarsha Forgings';
 }
 
-function queuePayslipEmailsOne_(period, population) {
-  guardPeriod_(period);
-  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) throw new Error('Payslip emails are only for STAFF and PERMANENT_WORKER');
+/** LOCKED status + the LOCK_ID to work on: the given one (a supplementary lock) or the population's main LOCK_ID. */
+function email_lockOf_(period, population, lockId) {
   var st = payslipLockId_(period, population);
+  var use = String(lockId || st.lockId || '').trim();
+  return { status: st.status, lockId: use };
+}
+
+function queuePayslipEmailsOne_(period, population, lockId) {
+  guardPeriod_(period);
+  if (payslipPopulations().indexOf(population) < 0) throw new Error('Payslip emails are only for ' + payslipPopulations().join(' and '));
+  var st = email_lockOf_(period, population, lockId);
   if (st.status !== PERIOD_STATUS.LOCKED) throw new Error(period + ' x ' + population + ' is not LOCKED - queue refused');
   if (!st.lockId) throw new Error('No LOCK_ID for ' + period + ' x ' + population);
   var register = readObjects(TABS.PAYSLIP_REGISTER).filter(function (r) { return String(r.POPULATION) === population; });
@@ -72,16 +79,16 @@ function queuePayslipEmailsOne_(period, population) {
   return summary;
 }
 
-function sendQueuedEmailsOne_(period, population) {
+function sendQueuedEmailsOne_(period, population, lockId) {
   guardPeriod_(period);
-  if (PAYSLIP_POPULATIONS.indexOf(population) < 0) throw new Error('Payslip emails are only for STAFF and PERMANENT_WORKER');
+  if (payslipPopulations().indexOf(population) < 0) throw new Error('Payslip emails are only for ' + payslipPopulations().join(' and '));
   var control = readControlMap();
   var gate = emailReleaseAllowed(control, period, auditUser_(), control.ACCOUNTS_APPROVER_EMAIL);
   if (!gate.allowed) {
     audit('PAYSLIP_EMAIL_REFUSED', period, population, gate.reasons);
     throw new Error('Email release refused: ' + gate.reasons.join('; '));
   }
-  var st = payslipLockId_(period, population);
+  var st = email_lockOf_(period, population, lockId);
   if (st.status !== PERIOD_STATUS.LOCKED || !st.lockId) throw new Error(period + ' x ' + population + ' is not LOCKED - send refused');
   var inPop = {};
   readObjects(TABS.PAYSLIP_REGISTER).forEach(function (r) {
@@ -114,14 +121,15 @@ function sendQueuedEmailsOne_(period, population) {
 }
 
 /** Menu passes only the period: with no population, handle each payslip population (errors reported per population). */
-function emailEachPopulation_(fn, period, population) {
-  if (population) return fn(period, population);
+function emailEachPopulation_(fn, period, population, lockId) {
+  if (population) return fn(period, population, lockId);
   var out = {};
-  PAYSLIP_POPULATIONS.forEach(function (p) {
+  payslipPopulations().forEach(function (p) {
     try { out[p] = fn(period, p); } catch (e) { out[p] = { refused: String(e && e.message ? e.message : e) }; }
   });
   return out;
 }
 
-function queuePayslipEmails(period, population) { return emailEachPopulation_(queuePayslipEmailsOne_, period, population); }
-function sendQueuedEmails(period, population) { return emailEachPopulation_(sendQueuedEmailsOne_, period, population); }
+/** lockId (optional, needs a population): a supplementary (top-up) LOCK_ID instead of the population's main one. */
+function queuePayslipEmails(period, population, lockId) { return emailEachPopulation_(queuePayslipEmailsOne_, period, population, lockId); }
+function sendQueuedEmails(period, population, lockId) { return emailEachPopulation_(sendQueuedEmailsOne_, period, population, lockId); }

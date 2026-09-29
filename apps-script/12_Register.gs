@@ -43,7 +43,7 @@ function reg_leaveNum_(v) {
  *  the month.
  * @param {number} registerDays 0..days in month, step 0.5
  * @param {boolean|string} includesWO true / 'Y' when the entered days INCLUDE weekly offs
- * @param {string} population one of POPULATION_LIST
+ * @param {string} population an active category code (PAYROLL_CATEGORY_CONFIG)
  * @param {string} period 'YYYY-MM'
  * @param {string} site 'NASHIK' | 'PUNE'
  * @param {Array} holidays HOLIDAY_CALENDAR rows {DATE, SITE, PAID}
@@ -80,7 +80,7 @@ function deriveMonthlyAttendance(registerDays, includesWO, population, period, s
     out.exceptions.push({ severity: 'BLOCKER', code: 'LEAVE_DAYS_INVALID', message: 'Approved leave days are not non-negative numbers' });
     return out;
   }
-  var isWorker = population === POP.PERMANENT_WORKER;
+  var isWorker = att_isWorker_(population);
   var dates = enumerateDates(period);
   var phSet = {};
   dates.forEach(function (d) { if (isPaidHoliday_(holidays, d, site)) phSet[d] = true; });
@@ -269,7 +269,8 @@ function registerLoad(period) {
   guardPeriod_(p);
   var ctx = register_ctx_(p);
   var incBy = {};
-  POPULATION_LIST.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
+  var popList = populationList();
+  popList.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
   var employees = ctx.roster.map(function (e) {
     var row = ctx.existing[e.EMP_ID];
     var days = '';
@@ -282,10 +283,10 @@ function registerLoad(period) {
     return { empId: e.EMP_ID, name: e.NAME, department: e.DEPARTMENT, population: e.PAYROLL_CATEGORY, days: days, state: state };
   });
   employees.sort(function (a, b) {
-    var pa = POPULATION_LIST.indexOf(a.population), pb = POPULATION_LIST.indexOf(b.population);
+    var pa = popList.indexOf(a.population), pb = popList.indexOf(b.population);
     return pa - pb || (a.empId < b.empId ? -1 : (a.empId > b.empId ? 1 : 0));
   });
-  var pops = POPULATION_LIST.filter(function (pop) { return employees.some(function (e) { return e.population === pop; }); })
+  var pops = popList.filter(function (pop) { return employees.some(function (e) { return e.population === pop; }); })
     .map(function (pop) { return { population: pop, includesWO: (incBy[pop].Y > 0 && incBy[pop].N === 0) ? 'Y' : 'N' }; });
   return { period: p, daysInMonth: daysInMonth(p), defaultPeriod: def, populations: pops, employees: employees };
 }

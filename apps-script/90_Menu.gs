@@ -28,6 +28,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Payroll')
       .addItem('Approve salary structure (HR)...', 'menuApproveSalary')
       .addItem('Approve statutory config (Accounts)...', 'menuApproveStatutory')
+      .addItem('Approve category config (owner)...', 'menuApproveCategory')
       .addSeparator()
       .addItem('Check readiness', 'menuCheckReadiness')
       .addItem('Calculate draft', 'menuCalculateDraft')
@@ -58,7 +59,7 @@ function askPeriod_(title) {
 }
 
 function askPopulation_(title) {
-  var p = ask_(title, 'Population: ' + POPULATION_LIST.join(' / '));
+  var p = ask_(title, 'Population: ' + populationList().join(' / '));
   if (p === null) return null;
   p = p.toUpperCase();
   if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"');
@@ -169,6 +170,17 @@ function menuApproveStatutory() {
       ' already approved.\nYou must be logged in as ACCOUNTS_APPROVER_EMAIL. Stamp now?';
     if (!confirm_('Approve statutory config', text)) return 'Cancelled - nothing was stamped.';
     return approveStatutoryConfig(p);
+  });
+}
+function menuApproveCategory() {
+  run_('Approve category config', function () {
+    var plan = planCategoryApproval();
+    var text = plan.rows + ' PAYROLL_CATEGORY_CONFIG row(s); ' + plan.toStamp.length + ' will be stamped approved (' +
+      plan.toStamp.map(function (t) { return t.code; }).join(', ') + '), ' + plan.alreadyApproved + ' already approved' +
+      (plan.problems.length ? '.\nPROBLEMS (approval will be refused): ' + plan.problems.join('; ') : '') +
+      '.\nYou must be logged in as OWNER_APPROVER_EMAIL. Stamp now?';
+    if (!confirm_('Approve category config', text)) return 'Cancelled - nothing was stamped.';
+    return approveCategoryConfig();
   });
 }
 function menuGeneratePayslips() { popAction_('Generate payslips', 'generatePayslips', 8); }

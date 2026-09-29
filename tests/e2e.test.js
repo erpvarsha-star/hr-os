@@ -238,20 +238,11 @@ function seedWorld() {
     otRow({ emp: 'T-W1', date: '2026-08-30', h: 6, kase: 5003 }), // 30-Aug: inside the one-time catch-up window (from 26-Aug) -> paid in September
     otRow({ emp: 'T-W1', date: '2026-08-20', h: 7, kase: 5005 }), // 20-Aug: paid in the August run, outside the window
     otRow({ emp: 'T-W2', date: '2026-09-18', h: 2, type: 'Apply For OT', dec: '', kase: 5004 })); // still pending
-  // hidden source masters: header split over rows 2 and 4, data from row 5 (synthetic fake identity values)
-  const raw = (name, rows) => {
-    const sh = put(name, ['x']);
-    const blankRow = () => new Array(16).fill('');
-    const r2 = blankRow(), r4 = blankRow();
-    ['Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN', 'ESI No.'].forEach((h, i) => { r2[3 + i] = h; });
-    r4[0] = 'EMP\nCODE'; r4[1] = 'Name'; r4[2] = 'Email ID'; r4[14] = 'Mobile number'; r4[15] = 'Aadhar Number';
-    sh.data = [blankRow(), r2, blankRow(), r4].concat(rows.map(([id, uan, pan, esi, bank, ifsc, acct]) => {
-      const r = blankRow(); r[0] = id; r[1] = 'FAKE-NAME'; r[7] = bank; r[8] = ifsc; r[9] = acct; r[10] = uan; r[11] = pan; r[12] = esi; r[14] = 'FAKE-MOBILE'; r[15] = 'FAKE-AADHAAR';
-      return r;
-    }));
-  };
-  raw('RAW_STAFF_MASTER', [['T-S1', 100000000001, 'FAKEPAN01A', 'FAKEESI01', 'Fake Bank', 'FAKE0000001', 900000000001]]); // T-S2 has no row: blank tokens
-  raw('RAW_WORKER_MASTER', [['T-W1', 100000000002, 'FAKEPAN02B', '', 'Fake Bank W', 'FAKE0000002', 900000000002], ['T-W2', 100000000003, 'FAKEPAN03C', '', 'Fake Bank W', 'FAKE0000002', 900000000003]]);
+  // EMPLOYEE_STATUTORY_IDS (hidden, protected; written by the HR dialog): synthetic fake identity values
+  put('EMPLOYEE_STATUTORY_IDS', ['EMP_ID', 'UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'IFSC'], [
+    { EMP_ID: 'T-S1', UAN: '100000000001', ESI_NO: 'FAKEESI01', PAN: 'FAKEPAN01A', BANK_NAME: 'Fake Bank', BANK_ACCOUNT: '900000000001', IFSC: 'FAKE0000001' }, // T-S2 has no row: blank tokens
+    { EMP_ID: 'T-W1', UAN: '100000000002', ESI_NO: '', PAN: 'FAKEPAN02B', BANK_NAME: 'Fake Bank W', BANK_ACCOUNT: '900000000002', IFSC: 'FAKE0000002' },
+    { EMP_ID: 'T-W2', UAN: '100000000003', ESI_NO: '', PAN: 'FAKEPAN03C', BANK_NAME: 'Fake Bank W', BANK_ACCOUNT: '900000000003', IFSC: 'FAKE0000002' }]);
   // the leave application spreadsheet (separate, read-only): event log + yearly balance tabs
   const mkLeave = (name, rows) => { const sh = makeSheet(name); sh.data = rows; leaveSheets[name] = sh; return sh; };
   const L = (o) => LEAVE_HDR.map((h) => { const r = leaveRow(o); return h in r ? r[h] : ''; });
@@ -605,16 +596,15 @@ test('9. payslips: STAFF + PERMANENT_WORKER generated with rates from salary str
   assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && /EL_AVAILABLE: 3\b/.test(t) && /CL_AVAILABLE: 1\b/.test(t) && /SL_AVAILABLE: 0\b/.test(t)));
   texts.filter((t) => /EMP_ID: T-W/.test(t)).forEach((t) => assert.ok(!/(EL_AVAILABLE|CL_AVAILABLE|SL_AVAILABLE): \S/.test(t), 'worker balances left blank, not guessed'));
   assert.match(audits(), /leaveBalancesMatched.*could not identify .*Leave Dadabase PW/);
-  // identity printed from the hidden RAW masters (T-S2 has no row there -> blank)
+  // identity printed from EMPLOYEE_STATUTORY_IDS (T-S2 has no row there -> blank)
   assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /UAN: 100000000001/.test(t) && /PAN: FAKEPAN01A/.test(t) && /ESI_NO: FAKEESI01/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /UAN: 100000000002/.test(t) && /PAN: FAKEPAN02B/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && !/UAN: \S/.test(t) && !/PAN: \S/.test(t)));
-  assert.ok(texts.every((t) => !/FAKE-(NAME|MOBILE|AADHAAR)/.test(t)), 'only identity columns are read');
   // production pay on the worker slips: 90% -> 8,500 paid; offset token 0
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /PRODUCTION_ALLOWANCE: 8,500/.test(t) && /PRODUCTION_ALLOWANCE_OFFSET: 0/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-W2/.test(t) && /PRODUCTION_ALLOWANCE: 3,000/.test(t)));
   // identity data is never written to any other tab or to the audit log
-  Object.values(env.sheets).filter((sh) => !/^RAW_/.test(sh.name)).forEach((sh) => {
+  Object.values(env.sheets).filter((sh) => sh.name !== 'EMPLOYEE_STATUTORY_IDS').forEach((sh) => {
     assert.ok(!/FAKEPAN|FAKEESI|FAKE0000|10000000000|90000000000|Fake Bank/.test(JSON.stringify(sh.data)), sh.name + ' must not contain identity data');
   });
   // idempotent

@@ -6,6 +6,7 @@
  * the population continues. Helpers are prefixed rdy_.
  */
 var RDY_MAX_IDS = 20;
+var RDY_UNASSIGNED = '(UNASSIGNED)';
 var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'LEAVE'];
 var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED',
   'SL_AVAILED', 'PAID_LEAVE_OTHER', 'ABSENT_LWP_DAYS'];
@@ -14,7 +15,7 @@ var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE
   'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
   'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'LEAVE_EXCEPTIONS', 'ATTENDANCE_DISPUTES'];
 /** Engine HOLD codes that already have their own readiness check (CALC_BLOCKERS lists only the others). */
-var RDY_COVERED_CODES = ['NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
+var RDY_COVERED_CODES = ['SALARY_NOT_APPROVED', 'NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
   'ATTENDANCE_INVALID_VALUE', 'ATTENDANCE_OVER_MONTH', 'HR_OVERRIDE_WITHOUT_REASON', 'DAILY_ATTENDANCE_MISSING',
   'DUPLICATE_MASTER_ID', 'OT_EXCEPTION', 'CANTEEN_EXCEPTION', 'EFFICIENCY_EXCEPTION', 'LEAVE_EXCEPTION',
   'ATTENDANCE_DISPUTE', 'MISSING_SALARY_STRUCTURE', 'ZERO_SALARY_STRUCTURE', 'MISSING_RATE_PROFILE', 'ZERO_RATE',
@@ -66,12 +67,41 @@ function rdy_set_(list) {
   return s;
 }
 
-function rdy_worked_(row, population) {
+function rdy_worked_(row, method) {
   var n = function (k) { return rdy_num_(row[k]); };
   var w = n('PRESENT_DAYS') + n('EL_AVAILED') + n('CL_AVAILED') + n('SL_AVAILED') + n('PH') + n('PAID_LEAVE_OTHER');
-  if (population !== 'PERMANENT_WORKER') w += n('WEEK_OFF');
+  if (method !== 'PERMANENT_WORKER') w += n('WEEK_OFF');
   return w;
 }
+
+/** CALC_METHOD of the population under check (inputs.method, else the configured / built-in method of the category). */
+function rdy_method_(inputs) {
+  if (inputs.method) return String(inputs.method).trim().toUpperCase();
+  return typeof categoryMethod === 'function' ? (categoryMethod(inputs.population) || inputs.population) : inputs.population;
+}
+
+/**
+ * Pay-structure approval gate shared by the readiness check and the engine. ids = the population's employee ids;
+ * pay = {id: SALARY_STRUCTURE row or PAYROLL_RATE_PROFILE row}; salaryBased = the method reads SALARY_STRUCTURE
+ * (STAFF / PERMANENT_WORKER), otherwise PAYROLL_RATE_PROFILE. A row counts as approved when HR_APPROVED_BY is set
+ * (salary structure) or VERSION_STATE is an approved state (rate profile; blank = no gate).
+ * Returns {unapproved:[ids], approvedCount, mode}: mode BLOCK = NO row of the population is approved (population-level
+ * blocker, the initial sign-off has not happened), HOLD = some are approved so the unapproved ones (added later, e.g.
+ * new joiners or salary revisions) are per-employee holds SALARY_NOT_APPROVED, OK = nothing unapproved.
+ */
+function rdy_payGate_(ids, pay, salaryBased) {
+  var unapproved = [], approved = 0;
+  (ids || []).forEach(function (id) {
+    var r = (pay || {})[id];
+    if (!r) return;
+    var ok = salaryBased ? rdy_id_(r.HR_APPROVED_BY) !== '' : calc_isRateApproved(r);
+    if (ok) approved++; else unapproved.push(id);
+  });
+  var mode = !unapproved.length ? 'OK' : (approved === 0 ? 'BLOCK' : 'HOLD');
+  return { unapproved: unapproved, approvedCount: approved, mode: mode };
+}
+
+function rdy_salaryBased_(method) { return method === 'STAFF' || method === 'PERMANENT_WORKER'; }
 
 /** Attendance rows relevant to this population (its category, or unknown category and not active elsewhere). */
 function rdy_popAttendance_(inputs, rosterSet) {
@@ -82,7 +112,7 @@ function rdy_popAttendance_(inputs, rosterSet) {
     var cat = rdy_id_(r.PAYROLL_CATEGORY);
     if (cat === pop) return true;
     if (rosterSet[id]) return true;
-    if (cat === '' || POPULATION_LIST.indexOf(cat) < 0) return !(all && all[id]);
+    if (cat === '' || !isKnownPopulation(cat)) return !(all && all[id]);
     return false;
   });
 }
@@ -115,7 +145,7 @@ function rdy_check2_(inputs, ctx) {
 }
 
 function rdy_check3_(inputs, ctx) {
-  var pop = inputs.population, dim = daysInMonth(inputs.period);
+  var pop = inputs.population, method = rdy_method_(inputs), dim = daysInMonth(inputs.period);
   var wd = inputs.periodCategoryRow ? rdy_num_(inputs.periodCategoryRow.WORKING_DAYS) : NaN;
   var notApproved = [], badNum = [], overDim = [], overWd = [], noReason = [];
   ctx.attRows.forEach(function (r) {
@@ -128,7 +158,7 @@ function rdy_check3_(inputs, ctx) {
       if (isNaN(n) || n < 0) bad = true;
     });
     if (bad) { badNum.push(id); return; }
-    var w = rdy_worked_(r, pop);
+    var w = rdy_worked_(r, method);
     if (w > dim) overDim.push(id + '(' + w + ')');
     else if (isFinite(wd) && wd > 0 && w > wd) overWd.push(id + '(' + w + ')');
     if (rdy_id_(r.HR_OVERRIDE).toUpperCase() === 'Y' && rdy_id_(r.OVERRIDE_REASON) === '') noReason.push(id);
@@ -140,7 +170,7 @@ function rdy_check3_(inputs, ctx) {
   if (noReason.length) h.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
   if (overWd.length) {
     var msg = 'worked days exceed WORKING_DAYS: ' + rdy_list_(overWd);
-    if (pop === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
+    if (method === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
   }
   return rdy_res_([], w, ctx.attRows.length + ' rows approved and valid', h);
 }
@@ -154,10 +184,10 @@ function rdy_check4_(inputs, ctx) {
 }
 
 function rdy_check5_(inputs, ctx) {
-  var pop = inputs.population;
+  var method = rdy_method_(inputs);
   var missing = [], zero = [];
   ctx.rosterIds.forEach(function (id) {
-    if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') {
+    if (rdy_salaryBased_(method)) {
       var s = (inputs.salaryByEmp || {})[id];
       if (!s) { missing.push(id); return; }
       var fg = rdy_num_(s.FIXED_GROSS_PM_AS_SOURCE_INR), basic = rdy_num_(s.BASIC_PM_INR);
@@ -178,7 +208,7 @@ function rdy_check5_(inputs, ctx) {
 
 function rdy_check6_(inputs) {
   var feeds = RDY_REQUIRED_FEEDS.slice();
-  if (inputs.population === 'PERMANENT_WORKER') feeds.push('EFFICIENCY');
+  if (rdy_method_(inputs) === 'PERMANENT_WORKER') feeds.push('EFFICIENCY');
   var fs = inputs.feedStatus || {};
   var open = feeds.filter(function (f) {
     var v = fs[f];
@@ -208,7 +238,7 @@ function rdy_check7_(inputs, ctx) {
 
 function rdy_check8_(inputs) {
   var pop = inputs.population;
-  var required = requiredStatutoryKeys(pop);
+  var required = requiredStatutoryKeys(rdy_method_(inputs));
   if (!required.length) return { status: 'READY', detail: 'No statutory keys required for ' + pop };
   var st = inputs.statutoryResolved;
   if (!st) return { status: 'BLOCKED', detail: 'Statutory config not resolved for ' + inputs.period };
@@ -233,7 +263,7 @@ function rdy_check9_(inputs, ctx) {
 }
 
 function rdy_check10_(inputs, ctx) {
-  if (inputs.population !== 'CONSULTANT') return { status: 'READY', detail: 'Not applicable' };
+  if (rdy_method_(inputs) !== 'CONSULTANT') return { status: 'READY', detail: 'Not applicable' };
   var ot = inputs.otHoursByEmp || {};
   var bad = ctx.rosterIds.filter(function (id) {
     var r = (inputs.rateByEmp || {})[id];
@@ -246,7 +276,7 @@ function rdy_check10_(inputs, ctx) {
 }
 
 function rdy_check11_(inputs) {
-  if (inputs.population !== 'PERMANENT_WORKER') return { status: 'READY', detail: 'Not applicable' };
+  if (rdy_method_(inputs) !== 'PERMANENT_WORKER') return { status: 'READY', detail: 'Not applicable' };
   var rows = inputs.efficiencyConfigRows || [];
   var unconfirmed = rows.filter(function (r) { return rdy_id_(r.IMPLEMENTATION_STATE).toUpperCase() !== 'CONFIRMED'; });
   if (!rows.length) return { status: 'WARN', detail: 'EFFICIENCY_CONFIG has no rows' };
@@ -270,28 +300,29 @@ function rdy_check12_(inputs) {
 
 /**
  * Sheet rules R11 / R27 / PROCESS_FLOW 1.0: pay structures must be approved before they are used.
- * STAFF / PERMANENT_WORKER: the effective SALARY_STRUCTURE row needs HR_APPROVED_BY (BLOCKER when blank).
- * CONSULTANT / PUNE_STAFF: PAYROLL_RATE_PROFILE.VERSION_STATE must be an approved state (blank = no gate);
- * USER_APPROVED_JULY_PROXY counts as approved but raises a WARN (PROXY_RATE_JUL2026, R28).
+ * SALARY_STRUCTURE categories: the effective row needs HR_APPROVED_BY. PAYROLL_RATE_PROFILE categories: VERSION_STATE
+ * must be an approved state (blank = no gate); USER_APPROVED_JULY_PROXY counts as approved but raises a WARN
+ * (PROXY_RATE_JUL2026, R28). Population-level BLOCKER only when NO row of the population is approved (the initial HR
+ * sign-off is missing); rows added after that sign-off (new joiners, salary revisions) are per-employee HOLDs
+ * (SALARY_NOT_APPROVED) - the rest of the population is not blocked.
  */
 function rdy_check13_(inputs, ctx) {
-  var pop = inputs.population, b = [], w = [];
-  if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') {
-    var unsigned = ctx.rosterIds.filter(function (id) {
-      var s = (inputs.salaryByEmp || {})[id];
-      return s && rdy_id_(s.HR_APPROVED_BY) === '';
-    });
-    if (unsigned.length) {
-      b.push('SALARY_STRUCTURE not HR-approved (HR_APPROVED_BY blank; use HR OS > Payroll > Approve salary structure): ' + rdy_list_(unsigned));
-    }
-  } else {
+  var method = rdy_method_(inputs), b = [], w = [], h = [];
+  var salaryBased = rdy_salaryBased_(method);
+  var gate = rdy_payGate_(ctx.rosterIds, salaryBased ? inputs.salaryByEmp : inputs.rateByEmp, salaryBased);
+  if (gate.mode === 'BLOCK') {
+    b.push(salaryBased
+      ? 'SALARY_STRUCTURE not HR-approved for this population (HR_APPROVED_BY blank; use HR OS > Payroll > Approve salary structure): ' + rdy_list_(gate.unapproved)
+      : 'PAYROLL_RATE_PROFILE not approved for this population (VERSION_STATE): ' + rdy_list_(gate.unapproved));
+  } else if (gate.mode === 'HOLD') {
+    h.push('SALARY_NOT_APPROVED (' + (salaryBased ? 'HR_APPROVED_BY blank' : 'VERSION_STATE not approved') + '; HR OS > Payroll > Approve salary structure): ' + rdy_list_(gate.unapproved));
+  }
+  if (!salaryBased) {
     var rates = inputs.rateByEmp || {};
-    var bad = ctx.rosterIds.filter(function (id) { return rates[id] && !calc_isRateApproved(rates[id]); });
     var proxy = ctx.rosterIds.filter(function (id) { return rates[id] && calc_isRateApproved(rates[id]) && calc_isProxyRate(rates[id]); });
-    if (bad.length) b.push('PAYROLL_RATE_PROFILE not approved (VERSION_STATE): ' + rdy_list_(bad));
     if (proxy.length) w.push('PROXY_RATE_JUL2026: ' + proxy.length + ' employee(s) paid on the approved July 2026 proxy rates');
   }
-  return rdy_res_(b, w, 'Pay structure approved');
+  return rdy_res_(b, w, 'Pay structure approved', h);
 }
 
 /** Splits exception rows into employees of this population (known) and unattributable ones (unknown). */
@@ -315,7 +346,7 @@ function rdy_check14_(inputs, ctx) {
   var pop = inputs.population, all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
   var unknownAll = function (id) { return all ? !all[id] : false; };
   var canteen = rdy_exceptionList_(inputs.canteenExceptions, ctx, unknownAll);
-  var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return pop === 'PERMANENT_WORKER' && unknownAll(id); });
+  var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return rdy_method_(inputs) === 'PERMANENT_WORKER' && unknownAll(id); });
   var b = [], h = [];
   if (canteen.unknown.length) b.push('canteen EXCEPTION rows for unknown EMP_ID (' + canteen.unknown.length + '): ' + rdy_list_(canteen.unknown));
   if (eff.unknown.length) b.push('efficiency EXCEPTION rows for unknown EMP_ID (' + eff.unknown.length + '): ' + rdy_list_(eff.unknown));
@@ -394,6 +425,10 @@ function buildReadiness(inputs) {
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
   });
+  if (inputs.categoryUnapproved) {
+    out.push({ PERIOD: inputs.period, POPULATION: pop, CHECK: 'CATEGORY_CONFIG', STATUS: 'BLOCKED',
+      DETAIL: 'PAYROLL_CATEGORY_CONFIG row of ' + pop + ' is not approved (APPROVED_BY blank; owner: HR OS > Payroll > Approve category config)' });
+  }
   if (inputs.calcResults) {
     var cb = rdy_calcBlockers_(inputs);
     out.push({ PERIOD: inputs.period, POPULATION: pop, CHECK: 'CALC_BLOCKERS', STATUS: cb.status, DETAIL: cb.detail });
@@ -422,7 +457,7 @@ function rdy_summarize_(rows) {
 function checkReadiness(period, population, opts) {
   guardPeriod_(period);
   opts = opts || {};
-  var pops = population ? [population] : POPULATION_LIST.slice();
+  var pops = population ? [population] : populationList();
   pops.forEach(function (p) { if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"'); });
   var src = opts.sources || engine_readSources_(period);
   var checkedAt = nowIso_();
@@ -438,8 +473,15 @@ function checkReadiness(period, population, opts) {
     buildReadiness(inputs).forEach(function (r) { r.CHECKED_AT = checkedAt; rows.push(r); });
     done.push(pop);
   });
+  // employees whose category is not in PAYROLL_CATEGORY_CONFIG: HOLD (not population-blocking), listed under UNASSIGNED
+  var unk = (src.roster && src.roster.unknownCategory) || [];
+  if (!population && unk.length) {
+    rows.push({ PERIOD: period, POPULATION: RDY_UNASSIGNED, CHECK: 'UNKNOWN_CATEGORY', STATUS: 'HOLD', CHECKED_AT: checkedAt,
+      DETAIL: 'employee HOLD (excluded from every run): category not in PAYROLL_CATEGORY_CONFIG: ' +
+        rdy_list_(unk.map(function (u) { return u.EMP_ID + ' (' + (u.PAYROLL_CATEGORY || 'blank') + ')'; })) });
+  }
   engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
-    function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
+    function (o) { return normalizePeriod(o.PERIOD) === period && (done.indexOf(rdy_id_(o.POPULATION)) >= 0 || (!population && rdy_id_(o.POPULATION) === RDY_UNASSIGNED)); });
   var sum = rdy_summarize_(rows);
   var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, hold: sum.hold,
     warn: sum.warn, ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };

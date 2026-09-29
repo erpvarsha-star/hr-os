@@ -39,7 +39,12 @@ var TABS = {
   PAYSLIP_EMAIL_LOG: 'PAYSLIP_EMAIL_LOG',
   AUDIT_LOG: 'AUDIT_LOG',
   ATT_FORM_NASHIK_RAW: 'ATT_FORM_NASHIK_RAW',
-  ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW'
+  ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW',
+  PAYROLL_CATEGORY_CONFIG: 'PAYROLL_CATEGORY_CONFIG',
+  PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
+  EMPLOYEE_STATUTORY_IDS: 'EMPLOYEE_STATUTORY_IDS',
+  SALARY_STRUCTURE: 'SALARY_STRUCTURE',
+  PAYROLL_RATE_PROFILE: 'PAYROLL_RATE_PROFILE'
 };
 
 var POP = {
@@ -48,6 +53,7 @@ var POP = {
   CONSULTANT: 'CONSULTANT',
   PUNE_STAFF: 'PUNE_STAFF'
 };
+/** Defaults used when the PAYROLL_CATEGORY_CONFIG tab is absent (or empty). With the tab, the configured ACTIVE rows rule. */
 var POPULATION_LIST = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
 var SITE_NASHIK = 'NASHIK';
 var SITE_PUNE = 'PUNE';
@@ -164,13 +170,130 @@ function assertPeriodAllowed(period, minPeriod) {
   return true;
 }
 
-function isKnownPopulation(pop) { return POPULATION_LIST.indexOf(pop) >= 0; }
+// ---------------------------------------------------------------- payroll categories (PAYROLL_CATEGORY_CONFIG)
+// Adding a category = adding a row to PAYROLL_CATEGORY_CONFIG. Everything that used to iterate the four hard-coded
+// populations (period rows, feeds, readiness, engine, approvals, lock, payslips, register, daily forms) iterates the
+// configured ACTIVE categories. CALC_METHOD picks which of the four calculation functions is used.
+
+var CATEGORY_CONFIG_HEADERS = ['CATEGORY_CODE', 'DISPLAY_NAME', 'CALC_METHOD', 'SITE', 'PAYSLIP', 'PAYSLIP_TEMPLATE_KEY',
+  'RATE_SOURCE', 'ACTIVE', 'APPROVED_BY', 'APPROVED_AT'];
+var CALC_METHODS = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
+var RATE_SOURCES = ['SALARY_STRUCTURE', 'RATE_PROFILE'];
+var PAYSLIP_TEMPLATE_KEYS = ['STAFF', 'WORKER'];
+/** Seed rows of PAYROLL_CATEGORY_CONFIG = the built-in defaults (APPROVED_BY blank: the owner signs them off once). */
+var CATEGORY_DEFAULTS = [
+  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'NASHIK', PAYSLIP: 'Y',
+    PAYSLIP_TEMPLATE_KEY: 'STAFF', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'NASHIK',
+    PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'WORKER', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'NASHIK', PAYSLIP: 'N',
+    PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' },
+  { CATEGORY_CODE: 'PUNE_STAFF', DISPLAY_NAME: 'Pune staff', CALC_METHOD: 'PUNE_STAFF', SITE: 'PUNE', PAYSLIP: 'N',
+    PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }
+];
+/** Population tab names of the four built-in categories; any other category writes to PAYROLL_<CODE>. */
+var CATEGORY_TABS_DEFAULT = { STAFF: 'PAYROLL_STAFF', PERMANENT_WORKER: 'PAYROLL_WORKER', CONSULTANT: 'PAYROLL_CONSULTANT',
+  PUNE_STAFF: 'PAYROLL_PUNE_STAFF' };
+
+var HROS_CATEGORY_CACHE_ = null;
+
+/** Forget the per-execution category cache (Apps Script runs each execution in a fresh scope; tests call this after editing the tab). */
+function categoryConfigReset_() { HROS_CATEGORY_CACHE_ = null; }
+
+function cat_yn_(v) { return String(v == null ? '' : v).trim().toUpperCase() === 'Y'; }
+
+/** Pure: one PAYROLL_CATEGORY_CONFIG row object -> normalized entry (or null when the code is blank). */
+function categoryEntryFromRow(r) {
+  var code = String(r.CATEGORY_CODE == null ? '' : r.CATEGORY_CODE).trim();
+  if (!code) return null;
+  return { code: code, displayName: String(r.DISPLAY_NAME == null ? '' : r.DISPLAY_NAME).trim() || code,
+    method: String(r.CALC_METHOD == null ? '' : r.CALC_METHOD).trim().toUpperCase(),
+    site: String(r.SITE == null ? '' : r.SITE).trim().toUpperCase(),
+    payslip: cat_yn_(r.PAYSLIP), templateKey: String(r.PAYSLIP_TEMPLATE_KEY == null ? '' : r.PAYSLIP_TEMPLATE_KEY).trim().toUpperCase(),
+    rateSource: String(r.RATE_SOURCE == null ? '' : r.RATE_SOURCE).trim().toUpperCase() || 'SALARY_STRUCTURE',
+    active: cat_yn_(r.ACTIVE), approvedBy: String(r.APPROVED_BY == null ? '' : r.APPROVED_BY).trim(), fromSheet: true };
+}
+
+/** Pure: problems in a category entry (used by the setup / approval and by tests). */
+function categoryEntryProblems(e) {
+  var out = [];
+  if (CALC_METHODS.indexOf(e.method) < 0) out.push(e.code + ': CALC_METHOD must be one of ' + CALC_METHODS.join(', '));
+  if (e.site !== SITE_NASHIK && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be NASHIK or PUNE');
+  if (RATE_SOURCES.indexOf(e.rateSource) < 0) out.push(e.code + ': RATE_SOURCE must be SALARY_STRUCTURE or RATE_PROFILE');
+  if (e.payslip && PAYSLIP_TEMPLATE_KEYS.indexOf(e.templateKey) < 0) out.push(e.code + ': PAYSLIP=Y needs PAYSLIP_TEMPLATE_KEY STAFF or WORKER');
+  return out;
+}
+
+function categoryDefaults_() {
+  return CATEGORY_DEFAULTS.map(function (r) { var e = categoryEntryFromRow(r); e.fromSheet = false; return e; });
+}
+
+/**
+ * All configured categories (active or not). Tab absent / empty / unreadable -> the built-in defaults (approved = true).
+ * A first row with a blank CATEGORY_CODE is skipped; a duplicate code keeps the first row.
+ */
+function categoryConfigAll_() {
+  if (HROS_CATEGORY_CACHE_) return HROS_CATEGORY_CACHE_;
+  var list = null;
+  try {
+    var sheet = getSheet(TABS.PAYROLL_CATEGORY_CONFIG);
+    if (sheet) {
+      var rows = readObjects(sheet), seen = {};
+      list = [];
+      rows.forEach(function (r) {
+        var e = categoryEntryFromRow(r);
+        if (!e || seen[e.code]) return;
+        seen[e.code] = true;
+        list.push(e);
+      });
+      if (!list.length) list = null;
+    }
+  } catch (err) { list = null; }
+  HROS_CATEGORY_CACHE_ = list || categoryDefaults_();
+  return HROS_CATEGORY_CACHE_;
+}
+
+/** ACTIVE configured categories in configured order. */
+function categoryList() { return categoryConfigAll_().filter(function (e) { return e.active; }); }
+
+/** Codes of the ACTIVE categories (replaces the former hard-coded POPULATION_LIST). */
+function populationList() { return categoryList().map(function (e) { return e.code; }); }
+
+/** Config entry (active or not) of a category code, or null. */
+function categoryEntry(code) {
+  var all = categoryConfigAll_(), c = String(code == null ? '' : code).trim();
+  for (var i = 0; i < all.length; i++) if (all[i].code === c) return all[i];
+  return null;
+}
+
+/** True when the code is a configured category, active or not (an unconfigured one is UNKNOWN_CATEGORY). */
+function isConfiguredCategory(code) { return !!categoryEntry(code); }
+
+/** CALC_METHOD of a category ('' when the category is not configured). */
+function categoryMethod(code) {
+  var e = categoryEntry(code);
+  return e ? e.method : '';
+}
+
+function isKnownPopulation(pop) { var e = categoryEntry(pop); return !!e && e.active; }
 
 function siteForPopulation(pop) {
-  if (pop === POP.PUNE_STAFF) return SITE_PUNE;
-  if (isKnownPopulation(pop)) return SITE_NASHIK;
+  var e = categoryEntry(pop);
+  if (e && e.active && (e.site === SITE_NASHIK || e.site === SITE_PUNE)) return e.site;
   throw new Error('Unknown population "' + pop + '"');
 }
+
+/** Name of the population output tab (PAYROLL_STAFF ...; PAYROLL_<CODE> for a new category, max 100 chars). */
+function populationTab(code) {
+  var c = String(code == null ? '' : code).trim();
+  return CATEGORY_TABS_DEFAULT[c] || ('PAYROLL_' + c).slice(0, 100);
+}
+
+/** Active categories that get a payslip (PAYSLIP = Y). */
+function payslipPopulations() { return categoryList().filter(function (e) { return e.payslip; }).map(function (e) { return e.code; }); }
+
+/** Codes of the ACTIVE categories of a site. */
+function populationsOfSite(site) { return categoryList().filter(function (e) { return e.site === site; }).map(function (e) { return e.code; }); }
 
 function nowIso_() { return Utilities.formatDate(new Date(), HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss"); }
 

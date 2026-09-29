@@ -179,7 +179,7 @@ function hrosSetup() {
   return log;
 }
 
-/** Insert the 4 PAYROLL_PERIOD_CATEGORY rows and 8 FEED_STATUS rows for a period if absent. */
+/** Insert one PAYROLL_PERIOD_CATEGORY row per ACTIVE category and the FEED_STATUS rows for a period if absent. */
 function prepareMonth(period) {
   guardPeriod_(period);
   var ppc = ensureSheet(TABS.PAYROLL_PERIOD_CATEGORY);
@@ -187,7 +187,7 @@ function prepareMonth(period) {
   readObjects(ppc).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) === period) haveP[String(r.PAYROLL_CATEGORY).trim()] = true;
   });
-  var newP = POPULATION_LIST.filter(function (p) { return !haveP[p]; }).map(function (p) {
+  var newP = populationList().filter(function (p) { return !haveP[p]; }).map(function (p) {
     return { PAYROLL_MONTH: period, PAYROLL_CATEGORY: p, WORKING_DAYS: '', STATUS: PERIOD_STATUS.PENDING,
       NOTE: 'HR enters WORKING_DAYS for ' + period + '.' };
   });

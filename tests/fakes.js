@@ -29,6 +29,18 @@ function makeSheet(name) {
     setDataValidation() {},
     clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (s.data[r - 1 + i]) s.data[r - 1 + i][c - 1 + j] = ''; },
   });
+  s.protections = [];
+  s.hidden = false;
+  s.protect = () => {
+    const p = { editors: [], desc: '', setDescription(d) { p.desc = d; return p; }, addEditor(u) { p.editors.push(typeof u === 'string' ? u : u.getEmail()); return p; },
+      addEditors(list) { list.forEach((u) => p.editors.push(u)); return p; }, getEditors: () => p.editors.map((e) => ({ getEmail: () => e })),
+      removeEditor() { return p; }, canDomainEdit: () => false, setDomainEdit() { return p; }, setWarningOnly() { return p; } };
+    s.protections.push(p); return p;
+  };
+  s.getProtections = () => s.protections;
+  s.hideSheet = () => { s.hidden = true; return s; };
+  s.showSheet = () => { s.hidden = false; return s; };
+  s.isSheetHidden = () => s.hidden;
   s.objs = () => { const h = s.data[0] || []; return s.data.slice(1).filter((row) => row.some((v) => !blank(v))).map((row) => Object.fromEntries(h.map((k, i) => [k, row[i] === undefined ? '' : row[i]]))); };
   return s;
 }
@@ -44,15 +56,23 @@ function makeEnv(opts = {}) {
     getSheetByName: (n) => env.sheets[n] || null,
     insertSheet: (n) => (env.sheets[n] = makeSheet(n)),
     getSheets: () => Object.values(env.sheets),
+    setActiveSheet: (sh) => { env.active = sh; return sh; },
+    moveActiveSheet: (pos) => { // 1-based position among all tabs (tab order = insertion order of env.sheets)
+      const names = Object.keys(env.sheets).filter((n) => env.sheets[n] !== env.active), me = env.active.getName();
+      names.splice(Math.max(0, Math.min(names.length, pos - 1)), 0, me);
+      const next = {}; names.forEach((n) => { next[n] = env.sheets[n]; }); env.sheets = next;
+    },
     getOwner: () => ({ getEmail: () => 'owner@varshaforgings.com' }),
     getId: () => 'FAKE_SS_ID',
     toast() {},
   };
   env.ss = ss;
+  const resetCat = (name) => { if (name === 'PAYROLL_CATEGORY_CONFIG' && env.c && env.c.categoryConfigReset_) env.c.categoryConfigReset_(); };
   env.put = (name, headers, rows = []) => {
     const s = makeSheet(name);
     s.data = [headers.slice()].concat(rows.map((r) => headers.map((h) => (h in r ? r[h] : ''))));
     env.sheets[name] = s;
+    resetCat(name);
     return s;
   };
   env.rowsOf = (name) => (env.sheets[name] ? env.sheets[name].objs() : []);
@@ -62,6 +82,7 @@ function makeEnv(opts = {}) {
       Object.keys(o).forEach((k) => { if (h.indexOf(k) < 0) throw new Error(`no column ${k} in ${name}`); });
       s.data.push(h.map((k) => (k in o ? o[k] : '')));
     });
+    resetCat(name);
   };
   env.editCells = (name, where, values) => {
     const s = env.sheets[name], h = s.data[0];
@@ -73,6 +94,7 @@ function makeEnv(opts = {}) {
       hits++;
     });
     assert.ok(hits > 0, `no row matched ${JSON.stringify(where)} in ${name}`);
+    resetCat(name);
   };
   const Utilities = {
     formatDate, getUuid: () => 'u', sleep() {},

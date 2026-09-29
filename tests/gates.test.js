@@ -186,9 +186,18 @@ test('gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG rows and unapproved ra
     e.editCells('STATUTORY_CONFIG', { KEY: 'PT_SLABS' }, { APPROVED_BY: '' });
   } });
   const w = rdy(env, 'PERMANENT_WORKER', 'PAY_STRUCTURE_APPROVED');
-  assert.equal(w.STATUS, 'BLOCKED');
-  assert.match(w.DETAIL, /W2/);
+  // W1 is approved, so the unapproved W2 is a per-employee HOLD (SALARY_NOT_APPROVED), not a population blocker
+  assert.equal(w.STATUS, 'HOLD');
+  assert.match(w.DETAIL, /SALARY_NOT_APPROVED.*W2/);
   assert.ok(!/W1/.test(w.DETAIL));
+  // NO approved row in the population = the initial sign-off is missing: population-level BLOCKER
+  const none = mini({ g: (e) => {
+    e.editCells('SALARY_STRUCTURE', { EMP_ID: 'W1' }, { HR_APPROVED_BY: '' });
+    e.editCells('SALARY_STRUCTURE', { EMP_ID: 'W2' }, { HR_APPROVED_BY: '' });
+  } });
+  const nb = rdy(none, 'PERMANENT_WORKER', 'PAY_STRUCTURE_APPROVED');
+  assert.equal(nb.STATUS, 'BLOCKED');
+  assert.match(nb.DETAIL, /not HR-approved for this population.*W1, W2/);
   assert.equal(rdy(env, 'STAFF', 'PAY_STRUCTURE_APPROVED').STATUS, 'READY');
   const st = rdy(env, 'STAFF', 'STATUTORY_CONFIG');
   assert.equal(st.STATUS, 'BLOCKED');
@@ -205,8 +214,8 @@ test('gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG rows and unapproved ra
     e.put('INPUT_ATTENDANCE', ATT_HDR, ['C1', 'C2', 'C3'].map((id) => att(id, 'CONSULTANT')));
   } });
   const c = rdy(e2, 'CONSULTANT', 'PAY_STRUCTURE_APPROVED');
-  assert.equal(c.STATUS, 'BLOCKED');
-  assert.match(c.DETAIL, /not approved \(VERSION_STATE\): C2/);
+  assert.equal(c.STATUS, 'HOLD');
+  assert.match(c.DETAIL, /SALARY_NOT_APPROVED.*VERSION_STATE not approved.*C2/);
   assert.match(c.DETAIL, /PROXY_RATE_JUL2026: 1 employee/);
   e2.c.calculateDraft(P, 'CONSULTANT');
   assert.ok(exc(e2, 'C1').includes('WARN:PROXY_RATE_JUL2026'));

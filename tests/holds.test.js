@@ -72,7 +72,9 @@ test('global problems still BLOCK the whole population: working days, statutory 
   const stat = build(); stat.sheets.STATUTORY_CONFIG.data.slice(1).forEach((row) => { row[stat.sheets.STATUTORY_CONFIG.data[0].indexOf('APPROVED_BY')] = ''; });
   assert.equal(st(stat, 'STATUTORY_CONFIG'), 'BLOCKED');
   const sal = build(); sal.editCells('SALARY_STRUCTURE', { EMP_ID: 'S5' }, { HR_APPROVED_BY: '' });
-  assert.equal(st(sal, 'PAY_STRUCTURE_APPROVED'), 'BLOCKED');
+  assert.equal(st(sal, 'PAY_STRUCTURE_APPROVED'), 'HOLD', 'one unsigned row among signed ones is an employee HOLD');
+  const sal0 = build(); sal0.sheets.SALARY_STRUCTURE.data.slice(1).forEach((row) => { row[sal0.sheets.SALARY_STRUCTURE.data[0].indexOf('HR_APPROVED_BY')] = ''; });
+  assert.equal(st(sal0, 'PAY_STRUCTURE_APPROVED'), 'BLOCKED', 'no signed row at all blocks the population');
   const feeds = build(); feeds.editCells('FEED_STATUS', { FEED: 'LEAVE' }, { STATUS: 'OPEN' });
   assert.equal(st(feeds, 'FEEDS_COMPLETE'), 'BLOCKED');
   // unreachable leave source: calculateDraft records it, LEAVE feed reopened, population-level BLOCKER row, approval refused
