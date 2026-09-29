@@ -22,6 +22,8 @@ var TABS = {
   ATTENDANCE_DAILY: 'ATTENDANCE_DAILY',
   INPUT_ATTENDANCE: 'INPUT_ATTENDANCE',
   INPUT_OT: 'INPUT_OT',
+  INPUT_LEAVE: 'INPUT_LEAVE',
+  ATTENDANCE_COMPARISON: 'ATTENDANCE_COMPARISON',
   INPUT_CANTEEN: 'INPUT_CANTEEN',
   INPUT_EFFICIENCY: 'INPUT_EFFICIENCY',
   INPUT_ADVANCE: 'INPUT_ADVANCE',
@@ -55,7 +57,15 @@ var SITE_PUNE = 'PUNE';
 
 var DAILY_CODES = ['P', 'HD', 'A', 'WO', 'PH', 'EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
 var WEEKDAY_CODES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-var FEED_LIST = ['ATTENDANCE', 'CANTEEN', 'OT', 'EFFICIENCY', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'HOLIDAYS'];
+var FEED_LIST = ['ATTENDANCE', 'CANTEEN', 'OT', 'EFFICIENCY', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'HOLIDAYS', 'LEAVE'];
+var LEAVE_TYPES = ['EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
+/**
+ * Exception codes that block a WHOLE population (global problems: working days, statutory / calculation config).
+ * Every other calculation / feed problem is employee-level: severity HOLD (that employee is excluded from NET, the
+ * approval hash and the lock, and the rest of the population continues).
+ */
+var GLOBAL_BLOCKER_CODES = ['INVALID_WORKING_DAYS', 'MISSING_STATUTORY_KEY', 'UNKNOWN_POPULATION',
+  'MISSING_EFFICIENCY_CONFIG', 'MISSING_COMPONENT_PCT', 'UNKNOWN_PF_COMPONENT', 'LEAVE_SOURCE_UNREACHABLE'];
 var ADJUSTMENT_TYPES = ['ARREARS', 'DISPATCH_INCENTIVE', 'OTHER_ALLOWANCE', 'LEAVE_ENCASHMENT', 'OT_EXTRA_WORK',
   'PRODUCTION_INCENTIVE', 'TDS', 'OTHER_DEDUCTION', 'PENALTY', 'CANTEEN_EXTRA'];
 var APPROVAL_STATUSES = ['PENDING', 'APPROVED'];
@@ -214,6 +224,9 @@ function getWeeklyOff(site) {
   if (WEEKDAY_CODES.indexOf(v) < 0) throw new Error(key + ' must be one of ' + WEEKDAY_CODES.join(',') + ' (got "' + v + '")');
   return v;
 }
+
+/** Owner approver (approves attendance disputes). PAYROLL_CONTROL OWNER_APPROVER_EMAIL, seeded by setup. */
+function getOwnerApproverEmail() { return String(getControl('OWNER_APPROVER_EMAIL', '')).trim(); }
 
 /** Two-step guard: static floor first (no sheet access), then configured minimum. */
 function guardPeriod_(period) {
@@ -427,7 +440,9 @@ var HROS_NEW_TABS = {
   PAYROLL_CONSULTANT: HROS_OUTPUT_COLUMNS,
   PAYROLL_PUNE_STAFF: HROS_OUTPUT_COLUMNS,
   PAYROLL_LOCKED: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS),
-  PAYSLIP_REGISTER: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS']
+  PAYSLIP_REGISTER: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'],
+  ATTENDANCE_COMPARISON: ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
+    'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS']
 };
 
 /** Existing tabs that only get columns appended on the right. */
@@ -436,7 +451,7 @@ var HROS_APPEND_COLUMNS = {
     'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'],
   STATUTORY_CONFIG: ['EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY', 'APPROVED_AT'],
   INPUT_ATTENDANCE: ['PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
-    'OVERRIDE_REASON', 'ROW_KEY'],
+    'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'],
   INPUT_OT: ['OT_KEY', 'OT_DATE', 'SOURCE_ROW', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON']
 };
 
@@ -445,7 +460,9 @@ var HROS_HEADER_ONLY_TABS = {
   INPUT_CANTEEN: ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
   INPUT_EFFICIENCY: ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE',
     'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
-  PAYSLIP_EMAIL_LOG: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR']
+  PAYSLIP_EMAIL_LOG: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'],
+  INPUT_LEAVE: ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY',
+    'STATUS', 'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT']
 };
 
 var HROS_CONTROL_DEFAULTS = [
@@ -460,7 +477,11 @@ var HROS_CONTROL_DEFAULTS = [
   ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],
   ['OT_SOURCE_TAB', 'OT_FORM_RESPONSES', 'OT form-response tab (local; falls back to Overtime_Form if absent). With an external ID: the tab there (default Form Responses 1)'],
-  ['OT_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug salary paid OT to 25-Aug']
+  ['OT_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug salary paid OT to 25-Aug'],
+  ['OWNER_APPROVER_EMAIL', 'yash.munot@gmail.com', 'confirm owner email (owner approval of attendance disputes)'],
+  ['REGISTER_ENTRY_EMAILS', '', 'Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may'],
+  ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
+  ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [
@@ -573,8 +594,9 @@ function hrosSetup() {
   setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'SITE', ['NASHIK', 'PUNE', 'ALL']);
   setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'PAID', ['Y', 'N']);
   setListValidation(ensureSheet(TABS.FEED_STATUS), 'STATUS', ['OPEN', 'COMPLETE']);
+  setListValidation(ensureSheet(TABS.ATTENDANCE_COMPARISON), 'OWNER_DECISION', ['APPROVED', 'REJECTED']);
   log.validations = ['INPUT_ADJUSTMENTS.ADJUSTMENT_TYPE', 'INPUT_ATTENDANCE.APPROVAL_STATUS', 'HOLIDAY_CALENDAR.SITE',
-    'HOLIDAY_CALENDAR.PAID', 'FEED_STATUS.STATUS'];
+    'HOLIDAY_CALENDAR.PAID', 'FEED_STATUS.STATUS', 'ATTENDANCE_COMPARISON.OWNER_DECISION'];
 
   // 8. protect the append-only ledger (idempotent)
   var locked = ensureSheet(TABS.PAYROLL_LOCKED);
@@ -696,6 +718,45 @@ function dojRosterDecision(v, endIso) {
   var inc = cands.map(function (c) { return c <= endIso; });
   var same = inc.every(function (x) { return x === inc[0]; });
   return same ? { include: inc[0], warn: '' } : { include: true, warn: 'AMBIGUOUS' };
+}
+
+/** EMPLOYEE_MASTER columns (first non-blank wins) that may hold a leaver's last working day. Absent column = no leavers. */
+var ATT_LWD_HEADERS = ['LAST_WORKING_DAY', 'LAST_WORKING_DATE', 'LWD_AS_SOURCE', 'DOL_AS_SOURCE', 'DATE_OF_LEAVING',
+  'RELIEVING_DATE'];
+
+/** Raw last-working-day cell of an EMPLOYEE_MASTER row ('' when no such column / blank). */
+function masterLastWorkingDay_(r) {
+  for (var i = 0; i < ATT_LWD_HEADERS.length; i++) {
+    var v = r[ATT_LWD_HEADERS[i]];
+    if (v !== undefined && v !== null && v !== '') return v;
+  }
+  return '';
+}
+
+/**
+ * Roster rule for LEAVERS (non-Active employees): included when the last working day is on or after the period start
+ * (they were paid for part of the month). Date / ISO exact; dd/mm/yyyy day-first, and when the two readings disagree the
+ * employee is INCLUDED with warn 'AMBIGUOUS' (fail towards paying attention). Blank / unparseable -> not included.
+ * @returns {{include:boolean, warn:string, lwd:string}}
+ */
+function leaverRosterDecision(v, startIso) {
+  if (v == null || v === '') return { include: false, warn: '', lwd: '' };
+  var iso = toIsoDate(v);
+  if (iso) return { include: iso >= startIso, warn: '', lwd: iso };
+  var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
+  if (!m) return { include: false, warn: '', lwd: '' };
+  var a = +m[1], b = +m[2], y = +m[3];
+  var real = function (yy, mo, d) {
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    var dt = new Date(Date.UTC(yy, mo - 1, d));
+    return dt.getUTCMonth() === mo - 1 ? yy + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+  };
+  var cands = [];
+  [real(y, b, a), real(y, a, b)].forEach(function (c) { if (c && cands.indexOf(c) < 0) cands.push(c); });
+  if (!cands.length) return { include: false, warn: '', lwd: '' };
+  var inc = cands.map(function (c) { return c >= startIso; });
+  var any = inc.some(function (x) { return x; }), all = inc.every(function (x) { return x; });
+  return { include: any, warn: any && !all ? 'AMBIGUOUS' : '', lwd: cands[0] };
 }
 
 /** Latest VALID row per KEY (EMP_ID|DATE) within period. Later ENTERED_AT wins; ties -> later array position. */
@@ -903,6 +964,42 @@ function validateAttendanceRowForApproval(row) {
   return problems;
 }
 
+/**
+ * Employee-level problems of one INPUT_ATTENDANCE row (shared by the readiness check and the engine so both hold the
+ * same employees): [{code, message}]. Codes: ATTENDANCE_NOT_APPROVED, ATTENDANCE_INVALID_VALUE (blank PRESENT_DAYS,
+ * non-numeric or negative fields), ATTENDANCE_OVER_MONTH (worked days > days in the month), HR_OVERRIDE_WITHOUT_REASON.
+ */
+function attendanceRowProblems(row, population, period) {
+  var out = [];
+  if (!row) return out;
+  if (String(row.APPROVAL_STATUS == null ? '' : row.APPROVAL_STATUS).trim().toUpperCase() !== 'APPROVED') {
+    out.push({ code: 'ATTENDANCE_NOT_APPROVED', message: 'Attendance row is not APPROVED' });
+  }
+  var bad = [];
+  ATT_NUM_FIELDS.forEach(function (k) {
+    if (k === 'PRESENT_DAYS' && (row[k] === '' || row[k] == null)) { bad.push(k + ' blank'); return; }
+    var n = attNum_(row[k]);
+    if (isNaN(n) || n < 0) bad.push(k);
+  });
+  if (bad.length) {
+    out.push({ code: 'ATTENDANCE_INVALID_VALUE', message: 'Blank / non-numeric / negative day fields: ' + bad.join(', ') });
+  } else {
+    var w = computeWorkedDays(row, population), dim = daysInMonth(period);
+    if (w > dim + 1e-9) {
+      out.push({ code: 'ATTENDANCE_OVER_MONTH', message: 'Worked days ' + w + ' exceed days in month ' + dim });
+    }
+  }
+  if (String(row.HR_OVERRIDE || '').trim().toUpperCase() === 'Y' && String(row.OVERRIDE_REASON || '').trim() === '') {
+    out.push({ code: 'HR_OVERRIDE_WITHOUT_REASON', message: 'HR_OVERRIDE=Y needs OVERRIDE_REASON' });
+  }
+  return out;
+}
+
+/** True when the INPUT_ATTENDANCE row comes from the monthly register (the pay source, DESIGN section 2). */
+function isRegisterRow_(row) {
+  return !!row && String(row.SOURCE_REF == null ? '' : row.SOURCE_REF).trim().toUpperCase() === 'REGISTER';
+}
+
 // ================================================================ sheet-touching entry points
 
 function periodPopulationsOpen_(period) {
@@ -920,18 +1017,28 @@ function periodPopulationsOpen_(period) {
 function buildRoster(period) {
   var rows = readObjects(TABS.EMPLOYEE_MASTER), seen = {}, roster = [], duplicates = [], excluded = [], warnings = [];
   var end = period ? periodEnd(period) : '';
+  var start = period ? periodStart(period) : '';
   rows.forEach(function (r) {
-    if (String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() !== 'active') return;
+    var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = String(r.PAYROLL_CATEGORY || '').trim();
     var id = String(r.EMP_ID || '').trim();
     if (!id || !isKnownPopulation(pop)) return;
+    var lv = { include: false, warn: '', lwd: '' };
+    if (!active) {
+      // leaver: a non-Active employee whose last working day is on/after the period start stays on the roster
+      if (!start) return;
+      lv = leaverRosterDecision(masterLastWorkingDay_(r), start);
+      if (!lv.include) return;
+    }
     var dec = end ? dojRosterDecision(r.DOJ_AS_SOURCE, end) : { include: true, warn: '' };
     if (!dec.include) { if (excluded.indexOf(id) < 0) excluded.push(id); return; }
     if (seen[id]) { duplicates.push(id); return; }
     seen[id] = true;
     if (dec.warn) warnings.push(id);
-    roster.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), NAME: String(r.EMPLOYEE_NAME || ''),
-      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DOJ: parseDoj(r.DOJ_AS_SOURCE), DOJ_WARN: dec.warn });
+    var entry = { EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), NAME: String(r.EMPLOYEE_NAME || ''),
+      DEPARTMENT: String(r.DEPARTMENT || '').trim(), DOJ: parseDoj(r.DOJ_AS_SOURCE), DOJ_WARN: dec.warn };
+    if (!active) { entry.LEAVER = true; entry.LWD = lv.lwd; entry.LWD_WARN = lv.warn; }
+    roster.push(entry);
   });
   roster.duplicates = duplicates;
   roster.joinersExcluded = excluded;
@@ -1016,11 +1123,14 @@ function generateMonthlyAttendance(period) {
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var creates = [], updates = [], counts = { CREATE: 0, REGENERATE: 0, UNCHANGED: 0, OVERRIDE: 0, KEEP_APPROVED: 0 };
+  var registerKept = [];
   var needsReason = [], withMissing = [];
   records.forEach(function (rec) {
     var pop = rec.PAYROLL_CATEGORY;
     var gen = generatedValuesFromRecord(rec);
     var ex = existing[rec.EMP_ID] || null;
+    // the monthly register is the pay source: its rows are compared with the daily data (ATTENDANCE_COMPARISON), never regenerated
+    if (ex && isRegisterRow_(ex)) { registerKept.push(rec.EMP_ID); return; }
     var m = mergeGeneratedWithExisting(ex, gen);
     counts[m.action]++;
     if (m.action === 'KEEP_APPROVED') return;
@@ -1051,7 +1161,7 @@ function generateMonthlyAttendance(period) {
   appendObjects(TABS.INPUT_ATTENDANCE, creates);
   var refreshed = refreshAttendanceWorkingDays_(period);
   var res = { period: period, counts: counts, employeesWithMissingDates: withMissing, overridesNeedingReason: needsReason,
-    workingDaysRefreshed: refreshed, skippedLockedPopulations: pp.locked };
+    workingDaysRefreshed: refreshed, skippedLockedPopulations: pp.locked, registerRowsKept: registerKept.length };
   audit('ATT_GENERATE', period, '', res);
   return res;
 }
@@ -1065,10 +1175,24 @@ function approveAttendance(period, population) {
   try { user = Session.getActiveUser().getEmail(); } catch (e) { user = ''; }
   if (!user) throw new Error('Cannot determine active user email - approval refused');
   var approved = [], blocked = [], updates = [];
+  // an employee with an open daily-vs-register dispute stays PENDING until the owner approved HR's decision AND the
+  // decided days are in the attendance row (same rule the engine uses for the hold)
+  var openDispute = {};
+  if (typeof cmp_storedRows_ === 'function' && getSheet(TABS.ATTENDANCE_COMPARISON)) {
+    var attBy = {};
+    readObjects(TABS.INPUT_ATTENDANCE).forEach(function (a) {
+      var id = String(a.EMP_ID).trim();
+      if (normalizePeriod(a.PAYROLL_MONTH) === period && !(id in attBy)) attBy[id] = a;
+    });
+    attendanceDisputeStages(cmp_storedRows_(period), attBy, getOwnerApproverEmail(), period).forEach(function (d) {
+      openDispute[String(d.EMP_ID).trim()] = true;
+    });
+  }
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period || String(r.PAYROLL_CATEGORY).trim() !== population) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var problems = validateAttendanceRowForApproval(r);
+    if (openDispute[String(r.EMP_ID).trim()]) problems.push('attendance dispute open (daily vs register): see ATTENDANCE_COMPARISON');
     if (problems.length) { blocked.push({ EMP_ID: r.EMP_ID, problems: problems }); return; }
     updates.push({ row: r._row, values: { APPROVAL_STATUS: 'APPROVED', APPROVED_BY: user } });
     approved.push(r.EMP_ID);
@@ -1336,6 +1460,480 @@ function installTriggers() {
     note: plan.present > 1 ? 'more than one ' + HROS_SUBMIT_HANDLER + ' trigger exists - ask the owner to remove the extra ones' : '' };
   audit('TRIGGERS_INSTALL', '', '', res);
   return res;
+}
+
+// ===== 12_Register.gs =====
+/**
+ * 12_Register.gs - monthly attendance register (DESIGN section 2, "Monthly attendance register").
+ * One number per employee ("days present") plus one toggle per population ("INCLUDES / EXCLUDES weekly offs");
+ * everything else (WEEK_OFF, PH, EL/CL/SL, C/Off, OD, LWP) is derived from the calendar and the approved leave.
+ * Pure: deriveMonthlyAttendance, applyPhysicalOverride, registerValuesFromDerived, pickDefaultRegisterPeriod,
+ * registerUserAllowed, validateRegisterEntries. Sheet-touching: registerLoad, registerSubmit,
+ * refreshRegisterAttendance_ (the HTML page and its entry points are in 13_RegisterPage.gs).
+ * Helpers are prefixed register_ / reg_.
+ */
+var REGISTER_SOURCE_REF = 'REGISTER';
+var REGISTER_COLUMNS = ['REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
+  'OVERRIDE_REASON', 'ROW_KEY', 'PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS'];
+
+// ================================================================ pure
+
+function reg_r2_(x) { return Math.round(x * 100) / 100; }
+
+/** ISO dates of the period that fall on the weekly-off weekday. */
+function weeklyOffDatesInMonth(period, weeklyOffDay) {
+  return enumerateDates(period).filter(function (d) { return weekdayOf(d) === weeklyOffDay; });
+}
+
+/** ISO dates of the period that are PAID holidays for the site (HOLIDAY_CALENDAR PAID=Y, SITE = site or ALL). */
+function paidHolidayDatesInMonth(period, holidays, site) {
+  return enumerateDates(period).filter(function (d) { return isPaidHoliday_(holidays, d, site); });
+}
+
+function reg_leaveNum_(v) {
+  if (v === '' || v == null) return 0;
+  var n = Number(v);
+  return isNaN(n) ? NaN : n;
+}
+
+/**
+ * Pure. Turns the ONE number HR enters per employee into every INPUT_ATTENDANCE component.
+ *  WEEK_OFF = weekly-off weekdays of the month for the site, minus dates that are paid holidays (workers: 0, the worker
+ *  template has no week-off); PH = paid holidays of the month (site or ALL) that do not fall on the weekly off.
+ *  includesWO = true (not for PERMANENT_WORKER): PRESENT_DAYS = registerDays - WEEK_OFF (min 0, WARN when negative);
+ *  otherwise PRESENT_DAYS = registerDays. PHYSICAL_PRESENT_DAYS = that figure. Approved leave adds EL/CL/SL
+ *  (EL_AVAILED / CL_AVAILED / SL_AVAILED), C/Off -> PAID_LEAVE_OTHER, LWP -> ABSENT_LWP_DAYS; OD days are ADDED to
+ *  PRESENT_DAYS (worked, but not physical). Employee-level exception ATTENDANCE_OVER_MONTH (BLOCKER for that employee,
+ *  the engine turns it into a HOLD) when PRESENT + WEEK_OFF + PH + EL + CL + SL + PAID_LEAVE_OTHER exceeds the days in
+ *  the month.
+ * @param {number} registerDays 0..days in month, step 0.5
+ * @param {boolean|string} includesWO true / 'Y' when the entered days INCLUDE weekly offs
+ * @param {string} population one of POPULATION_LIST
+ * @param {string} period 'YYYY-MM'
+ * @param {string} site 'NASHIK' | 'PUNE'
+ * @param {Array} holidays HOLIDAY_CALENDAR rows {DATE, SITE, PAID}
+ * @param {string} weeklyOffDay 'SUN'..'SAT'
+ * @param {Object} approvedLeaveDays {EL, CL, SL, OD, COFF, LWP} days inside the period (missing = 0)
+ * @returns {{ok:boolean, PRESENT_DAYS:number, PHYSICAL_PRESENT_DAYS:number, WEEK_OFF:number, PH:number, EL_AVAILED:number,
+ *   CL_AVAILED:number, SL_AVAILED:number, PAID_LEAVE_OTHER:number, ABSENT_LWP_DAYS:number, OD_DAYS:number,
+ *   WORKED_DAYS:number, REGISTER_DAYS_PRESENT:number, REGISTER_INCLUDES_WO:string, exceptions:Array, warnings:Array}}
+ */
+function deriveMonthlyAttendance(registerDays, includesWO, population, period, site, holidays, weeklyOffDay, approvedLeaveDays) {
+  parsePeriod(period);
+  if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
+  if (WEEKDAY_CODES.indexOf(weeklyOffDay) < 0) throw new Error('Invalid weekly off "' + weeklyOffDay + '"');
+  var dim = daysInMonth(period);
+  var inc = includesWO === true || String(includesWO == null ? '' : includesWO).trim().toUpperCase() === 'Y';
+  var out = { ok: false, PRESENT_DAYS: 0, PHYSICAL_PRESENT_DAYS: 0, WEEK_OFF: 0, PH: 0, EL_AVAILED: 0, CL_AVAILED: 0,
+    SL_AVAILED: 0, PAID_LEAVE_OTHER: 0, ABSENT_LWP_DAYS: 0, OD_DAYS: 0, WORKED_DAYS: 0,
+    REGISTER_DAYS_PRESENT: registerDays, REGISTER_INCLUDES_WO: inc ? 'Y' : 'N', exceptions: [], warnings: [] };
+  var reg = (registerDays === '' || registerDays == null || typeof registerDays === 'boolean') ? NaN : Number(registerDays);
+  if (isNaN(reg) || reg < 0 || reg > dim || Math.abs(reg * 2 - Math.round(reg * 2)) > 1e-9) {
+    out.exceptions.push({ severity: 'BLOCKER', code: 'REGISTER_DAYS_INVALID',
+      message: 'Days present must be 0..' + dim + ' in steps of 0.5 (got "' + registerDays + '")' });
+    return out;
+  }
+  var leave = approvedLeaveDays || {};
+  var lv = {};
+  var badLeave = false;
+  LEAVE_TYPES.forEach(function (t) {
+    var n = reg_leaveNum_(leave[t]);
+    if (isNaN(n) || n < 0) { badLeave = true; n = 0; }
+    lv[t] = n;
+  });
+  if (badLeave) {
+    out.exceptions.push({ severity: 'BLOCKER', code: 'LEAVE_DAYS_INVALID', message: 'Approved leave days are not non-negative numbers' });
+    return out;
+  }
+  var isWorker = population === POP.PERMANENT_WORKER;
+  var dates = enumerateDates(period);
+  var phSet = {};
+  dates.forEach(function (d) { if (isPaidHoliday_(holidays, d, site)) phSet[d] = true; });
+  var wo = 0, ph = 0;
+  dates.forEach(function (d) {
+    var isWo = weekdayOf(d) === weeklyOffDay;
+    if (phSet[d]) { if (!isWo) ph++; } else if (isWo) wo++;
+  });
+  out.WEEK_OFF = isWorker ? 0 : wo;
+  out.PH = ph;
+  var present = reg;
+  if (inc) {
+    if (isWorker) {
+      out.warnings.push({ code: 'REGISTER_WO_IGNORED_FOR_WORKER',
+        message: 'PERMANENT_WORKER has no week-off component: the entered days are used as they are' });
+    } else {
+      present = reg - out.WEEK_OFF;
+      if (present < 0) {
+        out.warnings.push({ code: 'REGISTER_LESS_THAN_WEEK_OFF',
+          message: 'Days present ' + reg + ' (incl. week-off) is less than the ' + out.WEEK_OFF + ' week-off day(s); PRESENT_DAYS set to 0' });
+        present = 0;
+      }
+    }
+  }
+  out.PHYSICAL_PRESENT_DAYS = reg_r2_(present);
+  out.OD_DAYS = reg_r2_(lv.OD);
+  out.PRESENT_DAYS = reg_r2_(present + lv.OD);
+  out.EL_AVAILED = reg_r2_(lv.EL);
+  out.CL_AVAILED = reg_r2_(lv.CL);
+  out.SL_AVAILED = reg_r2_(lv.SL);
+  out.PAID_LEAVE_OTHER = reg_r2_(lv.COFF);
+  out.ABSENT_LWP_DAYS = reg_r2_(lv.LWP);
+  out.WORKED_DAYS = reg_r2_(out.PRESENT_DAYS + out.WEEK_OFF + out.PH + out.EL_AVAILED + out.CL_AVAILED + out.SL_AVAILED +
+    out.PAID_LEAVE_OTHER);
+  if (out.WORKED_DAYS > dim + 1e-9) {
+    out.exceptions.push({ severity: 'BLOCKER', code: 'ATTENDANCE_OVER_MONTH',
+      message: 'Present ' + out.PRESENT_DAYS + ' + week-off ' + out.WEEK_OFF + ' + PH ' + out.PH + ' + EL/CL/SL ' +
+        (out.EL_AVAILED + out.CL_AVAILED + out.SL_AVAILED) + ' + other paid leave ' + out.PAID_LEAVE_OTHER + ' = ' +
+        out.WORKED_DAYS + ' exceeds the ' + dim + ' days of ' + period });
+  }
+  out.ok = true;
+  return out;
+}
+
+/**
+ * Pure. Replaces the physical days of a derived record with HR's owner-approved dispute decision (OD days stay
+ * additive to PRESENT_DAYS) and re-checks the month total. Returns a new object.
+ */
+function applyPhysicalOverride(derived, decidedDays, population, period) {
+  var d = JSON.parse(JSON.stringify(derived));
+  var n = Number(decidedDays);
+  if (isNaN(n) || n < 0 || n > daysInMonth(period)) throw new Error('Decided days must be 0..' + daysInMonth(period));
+  d.PHYSICAL_PRESENT_DAYS = reg_r2_(n);
+  d.PRESENT_DAYS = reg_r2_(n + (d.OD_DAYS || 0));
+  d.WORKED_DAYS = reg_r2_(d.PRESENT_DAYS + d.WEEK_OFF + d.PH + d.EL_AVAILED + d.CL_AVAILED + d.SL_AVAILED + d.PAID_LEAVE_OTHER);
+  d.exceptions = (d.exceptions || []).filter(function (e) { return e.code !== 'ATTENDANCE_OVER_MONTH'; });
+  if (d.WORKED_DAYS > daysInMonth(period) + 1e-9) {
+    d.exceptions.push({ severity: 'BLOCKER', code: 'ATTENDANCE_OVER_MONTH',
+      message: 'Worked days ' + d.WORKED_DAYS + ' exceed the ' + daysInMonth(period) + ' days of ' + period });
+  }
+  return d;
+}
+
+/** Pure. The INPUT_ATTENDANCE cells for a derived record ({field: value}); snapshot goes to GENERATED_VALUES_JSON. */
+function registerValuesFromDerived(d, enteredBy, enteredAt) {
+  var snap = {};
+  ATT_NUM_FIELDS.forEach(function (k) { snap[k] = d[k]; });
+  snap.OD_DAYS = d.OD_DAYS;
+  snap.REGISTER_DAYS_PRESENT = d.REGISTER_DAYS_PRESENT;
+  snap.REGISTER_INCLUDES_WO = d.REGISTER_INCLUDES_WO;
+  var v = {};
+  ATT_NUM_FIELDS.forEach(function (k) { v[k] = d[k]; });
+  v.WORKED_DAYS = d.WORKED_DAYS;
+  v.PAYABLE_DAYS = d.WORKED_DAYS;
+  v.REGISTER_DAYS_PRESENT = d.REGISTER_DAYS_PRESENT;
+  v.REGISTER_INCLUDES_WO = d.REGISTER_INCLUDES_WO;
+  v.SOURCE_REF = REGISTER_SOURCE_REF;
+  v.ENTERED_BY = enteredBy || '';
+  v.ENTERED_AT = enteredAt || '';
+  v.GENERATED_VALUES_JSON = JSON.stringify(snap);
+  v.HR_OVERRIDE = 'N';
+  v.OVERRIDE_REASON = '';
+  return v;
+}
+
+/** Pure. Latest period >= minPeriod with a population that is not LOCKED; else todayPeriod (if >= min); else minPeriod. */
+function pickDefaultRegisterPeriod(periodCatRows, minPeriod, todayPeriod) {
+  var open = {};
+  (periodCatRows || []).forEach(function (r) {
+    var p = normalizePeriod(r.PAYROLL_MONTH);
+    if (!p || p < minPeriod) return;
+    if (String(r.STATUS == null ? '' : r.STATUS).trim().toUpperCase() !== PERIOD_STATUS.LOCKED) open[p] = true;
+  });
+  var ps = Object.keys(open).sort();
+  if (ps.length) return ps[ps.length - 1];
+  return todayPeriod && todayPeriod >= minPeriod ? todayPeriod : minPeriod;
+}
+
+/** Pure. Who may submit the register: HR approver, owner, or REGISTER_ENTRY_EMAILS (comma separated). Unknown user: never. */
+function registerUserAllowed(user, hrEmail, ownerEmail, extraCsv) {
+  var u = String(user == null ? '' : user).trim().toLowerCase();
+  if (!u) return false;
+  var list = [hrEmail, ownerEmail].concat(String(extraCsv == null ? '' : extraCsv).split(','));
+  return list.some(function (e) { return String(e == null ? '' : e).trim().toLowerCase() === u; });
+}
+
+/**
+ * Pure. Validates submitted entries against the roster: each {empId, days}. Blank days = not entered (skipped).
+ * Returns {entries:[{empId, days}], notEntered:[ids], errors:[text]}; any error means nothing may be written.
+ */
+function validateRegisterEntries(rawEntries, rosterMap, period) {
+  var dim = daysInMonth(period), seen = {}, out = { entries: [], notEntered: [], errors: [] };
+  (rawEntries || []).forEach(function (e) {
+    var id = String(e && e.empId != null ? e.empId : '').trim();
+    if (!id) return;
+    if (seen[id]) { out.errors.push(id + ': entered twice'); return; }
+    seen[id] = true;
+    if (!rosterMap[id]) { out.errors.push(id + ': not on the roster of ' + period); return; }
+    var raw = e.days;
+    if (raw === '' || raw == null) { out.notEntered.push(id); return; }
+    var n = typeof raw === 'boolean' ? NaN : Number(raw);
+    if (isNaN(n) || n < 0 || n > dim || Math.abs(n * 2 - Math.round(n * 2)) > 1e-9) {
+      out.errors.push(id + ': days present must be 0..' + dim + ' in steps of 0.5 (got "' + raw + '")');
+      return;
+    }
+    out.entries.push({ empId: id, days: n });
+  });
+  return out;
+}
+
+// ================================================================ sheet-touching
+
+/** Throws unless the active user may run the register (HR approver / owner / REGISTER_ENTRY_EMAILS). Returns the email. */
+function register_requireUser_() {
+  var user = approval_userEmail_();
+  if (!user) throw new Error('Cannot determine your Google account email - the register was not opened / saved');
+  var ctl = readControlMap();
+  if (!registerUserAllowed(user, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) {
+    throw new Error('Not allowed: ' + user + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS');
+  }
+  return user;
+}
+
+function register_requireColumns_() {
+  var headers = getHeaders(resolveSheet_(TABS.INPUT_ATTENDANCE));
+  var missing = REGISTER_COLUMNS.filter(function (c) { return headers.indexOf(c) < 0; });
+  if (missing.length) throw new Error('INPUT_ATTENDANCE lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup)');
+}
+
+/** Everything the register needs for a period, read once. */
+function register_ctx_(period) {
+  var roster = buildRoster(period), rosterMap = {};
+  roster.forEach(function (e) { rosterMap[e.EMP_ID] = e; });
+  var leaveRows = getSheet(TABS.INPUT_LEAVE) ? readObjects(TABS.INPUT_LEAVE) : [];
+  var pp = periodPopulationsOpen_(period);
+  return { period: period, roster: roster, rosterMap: rosterMap,
+    holidays: getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [],
+    weeklyOff: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) },
+    leaveByEmp: leaveByEmp(leaveRows, period), workingDays: workingDaysFor_(period),
+    lockedPops: pp.locked, existing: existingAttendanceByEmp_(period) };
+}
+
+function register_derive_(ctx, emp, registerDays, includesWO) {
+  return deriveMonthlyAttendance(registerDays, includesWO, emp.PAYROLL_CATEGORY, ctx.period, emp.SITE, ctx.holidays,
+    ctx.weeklyOff[emp.SITE], ctx.leaveByEmp[emp.EMP_ID] || {});
+}
+
+function register_remarks_(existingRemarks, d) {
+  var old = String(existingRemarks == null ? '' : existingRemarks);
+  if (old !== '' && !/^(MISSING_DATES|REGISTER)/.test(old)) return null; // keep HR's own note
+  var codes = d.warnings.map(function (w) { return w.code; }).concat(d.exceptions.map(function (e) { return e.code; }));
+  return codes.length ? 'REGISTER: ' + codes.join(',') : 'REGISTER';
+}
+
+/**
+ * Data for the page: {period, daysInMonth, defaultPeriod, populations:[{population, includesWO:'Y'|'N'}],
+ * employees:[{empId, name, department, population, days, state:'OPEN'|'APPROVED'|'LOCKED'}]}.
+ */
+function registerLoad(period) {
+  register_requireUser_();
+  var min = getMinPeriod();
+  var pcRows = readObjects(TABS.PAYROLL_PERIOD_CATEGORY);
+  var today = normalizePeriod(new Date());
+  var def = pickDefaultRegisterPeriod(pcRows, min, today);
+  var p = String(period == null ? '' : period).trim() || def;
+  guardPeriod_(p);
+  var ctx = register_ctx_(p);
+  var incBy = {};
+  POPULATION_LIST.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
+  var employees = ctx.roster.map(function (e) {
+    var row = ctx.existing[e.EMP_ID];
+    var days = '';
+    if (row && row.REGISTER_DAYS_PRESENT !== '' && row.REGISTER_DAYS_PRESENT != null && isFinite(Number(row.REGISTER_DAYS_PRESENT))) {
+      days = Number(row.REGISTER_DAYS_PRESENT);
+      incBy[e.PAYROLL_CATEGORY][String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y' ? 'Y' : 'N']++;
+    } // rows typed directly are not prefilled: the register value is the pay source
+    var state = ctx.lockedPops.indexOf(e.PAYROLL_CATEGORY) >= 0 ? 'LOCKED'
+      : (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED' ? 'APPROVED' : 'OPEN');
+    return { empId: e.EMP_ID, name: e.NAME, department: e.DEPARTMENT, population: e.PAYROLL_CATEGORY, days: days, state: state };
+  });
+  employees.sort(function (a, b) {
+    var pa = POPULATION_LIST.indexOf(a.population), pb = POPULATION_LIST.indexOf(b.population);
+    return pa - pb || (a.empId < b.empId ? -1 : (a.empId > b.empId ? 1 : 0));
+  });
+  var pops = POPULATION_LIST.filter(function (pop) { return employees.some(function (e) { return e.population === pop; }); })
+    .map(function (pop) { return { population: pop, includesWO: (incBy[pop].Y > 0 && incBy[pop].N === 0) ? 'Y' : 'N' }; });
+  return { period: p, daysInMonth: daysInMonth(p), defaultPeriod: def, populations: pops, employees: employees };
+}
+
+/**
+ * Writes INPUT_ATTENDANCE for PENDING rows only (APPROVED rows and LOCKED populations are reported, never written).
+ * payload = {period, includesWO:{POPULATION:'Y'|'N'}, entries:[{empId, days}]}. Nothing is written when any entry is invalid.
+ */
+function registerSubmit(payload) {
+  payload = payload || {};
+  var period = String(payload.period == null ? '' : payload.period).trim();
+  guardPeriod_(period);
+  var user = register_requireUser_();
+  register_requireColumns_();
+  var ctx = register_ctx_(period);
+  var val = validateRegisterEntries(payload.entries, ctx.rosterMap, period);
+  if (val.errors.length) throw new Error('Register not saved - fix these first: ' + val.errors.slice(0, 20).join('; ') +
+    (val.errors.length > 20 ? '; +' + (val.errors.length - 20) + ' more' : ''));
+  var incMap = payload.includesWO || {};
+  var now = nowIso_();
+  var creates = [], updates = [], res = { period: period, written: 0, created: 0, updated: 0, notEntered: val.notEntered,
+    skippedApproved: [], skippedLocked: [], skippedDuplicateRows: [], exceptions: [], warnings: [] };
+  val.entries.forEach(function (en) {
+    var emp = ctx.rosterMap[en.empId], pop = emp.PAYROLL_CATEGORY;
+    if (ctx.lockedPops.indexOf(pop) >= 0) { res.skippedLocked.push(en.empId); return; }
+    var row = ctx.existing[en.empId];
+    if (ctx.existing.__dups.indexOf(en.empId) >= 0) { res.skippedDuplicateRows.push(en.empId); return; }
+    if (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') { res.skippedApproved.push(en.empId); return; }
+    var inc = incMap[pop];
+    var d = register_derive_(ctx, emp, en.days, inc === true || String(inc == null ? 'N' : inc).trim().toUpperCase() === 'Y');
+    d.exceptions.forEach(function (x) { res.exceptions.push({ EMP_ID: en.empId, code: x.code, message: x.message }); });
+    d.warnings.forEach(function (x) { res.warnings.push({ EMP_ID: en.empId, code: x.code, message: x.message }); });
+    var vals = registerValuesFromDerived(d, user, now);
+    var rem = register_remarks_(row ? row.REMARKS : '', d);
+    if (rem !== null) vals.REMARKS = rem;
+    if (row) { updates.push({ row: row._row, values: vals }); res.updated++; }
+    else {
+      vals.PAYROLL_MONTH = period; vals.EMP_ID = en.empId; vals.PAYROLL_CATEGORY = pop;
+      vals.WORKING_DAYS = ctx.workingDays[pop] === undefined ? '' : ctx.workingDays[pop];
+      vals.APPROVAL_STATUS = 'PENDING'; vals.ROW_KEY = period + '|' + en.empId;
+      creates.push(vals); res.created++;
+    }
+  });
+  updateRows(TABS.INPUT_ATTENDANCE, updates);
+  appendObjects(TABS.INPUT_ATTENDANCE, creates);
+  res.written = res.created + res.updated;
+  audit('REGISTER_SUBMIT', period, '', { by: user, written: res.written, created: res.created, updated: res.updated,
+    skippedApproved: res.skippedApproved.length, skippedLocked: res.skippedLocked.length, notEntered: res.notEntered.length,
+    exceptions: res.exceptions.map(function (x) { return x.EMP_ID + ':' + x.code; }), includesWO: incMap });
+  return res;
+}
+
+/**
+ * Re-derives the register rows of a period from their stored REGISTER_DAYS_PRESENT / REGISTER_INCLUDES_WO with the CURRENT
+ * approved leave (called after every leave sync). PENDING rows are rewritten when a component changed; a row whose
+ * dispute decision was applied (HR_OVERRIDE=Y, reason ATTENDANCE_DISPUTE...) keeps its decided physical days.
+ * APPROVED rows are never touched: those whose leave-derived numbers are now different are listed as staleApproved.
+ */
+function refreshRegisterAttendance_(period) {
+  register_requireColumns_();
+  var ctx = register_ctx_(period), updates = [], stale = [], unchanged = 0;
+  readObjects(TABS.INPUT_ATTENDANCE).forEach(function (row) {
+    if (normalizePeriod(row.PAYROLL_MONTH) !== period || !isRegisterRow_(row)) return;
+    var id = String(row.EMP_ID).trim(), emp = ctx.rosterMap[id];
+    if (!emp || ctx.lockedPops.indexOf(emp.PAYROLL_CATEGORY) >= 0) return;
+    var reg = row.REGISTER_DAYS_PRESENT;
+    if (reg === '' || reg == null || isNaN(Number(reg))) return;
+    var d = register_derive_(ctx, emp, Number(reg), String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y');
+    if (!d.ok) return;
+    var overridden = String(row.HR_OVERRIDE).trim().toUpperCase() === 'Y' && /^ATTENDANCE_DISPUTE/.test(String(row.OVERRIDE_REASON));
+    var eff = overridden ? applyPhysicalOverride(d, row.PHYSICAL_PRESENT_DAYS, emp.PAYROLL_CATEGORY, period) : d;
+    var same = ATT_NUM_FIELDS.every(function (k) { return attValuesEqual_(row[k], eff[k]); });
+    var approved = String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED';
+    if (same) { unchanged++; return; }
+    if (approved) { stale.push(id); return; }
+    var vals = {};
+    ATT_NUM_FIELDS.forEach(function (k) { vals[k] = eff[k]; });
+    vals.WORKED_DAYS = eff.WORKED_DAYS; vals.PAYABLE_DAYS = eff.WORKED_DAYS;
+    vals.GENERATED_VALUES_JSON = registerValuesFromDerived(d, '', '').GENERATED_VALUES_JSON;
+    var rem = register_remarks_(row.REMARKS, eff);
+    if (rem !== null) vals.REMARKS = rem;
+    updates.push({ row: row._row, values: vals });
+  });
+  updateRows(TABS.INPUT_ATTENDANCE, updates);
+  var res = { period: period, refreshed: updates.length, unchanged: unchanged, staleApproved: stale };
+  if (updates.length || stale.length) audit('REGISTER_REFRESH', period, '', res);
+  return res;
+}
+
+// ===== 13_RegisterPage.gs =====
+/**
+ * 13_RegisterPage.gs - the HTML page of the monthly attendance register and its entry points.
+ *  - menu "HR OS > Month > Open monthly attendance register" opens it as a modal dialog (no deployment needed);
+ *  - doGet serves the same page when the script is also deployed as a web app (deploy "Execute as: User accessing the
+ *    web app" so the runner's email is known; every server call checks it, see register_requireUser_).
+ * The page never reads or shows anything but employee code, name and the days figure.
+ */
+function registerPageHtml_() {
+  return [
+    '<!DOCTYPE html><html><head><base target="_top"><meta charset="utf-8">',
+    '<title>Monthly attendance register</title>',
+    '<style>',
+    'body{font-family:Arial,Helvetica,sans-serif;margin:16px;color:#202124}',
+    'h2{margin:0 0 8px}fieldset{margin:10px 0;border:1px solid #c9ced6;border-radius:4px}',
+    'legend{font-weight:bold}label{margin-right:16px}',
+    'table{border-collapse:collapse;width:100%;margin-top:8px}th,td{border:1px solid #d5d9e0;padding:4px 8px;text-align:left}',
+    'th{background:#f1f3f4;position:sticky;top:0}td.num{width:140px}input.days{width:100px}',
+    '.pop td{background:#e8eefc;font-weight:bold}.note{color:#5f6368;font-size:12px}',
+    '#msg{margin-top:12px;white-space:pre-wrap}.err{color:#b00020}.ok{color:#1b7f3b}',
+    'button{padding:6px 14px;margin-right:8px}',
+    '</style></head><body>',
+    '<h2>Monthly attendance register</h2>',
+    '<div>Period <input id="period" type="month"> <button id="load">Load</button>',
+    ' <span class="note">One number per employee. Weekly offs, holidays and approved leave are added automatically.</span></div>',
+    '<div id="cats"></div>',
+    '<table id="tbl"><thead><tr><th>Employee</th><th>Days present</th><th>Status</th></tr></thead><tbody id="rows"></tbody></table>',
+    '<p><button id="submit" disabled>Submit register</button><span class="note">Only PENDING attendance rows are written; approved or locked rows are skipped.</span></p>',
+    '<div id="msg"></div>',
+    '<script>',
+    'var state=null;',
+    'function el(t,a,txt){var e=document.createElement(t);if(a)for(var k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;return e;}',
+    'function say(t,c){var m=document.getElementById("msg");m.className=c||"";m.textContent=t;}',
+    'function fail(e){say(String(e&&e.message?e.message:e),"err");document.getElementById("submit").disabled=false;}',
+    'function render(d){',
+    ' state=d;say("");document.getElementById("period").value=d.period;',
+    ' var cats=document.getElementById("cats");cats.textContent="";',
+    ' d.populations.forEach(function(p){',
+    '  var f=el("fieldset");f.appendChild(el("legend",null,p.population));',
+    '  [["N","Days present EXCLUDES weekly offs"],["Y","Days present INCLUDES weekly offs"]].forEach(function(o){',
+    '   var l=el("label");var r=el("input",{type:"radio",name:"inc_"+p.population,value:o[0]});if(p.includesWO===o[0])r.checked=true;',
+    '   l.appendChild(r);l.appendChild(document.createTextNode(" "+o[1]));f.appendChild(l);});',
+    '  cats.appendChild(f);});',
+    ' var body=document.getElementById("rows");body.textContent="";var last="";',
+    ' d.employees.forEach(function(e){',
+    '  if(e.population!==last){last=e.population;var h=el("tr",{"class":"pop"});var c=el("td",{colspan:"3"},e.population);h.appendChild(c);body.appendChild(h);}',
+    '  var tr=el("tr");tr.appendChild(el("td",null,e.empId+" \\u2013 "+e.name));',
+    '  var td=el("td",{"class":"num"});var i=el("input",{type:"number","class":"days","data-emp":e.empId,min:"0",max:String(d.daysInMonth),step:"0.5"});',
+    '  if(e.days!=="")i.value=e.days;if(e.state!=="OPEN")i.disabled=true;td.appendChild(i);tr.appendChild(td);',
+    '  tr.appendChild(el("td",null,e.state==="OPEN"?"":e.state));body.appendChild(tr);});',
+    ' document.getElementById("submit").disabled=false;}',
+    'document.getElementById("load").onclick=function(){say("Loading...");',
+    ' google.script.run.withSuccessHandler(render).withFailureHandler(fail).registerApiLoad(document.getElementById("period").value||"");};',
+    'document.getElementById("submit").onclick=function(){',
+    ' if(!state)return;var inc={};state.populations.forEach(function(p){var r=document.querySelector("input[name=inc_"+p.population+"]:checked");inc[p.population]=r?r.value:"N";});',
+    ' var entries=[];Array.prototype.forEach.call(document.querySelectorAll("input.days"),function(i){if(i.disabled)return;entries.push({empId:i.getAttribute("data-emp"),days:i.value});});',
+    ' document.getElementById("submit").disabled=true;say("Saving...");',
+    ' google.script.run.withSuccessHandler(function(r){document.getElementById("submit").disabled=false;',
+    '  var t="Saved "+r.written+" row(s) ("+r.created+" new, "+r.updated+" updated).";',
+    '  if(r.notEntered.length)t+="\\nNot entered: "+r.notEntered.length;',
+    '  if(r.skippedApproved.length)t+="\\nSkipped (already APPROVED): "+r.skippedApproved.join(", ");',
+    '  if(r.skippedLocked.length)t+="\\nSkipped (LOCKED): "+r.skippedLocked.join(", ");',
+    '  if(r.exceptions.length)t+="\\nEXCEPTIONS (employee will be on HOLD): "+r.exceptions.map(function(x){return x.EMP_ID+" "+x.code;}).join("; ");',
+    '  if(r.warnings.length)t+="\\nWarnings: "+r.warnings.map(function(x){return x.EMP_ID+" "+x.code;}).join("; ");',
+    '  say(t,r.exceptions.length?"err":"ok");}).withFailureHandler(fail).registerApiSubmit({period:state.period,includesWO:inc,entries:entries});};',
+    'document.getElementById("load").click();',
+    '</script></body></html>'
+  ].join('\n');
+}
+
+/** Web-app entry (only used when the script is deployed as a web app). */
+function doGet(e) {
+  return HtmlService.createHtmlOutput(registerPageHtml_()).setTitle('HR OS - Monthly attendance register');
+}
+
+/** Menu entry: the register as a modal dialog of the spreadsheet (no deployment needed). */
+function registerOpenDialog() {
+  var out = HtmlService.createHtmlOutput(registerPageHtml_()).setWidth(980).setHeight(720);
+  SpreadsheetApp.getUi().showModalDialog(out, 'Monthly attendance register');
+  return null;
+}
+
+/** google.script.run: page data. */
+function registerApiLoad(period) { return JSON.parse(JSON.stringify(registerLoad(period))); }
+
+/** google.script.run: submit. Serialised with the script lock so two submissions cannot interleave. */
+function registerApiSubmit(payload) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return JSON.parse(JSON.stringify(registerSubmit(payload)));
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ===== 20_Feeds.gs =====
@@ -2267,6 +2865,540 @@ function syncEfficiencyFromForm(period) {
   return feeds_syncForm_(period, FEEDS_EFFICIENCY_TAB, TABS.INPUT_EFFICIENCY, mapEfficiencyRows, 'EFFICIENCY', 'EFFICIENCY_SYNC');
 }
 
+// ===== 21_Leave.gs =====
+/**
+ * 21_Leave.gs - leave sync (DESIGN section 2, "Leave").
+ * The leave application form lives in its OWN spreadsheet (its own approval process and yearly balances). It is read
+ * READ-ONLY (SpreadsheetApp.openById, header-selective reads, password columns never selected) and normalised into the
+ * controlled INPUT_LEAVE tab; the register derivation (12_Register.gs) then turns approved leave into EL / CL / SL /
+ * C-Off / OD / LWP days. The same spreadsheet also holds the yearly leave balances printed on the payslip.
+ *
+ * Source layout (Leave_Applications): an event log. Employees add "Apply ..." rows; the approver later adds separate
+ * "Approval (for admin use only)" rows (a new row, not an update) that repeat the employee / dates / type and carry the
+ * decision. Most approvals have no Apply row in the log, so an approval is self-contained; an Apply row only links.
+ * Pure: mapLeaveRows, leave_normalizeType, leave_planResync, leaveByEmp, leaveExceptions, leave_balancesFromRows.
+ * Sheet-touching: syncLeaveFromSource, leaveAutoSync_, leave_readBalances_.
+ */
+var LEAVE_NORMALIZER_VERSION = 'LEAVE-1.0';
+var LEAVE_MAX_SPAN_DAYS = 92;
+var LEAVE_DEFAULT_TAB = 'Leave_Applications';
+var LEAVE_DEFS = [
+  { key: 'Timestamp', names: ['timestamp'] },
+  { key: 'Submission Type', names: ['submissiontype'], required: true },
+  { key: 'Employee ID', names: ['employeeid', 'empid', 'employeecode'], required: true },
+  { key: 'Leave Start Date', names: ['leavestartdate', 'startdate', 'fromdate'], required: true },
+  { key: 'Leave Start Date Half', names: ['leavestartdatehalf', 'startdatehalf'] },
+  { key: 'Leave End Date', names: ['leaveenddate', 'enddate', 'todate'], required: true },
+  { key: 'Leave End Date Half', names: ['leaveenddatehalf', 'enddatehalf'] },
+  { key: 'Leave Type', names: ['leavetype'], required: true },
+  { key: 'Approval Decision', names: ['approvaldecision', 'decision'], required: true },
+  { key: 'Approved Number of days', names: ['approvednumberofdays', 'approveddays'] },
+  { key: 'Case No', names: ['caseno', 'caseid', 'casenumber'] }
+];
+var LEAVE_BALANCE_TABS = { STAFF: 'Leave Databse Staff', PERMANENT_WORKER: 'Leave Dadabase PW', CONSULTANT: 'Leave Dadabase CON' };
+var LEAVE_BALANCE_ALIASES = {
+  EL: ['elavailable', 'elbalance', 'elavailablebalance', 'availableel', 'elavail'],
+  CL: ['clavailable', 'clbalance', 'clavailablebalance', 'availablecl', 'clavail'],
+  SL: ['slavailable', 'slbalance', 'slavailablebalance', 'availablesl', 'slavail']
+};
+var LEAVE_BALANCE_EMP_ALIASES = ['employeeid', 'empid', 'empcode', 'employeecode'];
+var LEAVE_BALANCE_HEADER_SCAN_ROWS = 6;
+
+// ================================================================ pure helpers
+
+/**
+ * 'Earned Leave (EL)', 'casual Leave (CL)', 'MEdical Leave (SL)', 'Outdoor Duty (OD)', 'Compensatory Off- C/Off',
+ * 'Leave Without Pay (LWP)' -> EL | CL | SL | OD | COFF | LWP (case / spacing insensitive). Anything that does not
+ * match exactly one type -> null (the caller raises an exception row).
+ */
+function leave_normalizeType(raw) {
+  var s = String(raw == null ? '' : raw).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  var hits = [];
+  if (/\bel\b|earned/.test(s)) hits.push('EL');
+  if (/\bcl\b|casual/.test(s)) hits.push('CL');
+  if (/\bsl\b|medical|sick/.test(s)) hits.push('SL');
+  if (/\bod\b|outdoor/.test(s)) hits.push('OD');
+  if (/c\s*\/\s*off|compensat/.test(s)) hits.push('COFF');
+  if (/\blwp\b|without pay|loss of pay/.test(s)) hits.push('LWP');
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Half-day flag cell -> 'FULL' | 'HALF' | 'UNKNOWN'. Blank = full day. */
+function leave_halfFlag_(v) {
+  if (v == null || v === '') return 'FULL';
+  if (v === true) return 'HALF';
+  if (v === false) return 'FULL';
+  if (typeof v === 'number') return v === 0 ? 'FULL' : (v === 0.5 ? 'HALF' : 'UNKNOWN');
+  var s = String(v).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!s) return 'FULL';
+  if (/\bno\b|\bnot\b|^n$|^false$|^0$|^none$|^-$|full/.test(s)) return 'FULL';
+  if (/half|^yes$|^y$|^true$|^1$|^0\.5$/.test(s)) return 'HALF';
+  return 'UNKNOWN';
+}
+
+function leave_addDays_(iso, n) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + n));
+  return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
+}
+
+/** Inclusive ISO dates start..end (start <= end, span already checked by the caller). */
+function leave_range_(start, end) {
+  var out = [], d = start;
+  while (d <= end) { out.push(d); d = leave_addDays_(d, 1); }
+  return out;
+}
+
+function leave_r2_(x) { return Math.round(x * 100) / 100; }
+
+/** Timestamp cell -> 'YYYY-MM' ('' if unusable). */
+function leave_tsPeriod_(v) {
+  var iso = feeds_parseDate_(v);
+  return iso ? iso.slice(0, 7) : '';
+}
+
+/**
+ * Pure. Leave source rows -> INPUT_LEAVE rows for ONE period.
+ *  - Groups: an Approval row joins an Apply row by Case No (with the same EMP_ID) when both have one; otherwise by
+ *    EMP_ID + start date + end date + normalized leave type. The LATEST decisive approval (Approved / Rejected, by
+ *    timestamp then row) of a group wins; only Approved counts; a later Rejected revokes (counted, no exception).
+ *  - Days: 'Approved Number of days' when present, otherwise computed from the dates with the half-day flags. Only
+ *    dates that are not the site's weekly off / a paid holiday carry leave (the register adds WEEK_OFF and PH itself).
+ *    Multi-month leave is split per date; only dates inside the period are counted (when the approved figure differs
+ *    from the computed one it is spread proportionally over the working dates and a NOTE is kept).
+ *  - Exceptions (never counted): unknown employee, unknown leave type, unparseable / implausible dates, end before
+ *    start, invalid approved days, unrecognised half-day flag or decision, an Approved decision on a non-approval row,
+ *    duplicates and overlaps with another approved leave. Only groups that touch the period can raise exceptions.
+ * @param {Array} headers selected header cells; @param {Array<Array>} rows zipped rows; @param {string} period
+ * @param {Array} roster [{EMP_ID, PAYROLL_CATEGORY, SITE}]
+ * @param {Object} [opts] {firstRow, enteredAt, sourceLabel, holidays (HOLIDAY_CALENDAR rows), weeklyOffBySite {NASHIK:'SUN'}}
+ * @returns {{valid:Array, exceptions:Array, pendingCount:number, revokedCount:number, missingColumns:Array}}
+ */
+function mapLeaveRows(headers, rows, period, roster, opts) {
+  parsePeriod(period);
+  opts = opts || {};
+  var firstRow = opts.firstRow || 2, enteredAt = opts.enteredAt || '', label = opts.sourceLabel || 'LEAVE';
+  var idx = feeds_headerIndex_(headers);
+  var c = {};
+  LEAVE_DEFS.forEach(function (d) { c[d.key] = feeds_col_(idx, d.names); });
+  var out = { valid: [], exceptions: [], pendingCount: 0, revokedCount: 0, missingColumns: [] };
+  LEAVE_DEFS.forEach(function (d) { if (d.required && c[d.key] < 0) out.missingColumns.push(d.key); });
+  if (out.missingColumns.length) return out; // fail closed: nothing counted without the required headers
+
+  var pStart = periodStart(period), pEnd = periodEnd(period);
+  var rosterMap = feeds_rosterMap_(roster);
+  var cell = function (row, key) { return feeds_cell_(row, c[key]); };
+
+  var parsed = [];
+  rows.forEach(function (row, i) {
+    var emp = feeds_empId_(cell(row, 'Employee ID')), typeRaw = feeds_str_(cell(row, 'Submission Type'));
+    if (!emp && !typeRaw) return; // empty template row
+    var tn = feeds_norm_(typeRaw);
+    var p = {
+      i: i, srcRow: firstRow + i, emp: emp, typeRaw: typeRaw,
+      kind: tn.indexOf('approval') >= 0 ? 'APPROVAL' : (tn.indexOf('apply') >= 0 ? 'APPLY' : 'OTHER'),
+      ts: feeds_ts_(cell(row, 'Timestamp')), tsRaw: cell(row, 'Timestamp'),
+      ltRaw: feeds_str_(cell(row, 'Leave Type')),
+      start: feeds_parseDate_(cell(row, 'Leave Start Date')), end: feeds_parseDate_(cell(row, 'Leave End Date')),
+      startRaw: feeds_str_(cell(row, 'Leave Start Date')), endRaw: feeds_str_(cell(row, 'Leave End Date')),
+      startHalf: leave_halfFlag_(cell(row, 'Leave Start Date Half')), endHalf: leave_halfFlag_(cell(row, 'Leave End Date Half')),
+      dec: feeds_str_(cell(row, 'Approval Decision')).toLowerCase(),
+      decRaw: feeds_str_(cell(row, 'Approval Decision')),
+      appDaysRaw: cell(row, 'Approved Number of days'),
+      kase: feeds_str_(cell(row, 'Case No'))
+    };
+    p.type = leave_normalizeType(p.ltRaw);
+    p.fb = p.emp + '|' + p.start + '|' + p.end + '|' + (p.type || p.ltRaw.toLowerCase());
+    parsed.push(p);
+  });
+
+  function relevant(p) {
+    var s = p.start, e = p.end;
+    if (!s && !e) { var tp = leave_tsPeriod_(p.tsRaw); return !tp || tp === period; }
+    if (s && e && e < s) return (s >= pStart && s <= pEnd) || (e >= pStart && e <= pEnd);
+    var lo = s || e, hi = e || s;
+    return lo <= pEnd && hi >= pStart;
+  }
+  var order = function (a, b) { return (a.ts - b.ts) || (a.i - b.i); };
+
+  var problems = [];  // {p, reason, detail}
+  function problem(p, reason, detail) { problems.push({ p: p, reason: reason, detail: detail || '' }); }
+
+  // Approved on a non-approval row is ambiguous; unrecognised decision text is never guessed.
+  var members = [];
+  parsed.forEach(function (p) {
+    if (p.kind !== 'APPROVAL') {
+      if (p.dec === 'approved' && relevant(p)) problem(p, 'APPROVED_ON_NON_APPROVAL_ROW');
+      if (p.kind === 'OTHER') return;
+    }
+    members.push(p);
+  });
+
+  // groups: case groups first, then rows without a case join a case group with the same fallback key
+  var groups = {}, groupOrder = [], fbToGroup = {};
+  function addTo(gid, p) { if (!groups[gid]) { groups[gid] = []; groupOrder.push(gid); } groups[gid].push(p); }
+  members.forEach(function (p) {
+    if (!p.kase) return;
+    var gid = 'C|' + p.emp + '|' + p.kase.toUpperCase();
+    addTo(gid, p);
+    if (!(p.fb in fbToGroup)) fbToGroup[p.fb] = gid;
+  });
+  members.forEach(function (p) {
+    if (p.kase) return;
+    addTo(p.fb in fbToGroup ? fbToGroup[p.fb] : 'F|' + p.fb, p);
+  });
+
+  var winners = [];
+  groupOrder.forEach(function (gid) {
+    var g = groups[gid].slice().sort(order);
+    var decisive = g.filter(function (p) { return p.kind === 'APPROVAL' && (p.dec === 'approved' || p.dec === 'rejected'); });
+    var odd = g.filter(function (p) { return p.kind === 'APPROVAL' && p.dec && p.dec !== 'approved' && p.dec !== 'rejected'; });
+    var lastD = decisive.length ? decisive[decisive.length - 1] : null;
+    var lastOdd = odd.length ? odd[odd.length - 1] : null;
+    if (lastOdd && (!lastD || order(lastOdd, lastD) > 0)) {
+      if (relevant(lastOdd)) problem(lastOdd, 'UNRECOGNISED_DECISION', '"' + lastOdd.decRaw + '"');
+      return;
+    }
+    if (!lastD) { if (relevant(g[g.length - 1])) out.pendingCount++; return; }
+    if (!relevant(lastD)) return;
+    if (lastD.dec === 'rejected') { out.revokedCount++; return; }
+    winners.push(lastD);
+  });
+
+  winners.sort(function (a, b) {
+    return a.emp < b.emp ? -1 : (a.emp > b.emp ? 1 : ((a.start < b.start ? -1 : (a.start > b.start ? 1 : 0)) || order(a, b)));
+  });
+
+  var used = {}, seenKey = {};
+  function siteOf(emp) { var r = rosterMap[emp]; return r ? (r.SITE || siteForPopulation(r.PAYROLL_CATEGORY)) : ''; }
+  winners.forEach(function (w) {
+    var fail = function (reason, detail) { problem(w, reason, detail); };
+    if (!w.emp) return fail('MISSING_EMP_ID');
+    if (!rosterMap[w.emp]) return fail('UNKNOWN_OR_INACTIVE_EMP_ID');
+    if (!w.type) return fail('UNKNOWN_LEAVE_TYPE', '"' + w.ltRaw + '"');
+    if (!w.start) return fail('START_DATE_UNPARSEABLE', '"' + w.startRaw + '"');
+    if (!w.end) return fail('END_DATE_UNPARSEABLE', '"' + w.endRaw + '"');
+    if (w.end < w.start) return fail('END_BEFORE_START', w.start + '..' + w.end);
+    if (w.start < '2020-01-01' || w.end > '2100-12-31') return fail('DATE_IMPLAUSIBLE', w.start + '..' + w.end);
+    var spanCap = leave_addDays_(w.start, LEAVE_MAX_SPAN_DAYS + 1); // never enumerate a runaway range
+    var dates = leave_range_(w.start, w.end < spanCap ? w.end : spanCap);
+    if (dates.length > LEAVE_MAX_SPAN_DAYS) return fail('LEAVE_SPAN_TOO_LONG', dates.length + ' day(s) from ' + w.start);
+    if (w.startHalf === 'UNKNOWN' || w.endHalf === 'UNKNOWN') return fail('HALF_DAY_FLAG_UNRECOGNISED');
+    var approved = null;
+    if (w.appDaysRaw !== '' && w.appDaysRaw != null) {
+      approved = feeds_num_(w.appDaysRaw);
+      if (isNaN(approved) || approved <= 0) return fail('APPROVED_DAYS_INVALID', '"' + w.appDaysRaw + '"');
+      if (approved > dates.length) return fail('APPROVED_DAYS_EXCEED_RANGE', approved + ' > ' + dates.length + ' date(s)');
+    }
+    var site = siteOf(w.emp);
+    var off = function (d) {
+      var wo = opts.weeklyOffBySite && opts.weeklyOffBySite[site];
+      if (wo && weekdayOf(d) === wo) return true;
+      return opts.holidays ? isPaidHoliday_(opts.holidays, d, site) : false;
+    };
+    var weights = dates.map(function (d) {
+      var x = 1;
+      if (d === w.start && w.startHalf === 'HALF') x = 0.5;
+      if (d === w.end && w.endHalf === 'HALF') x = 0.5;
+      return off(d) ? 0 : x;
+    });
+    var total = weights.reduce(function (a, b) { return a + b; }, 0);
+    if (total <= 0) return fail('NO_WORKING_DAYS_IN_LEAVE', 'all dates are weekly off / paid holidays');
+    var scale = approved === null ? 1 : approved / total;
+    var note = '';
+    if (approved !== null && Math.abs(approved - total) > 1e-9) {
+      note = 'NOTE: approved days ' + approved + ' differ from computed ' + leave_r2_(total) + '; spread proportionally';
+    }
+    var fromTo = w.emp + '|' + w.type + '|' + w.start + '|' + w.end;
+    if (seenKey[fromTo]) return fail('DUPLICATE_APPROVED_LEAVE', fromTo);
+    var days = 0, clash = '';
+    dates.forEach(function (d, k) {
+      if (d < pStart || d > pEnd) return;
+      var a = weights[k] * scale;
+      if (a <= 0) return;
+      var u = used[w.emp + '|' + d] || 0;
+      if (u + a > 1 + 1e-9 && !clash) clash = d;
+      days += a;
+    });
+    if (clash) return fail('OVERLAPS_OTHER_LEAVE', 'on ' + clash);
+    days = leave_r2_(days);
+    if (days <= 0) return; // every in-period date is a weekly off / holiday
+    seenKey[fromTo] = true;
+    dates.forEach(function (d, k) {
+      if (d >= pStart && d <= pEnd) used[w.emp + '|' + d] = (used[w.emp + '|' + d] || 0) + weights[k] * scale;
+    });
+    out.valid.push({ PAYROLL_MONTH: period, EMP_ID: w.emp, LEAVE_TYPE: w.type, DAYS: days, FROM_DATE: w.start, TO_DATE: w.end,
+      SOURCE_REF: label + '!' + w.srcRow, CASE_NO: w.kase, KEY: fromTo, STATUS: 'VALID', EXCEPTION_REASON: note,
+      NORMALIZER_VERSION: LEAVE_NORMALIZER_VERSION, ENTERED_AT: enteredAt });
+  });
+
+  problems.forEach(function (x) {
+    var p = x.p;
+    out.exceptions.push({ PAYROLL_MONTH: period, EMP_ID: p.emp, LEAVE_TYPE: p.type || p.ltRaw, DAYS: 0,
+      FROM_DATE: p.start, TO_DATE: p.end, SOURCE_REF: label + '!' + p.srcRow, CASE_NO: p.kase,
+      KEY: p.emp + '|' + (p.type || 'RAW') + '|' + (p.start || 'NODATE') + '|' + (p.end || 'NODATE') + '|R' + p.srcRow,
+      STATUS: 'EXCEPTION', EXCEPTION_REASON: x.reason + (x.detail ? ' | ' + x.detail : '') +
+        (p.appDaysRaw !== '' && p.appDaysRaw != null ? ' | APPROVED_DAYS=' + p.appDaysRaw : ''),
+      NORMALIZER_VERSION: LEAVE_NORMALIZER_VERSION, ENTERED_AT: enteredAt });
+  });
+  return out;
+}
+
+function leave_isNormalizerRow_(r) {
+  return !!feeds_str_(r.NORMALIZER_VERSION) && !!feeds_str_(r.KEY);
+}
+
+/** {EMP_ID: {EL, CL, SL, OD, COFF, LWP}} in-period days of the VALID normalizer rows of the period. */
+function leaveByEmp(rows, period) {
+  var out = {};
+  (rows || []).forEach(function (r) {
+    if (normalizePeriod(r.PAYROLL_MONTH) !== period) return;
+    if (feeds_str_(r.STATUS).toUpperCase() !== 'VALID' || !leave_isNormalizerRow_(r)) return;
+    var t = feeds_str_(r.LEAVE_TYPE).toUpperCase();
+    if (LEAVE_TYPES.indexOf(t) < 0) return;
+    var n = feeds_num_(r.DAYS);
+    if (isNaN(n) || n <= 0) return;
+    var id = feeds_empId_(r.EMP_ID);
+    var e = out[id] || (out[id] = {});
+    e[t] = leave_r2_((e[t] || 0) + n);
+  });
+  return out;
+}
+
+/** [{EMP_ID, reason, sourceRef}] for the current (not superseded) EXCEPTION rows of the period. */
+function leaveExceptions(rows, period) {
+  var out = [];
+  (rows || []).forEach(function (r) {
+    if (normalizePeriod(r.PAYROLL_MONTH) !== period) return;
+    if (feeds_str_(r.STATUS).toUpperCase() !== 'EXCEPTION' || !leave_isNormalizerRow_(r)) return;
+    out.push({ EMP_ID: feeds_empId_(r.EMP_ID), reason: feeds_str_(r.EXCEPTION_REASON), sourceRef: feeds_str_(r.SOURCE_REF) });
+  });
+  return out;
+}
+
+function leave_same_(fresh, live) {
+  var a = feeds_num_(fresh.DAYS), b = feeds_num_(live.DAYS);
+  return feeds_str_(fresh.STATUS).toUpperCase() === feeds_str_(live.STATUS).toUpperCase() &&
+    (isNaN(a) ? 0 : a) === (isNaN(b) ? 0 : b) && feeds_str_(fresh.EXCEPTION_REASON) === feeds_str_(live.EXCEPTION_REASON) &&
+    feeds_str_(fresh.LEAVE_TYPE) === feeds_str_(live.LEAVE_TYPE);
+}
+
+/**
+ * Re-sync planner (pure), same pattern as OT: normalizer rows of the period that are not SUPERSEDED and identical to a
+ * fresh row (same KEY, status, type, days, reason) are kept; every other live normalizer row is superseded and every
+ * unmatched fresh row is appended. existing = INPUT_LEAVE row objects ({_row, ...}).
+ * @returns {{supersede:Array, append:Array, unchanged:number}}
+ */
+function leave_planResync(existing, fresh, period) {
+  var freshByKey = {};
+  (fresh || []).forEach(function (f) { freshByKey[f.KEY] = f; });
+  var matched = {}, supersede = [], unchanged = 0;
+  (existing || []).forEach(function (r) {
+    if (normalizePeriod(r.PAYROLL_MONTH) !== period || !leave_isNormalizerRow_(r)) return;
+    if (feeds_str_(r.STATUS).toUpperCase() === 'SUPERSEDED') return;
+    var f = freshByKey[feeds_str_(r.KEY)];
+    if (f && !matched[f.KEY] && leave_same_(f, r)) { matched[f.KEY] = true; unchanged++; return; }
+    supersede.push(r);
+  });
+  return { supersede: supersede, append: (fresh || []).filter(function (f) { return !matched[f.KEY]; }), unchanged: unchanged };
+}
+
+/** Cell updates marking a live INPUT_LEAVE row SUPERSEDED (days zeroed, original kept in the reason). */
+function leave_supersedeValues(row, stamp) {
+  var d = feeds_str_(row.DAYS);
+  return { STATUS: 'SUPERSEDED', DAYS: 0,
+    EXCEPTION_REASON: 'SUPERSEDED_BY_RESYNC ' + (stamp || '') + ' | WAS=' + (feeds_str_(row.STATUS) || 'VALID') +
+      (d ? ' | ORIGINAL_DAYS=' + d : '') };
+}
+
+// ================================================================ leave balances for the payslip (pure part)
+
+/**
+ * Pure. Locates the employee column and the EL / CL / SL "available" columns in ONE header row. Each balance column
+ * must be identified exactly once (alias match on the normalized header); anything else = not confident -> null entry.
+ * @returns {{emp:number, EL:number, CL:number, SL:number, ok:boolean, notes:Array}}
+ */
+function leave_balanceColumns_(headerRow) {
+  var counts = {}, at = {};
+  (headerRow || []).forEach(function (h, i) {
+    var k = feeds_norm_(h);
+    if (!k || feeds_isPasswordHeader_(h)) return;
+    counts[k] = (counts[k] || 0) + 1;
+    if (!(k in at)) at[k] = i;
+  });
+  var pick = function (aliases) {
+    var hits = aliases.filter(function (a) { return counts[a]; });
+    if (hits.length !== 1 || counts[hits[0]] !== 1) return -1;
+    return at[hits[0]];
+  };
+  var cols = { emp: pick(LEAVE_BALANCE_EMP_ALIASES), EL: pick(LEAVE_BALANCE_ALIASES.EL), CL: pick(LEAVE_BALANCE_ALIASES.CL),
+    SL: pick(LEAVE_BALANCE_ALIASES.SL), notes: [] };
+  cols.ok = cols.emp >= 0 && cols.EL >= 0 && cols.CL >= 0 && cols.SL >= 0;
+  return cols;
+}
+
+/**
+ * Pure. Rows below the identified header -> {byEmp:{EMP_ID:{EL,CL,SL}}, ambiguous:[ids]}. An employee that appears in more
+ * than one row (blocks per payroll cycle) is AMBIGUOUS and gets no balance (never guessed). Non-numeric cell -> that
+ * balance is left out.
+ */
+function leave_balancesFromRows(cols, rows) {
+  var byEmp = {}, count = {};
+  (rows || []).forEach(function (r) {
+    var id = feeds_empId_(feeds_cell_(r, cols.emp));
+    if (!id) return;
+    count[id] = (count[id] || 0) + 1;
+    if (count[id] > 1) return;
+    var b = {};
+    ['EL', 'CL', 'SL'].forEach(function (t) {
+      var n = feeds_num_(feeds_cell_(r, cols[t]));
+      if (!isNaN(n)) b[t] = n;
+    });
+    byEmp[id] = b;
+  });
+  var ambiguous = Object.keys(count).filter(function (id) { return count[id] > 1; });
+  ambiguous.forEach(function (id) { delete byEmp[id]; });
+  return { byEmp: byEmp, ambiguous: ambiguous };
+}
+
+// ================================================================ sheet-touching
+
+/**
+ * Opens the leave source READ-ONLY. LEAVE_SOURCE_SPREADSHEET_ID (seeded) -> that spreadsheet's LEAVE_SOURCE_TAB
+ * (default Leave_Applications); blank -> a local tab of this spreadsheet with that name.
+ */
+function leave_openSource_(tabOverride) {
+  var id = String(getControl('LEAVE_SOURCE_SPREADSHEET_ID', '')).trim();
+  var tab = String(tabOverride || getControl('LEAVE_SOURCE_TAB', '') || LEAVE_DEFAULT_TAB).trim();
+  if (!id) {
+    var local = getSheet(tab);
+    if (!local) throw new Error('Leave source tab "' + tab + '" not found in this spreadsheet (PAYROLL_CONTROL LEAVE_SOURCE_TAB / LEAVE_SOURCE_SPREADSHEET_ID)');
+    return { sheet: local, label: tab, ss: null };
+  }
+  var ss;
+  try { ss = SpreadsheetApp.openById(id); } catch (e) {
+    throw new Error('Cannot open the leave spreadsheet (LEAVE_SOURCE_SPREADSHEET_ID ' + id + '): ' + (e && e.message ? e.message : e) +
+      '. Give the Google account that runs HR OS (the script runner) at least VIEW access to the leave spreadsheet, then run Sync leave again.');
+  }
+  var sheet = ss.getSheetByName(tab);
+  if (!sheet) throw new Error('The leave spreadsheet has no tab "' + tab + '" (PAYROLL_CONTROL LEAVE_SOURCE_TAB)');
+  return { sheet: sheet, label: 'leave:' + tab, ss: ss };
+}
+
+function leave_clearError_(period) {
+  var key = 'LEAVE_SYNC_ERROR_' + period;
+  var map = readControlMap();
+  if (map[key] !== undefined && String(map[key]) !== '') setControl(key, '', 'Leave sync failed; cleared by the next successful sync');
+}
+
+/**
+ * Sync approved leave of the period from the leave spreadsheet into INPUT_LEAVE (read-only source; needed columns only,
+ * never a password column). Re-sync supersedes changed rows and appends fresh ones; LOCKED populations are never
+ * touched. Afterwards the PENDING register rows of the period are re-derived with the new leave.
+ */
+function syncLeaveFromSource(period) {
+  guardPeriod_(period);
+  var src = leave_openSource_();
+  var block = feeds_readColumns_(src.sheet, LEAVE_DEFS);
+  if (block.missing.length) throw new Error('Leave source is missing required column(s): ' + block.missing.join(', '));
+  var roster = buildRoster(period);
+  var popOf = {};
+  roster.forEach(function (r) { popOf[r.EMP_ID.toUpperCase()] = r.PAYROLL_CATEGORY; });
+  var holidays = getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [];
+  var res = mapLeaveRows(block.header, block.rows, period, roster, { firstRow: 2, enteredAt: nowIso_(), sourceLabel: src.label,
+    holidays: holidays, weeklyOffBySite: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) } });
+  if (res.missingColumns.length) throw new Error('Leave source is missing required column(s): ' + res.missingColumns.join(', '));
+  var locked = feeds_lockedPops_(period), lockedSkipped = 0;
+  var open = function (o) {
+    var pop = popOf[String(o.EMP_ID).toUpperCase()];
+    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    return true;
+  };
+  var fresh = res.valid.concat(res.exceptions).filter(open);
+  var existing = readObjects(TABS.INPUT_LEAVE).filter(function (r) {
+    var pop = popOf[String(r.EMP_ID).toUpperCase()];
+    return !(pop && locked[pop]);
+  });
+  var plan = leave_planResync(existing, fresh, period);
+  var stamp = nowIso_();
+  updateRows(TABS.INPUT_LEAVE, plan.supersede.map(function (r) { return { row: r._row, values: leave_supersedeValues(r, stamp) }; }));
+  if (plan.append.length) {
+    appendObjects(TABS.INPUT_LEAVE, plan.append, { textHeaders: ['KEY', 'SOURCE_REF', 'CASE_NO', 'FROM_DATE', 'TO_DATE', 'EMP_ID'] });
+  }
+  var newValid = plan.append.filter(function (o) { return o.STATUS === 'VALID'; });
+  var refresh = null, refreshNote = '';
+  try { refresh = refreshRegisterAttendance_(period); } catch (e) { refreshNote = String(e && e.message ? e.message : e); }
+  var summary = { period: period, source: src.label, validWritten: newValid.length,
+    validDays: leave_r2_(newValid.reduce(function (t, o) { return t + o.DAYS; }, 0)),
+    exceptionsWritten: plan.append.length - newValid.length, superseded: plan.supersede.length, unchanged: plan.unchanged,
+    pending: res.pendingCount, revokedByRejection: res.revokedCount, lockedSkipped: lockedSkipped,
+    registerRowsRefreshed: refresh ? refresh.refreshed : 0, registerStaleApproved: refresh ? refresh.staleApproved : [],
+    registerRefreshNote: refreshNote };
+  leave_clearError_(period);
+  audit('LEAVE_SYNC', period, '', summary);
+  feeds_toast_('Leave sync: ' + summary.validWritten + ' new valid, ' + summary.superseded + ' superseded, ' +
+    summary.exceptionsWritten + ' exception(s)');
+  return summary;
+}
+
+/**
+ * Called at the start of calculateDraft: never throws. On failure the error is stored in PAYROLL_CONTROL
+ * LEAVE_SYNC_ERROR_<period> (readiness then shows the population-level BLOCKER LEAVE_SOURCE_UNREACHABLE) and the LEAVE
+ * feed is set back to OPEN. Returns {ok, summary | error}.
+ */
+function leaveAutoSync_(period) {
+  try {
+    return { ok: true, summary: syncLeaveFromSource(period) };
+  } catch (e) {
+    var msg = String(e && e.message ? e.message : e);
+    try { setControl('LEAVE_SYNC_ERROR_' + period, msg, 'Leave sync failed; cleared by the next successful sync'); } catch (e1) { /* ignore */ }
+    try { markFeedComplete(period, 'LEAVE', 'leave sync failed: ' + msg, 'OPEN'); } catch (e2) { /* ignore */ }
+    try { audit('LEAVE_SYNC_FAILED', period, '', msg); } catch (e3) { /* ignore */ }
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * EL / CL / SL available balances for the payslip: {byEmp:{EMP_ID:{EL,CL,SL}}, matched, note}. Read-only, header-mapped,
+ * generation time only. When the tab / columns cannot be identified confidently, or an employee has several rows, the
+ * balance is left out (blank token) and the note says why - nothing is guessed.
+ */
+function leave_readBalances_(population, empIds) {
+  var out = { byEmp: {}, matched: 0, note: '' };
+  var tab = LEAVE_BALANCE_TABS[population];
+  if (!tab) { out.note = 'no leave-balance tab for ' + population; return out; }
+  var src;
+  try { src = leave_openSource_(tab); } catch (e) { out.note = String(e && e.message ? e.message : e); return out; }
+  var sheet = src.sheet, lc = sheet.getLastColumn(), lr = sheet.getLastRow();
+  if (lc < 1 || lr < 2) { out.note = 'balance tab ' + tab + ' is empty'; return out; }
+  var headerRowNo = 0, cols = null;
+  for (var r = 1; r <= Math.min(LEAVE_BALANCE_HEADER_SCAN_ROWS, lr); r++) {
+    var hdr = sheet.getRange(r, 1, 1, lc).getValues()[0];
+    var found = leave_balanceColumns_(hdr);
+    if (found.ok) { headerRowNo = r; cols = found; feeds_assertNoPassword_(hdr, [found.emp, found.EL, found.CL, found.SL]); break; }
+  }
+  if (!cols) { out.note = 'could not identify the employee and EL/CL/SL available columns in ' + tab + ' - balances left blank'; return out; }
+  var n = lr - headerRowNo;
+  var colVals = {};
+  ['emp', 'EL', 'CL', 'SL'].forEach(function (k) { colVals[k] = sheet.getRange(headerRowNo + 1, cols[k] + 1, n, 1).getValues(); });
+  var rows = [];
+  for (var i = 0; i < n; i++) {
+    var row = [];
+    row[cols.emp] = colVals.emp[i][0]; row[cols.EL] = colVals.EL[i][0]; row[cols.CL] = colVals.CL[i][0]; row[cols.SL] = colVals.SL[i][0];
+    rows.push(row);
+  }
+  var parsedBal = leave_balancesFromRows(cols, rows);
+  var want = {};
+  (empIds || []).forEach(function (id) { want[feeds_empId_(id)] = true; });
+  Object.keys(parsedBal.byEmp).forEach(function (id) {
+    if (want[id]) { out.byEmp[id] = parsedBal.byEmp[id]; out.matched++; }
+  });
+  var amb = parsedBal.ambiguous.filter(function (id) { return want[id]; });
+  if (amb.length) out.note = amb.length + ' employee(s) appear in several rows of ' + tab + ' (balances left blank, not guessed)';
+  return out;
+}
+
 // ===== 30_Calc.gs =====
 /**
  * 30_Calc.gs - pure payroll calculation (DESIGN.md section 5 and 6).
@@ -3009,17 +4141,24 @@ function calcEmployee(ctx) {
 /**
  * 31_Readiness.gs - payroll readiness (DESIGN section 3). buildReadiness is pure; checkReadiness gathers inputs
  * from the sheets (via engine_readSources_ in 32_Engine.gs), runs the checks and rewrites PAYROLL_READINESS
- * rows for the period (other periods are never touched). Only STATUS = BLOCKED blocks approval.
- * Helpers are prefixed rdy_.
+ * rows for the period (other periods are never touched). Only STATUS = BLOCKED (global problems) blocks approval;
+ * STATUS = HOLD lists employee-level problems: those employees are excluded from NET / hash / lock and the rest of
+ * the population continues. Helpers are prefixed rdy_.
  */
 var RDY_MAX_IDS = 20;
-var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS'];
+var RDY_REQUIRED_FEEDS = ['CANTEEN', 'OT', 'ADVANCE', 'SOCIETY', 'ADJUSTMENTS', 'LEAVE'];
 var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED',
   'SL_AVAILED', 'PAID_LEAVE_OTHER', 'ABSENT_LWP_DAYS'];
 var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE_APPROVED_VALID',
   'DAILY_ATTENDANCE_COMPLETE', 'SALARY_PRESENT_NONZERO', 'FEEDS_COMPLETE', 'OT_EXCEPTIONS', 'STATUTORY_CONFIG',
   'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
-  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS'];
+  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'LEAVE_EXCEPTIONS', 'ATTENDANCE_DISPUTES'];
+/** Engine HOLD codes that already have their own readiness check (CALC_BLOCKERS lists only the others). */
+var RDY_COVERED_CODES = ['NEGATIVE_NET_PAY', 'MISSING_ATTENDANCE', 'DUPLICATE_ATTENDANCE_ROWS', 'ATTENDANCE_NOT_APPROVED',
+  'ATTENDANCE_INVALID_VALUE', 'ATTENDANCE_OVER_MONTH', 'HR_OVERRIDE_WITHOUT_REASON', 'DAILY_ATTENDANCE_MISSING',
+  'DUPLICATE_MASTER_ID', 'OT_EXCEPTION', 'CANTEEN_EXCEPTION', 'EFFICIENCY_EXCEPTION', 'LEAVE_EXCEPTION',
+  'ATTENDANCE_DISPUTE', 'MISSING_SALARY_STRUCTURE', 'ZERO_SALARY_STRUCTURE', 'MISSING_RATE_PROFILE', 'ZERO_RATE',
+  'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM'];
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -3047,11 +4186,15 @@ function rdy_list_(items) {
   return a.length > RDY_MAX_IDS ? head + ', +' + (a.length - RDY_MAX_IDS) + ' more' : head;
 }
 
-function rdy_res_(blockers, warns, okDetail) {
+/** blockers = global (BLOCKED), holds = employee-level (HOLD), warns (WARN). Precedence BLOCKED > HOLD > WARN > READY. */
+function rdy_res_(blockers, warns, okDetail, holds) {
+  holds = holds || [];
   var parts = [];
   if (blockers.length) parts.push(blockers.join('; '));
+  if (holds.length) parts.push('employee HOLD (excluded from NET and lock): ' + holds.join('; '));
   if (warns.length) parts.push(warns.join('; '));
   if (blockers.length) return { status: 'BLOCKED', detail: parts.join(' | ') };
+  if (holds.length) return { status: 'HOLD', detail: parts.join(' | ') };
   if (warns.length) return { status: 'WARN', detail: parts.join(' | ') };
   return { status: 'READY', detail: okDetail || 'OK' };
 }
@@ -3104,11 +4247,11 @@ function rdy_check2_(inputs, ctx) {
   var missing = ctx.rosterIds.filter(function (id) { return !counts[id]; });
   var dups = Object.keys(counts).filter(function (id) { return counts[id] > 1; });
   var unknown = Object.keys(counts).filter(function (id) { return !ctx.rosterSet[id]; });
-  var b = [];
-  if (missing.length) b.push('no attendance row: ' + rdy_list_(missing));
-  if (dups.length) b.push('duplicate attendance rows: ' + rdy_list_(dups));
+  var b = [], h = [];
+  if (missing.length) h.push('no attendance row: ' + rdy_list_(missing));
+  if (dups.length) h.push('duplicate attendance rows: ' + rdy_list_(dups));
   if (unknown.length) b.push('unknown/inactive EMP_ID in attendance: ' + rdy_list_(unknown));
-  return rdy_res_(b, [], ctx.rosterIds.length + ' employees covered');
+  return rdy_res_(b, [], ctx.rosterIds.length + ' employees covered', h);
 }
 
 function rdy_check3_(inputs, ctx) {
@@ -3130,16 +4273,16 @@ function rdy_check3_(inputs, ctx) {
     else if (isFinite(wd) && wd > 0 && w > wd) overWd.push(id + '(' + w + ')');
     if (rdy_id_(r.HR_OVERRIDE).toUpperCase() === 'Y' && rdy_id_(r.OVERRIDE_REASON) === '') noReason.push(id);
   });
-  var b = [], w = [];
-  if (notApproved.length) b.push('attendance not APPROVED: ' + rdy_list_(notApproved));
-  if (badNum.length) b.push('blank/non-numeric/negative day fields: ' + rdy_list_(badNum));
-  if (overDim.length) b.push('worked days exceed days in month: ' + rdy_list_(overDim));
-  if (noReason.length) b.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
+  var h = [], w = [];
+  if (notApproved.length) h.push('attendance not APPROVED: ' + rdy_list_(notApproved));
+  if (badNum.length) h.push('blank/non-numeric/negative day fields: ' + rdy_list_(badNum));
+  if (overDim.length) h.push('ATTENDANCE_OVER_MONTH (worked days exceed days in month): ' + rdy_list_(overDim));
+  if (noReason.length) h.push('HR_OVERRIDE=Y without OVERRIDE_REASON: ' + rdy_list_(noReason));
   if (overWd.length) {
     var msg = 'worked days exceed WORKING_DAYS: ' + rdy_list_(overWd);
-    if (pop === 'PERMANENT_WORKER') b.push(msg); else w.push(msg);
+    if (pop === 'PERMANENT_WORKER') h.push(msg); else w.push(msg);
   }
-  return rdy_res_(b, w, ctx.attRows.length + ' rows approved and valid');
+  return rdy_res_([], w, ctx.attRows.length + ' rows approved and valid', h);
 }
 
 function rdy_check4_(inputs, ctx) {
@@ -3147,7 +4290,7 @@ function rdy_check4_(inputs, ctx) {
   if (m == null) return { status: 'READY', detail: 'No daily attendance data for period (monthly entry)' };
   var bad = ctx.rosterIds.filter(function (id) { return m[id] && m[id].length; })
     .map(function (id) { return id + '(' + m[id].length + ' dates, from ' + m[id][0] + ')'; });
-  return rdy_res_(bad.length ? ['missing daily dates: ' + rdy_list_(bad)] : [], [], 'Daily attendance complete');
+  return rdy_res_([], [], 'Daily attendance complete', bad.length ? ['missing daily dates: ' + rdy_list_(bad)] : []);
 }
 
 function rdy_check5_(inputs, ctx) {
@@ -3167,10 +4310,10 @@ function rdy_check5_(inputs, ctx) {
       if (!(amt > 0)) zero.push(id);
     }
   });
-  var b = [];
-  if (missing.length) b.push('no salary structure / rate profile: ' + rdy_list_(missing));
-  if (zero.length) b.push('zero pay structure: ' + rdy_list_(zero));
-  return rdy_res_(b, [], 'Pay structure present for all');
+  var h = [];
+  if (missing.length) h.push('no salary structure / rate profile: ' + rdy_list_(missing));
+  if (zero.length) h.push('zero pay structure: ' + rdy_list_(zero));
+  return rdy_res_([], [], 'Pay structure present for all', h);
 }
 
 function rdy_check6_(inputs) {
@@ -3187,18 +4330,20 @@ function rdy_check6_(inputs) {
 
 function rdy_check7_(inputs, ctx) {
   var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
-  var ids = [];
+  var own = [], unknown = [];
   (inputs.otExceptionRows || []).forEach(function (r) {
     if (rdy_id_(r.ELIGIBILITY).toUpperCase() !== 'EXCEPTION') return;
     var p = normalizePeriod(r.PAYROLL_MONTH);
     if (p && p !== inputs.period) return;
     var id = rdy_id_(r.EMP_ID);
+    if (ctx.rosterSet[id]) own.push(id);
     // unattributable (unknown EMP_ID) exceptions block every population - fail closed
-    if (ctx.rosterSet[id] || (all ? !all[id] : false)) ids.push(id === '' ? '(blank EMP_ID)' : id);
+    else if (all ? !all[id] : false) unknown.push(id === '' ? '(blank EMP_ID)' : id);
   });
-  var b = ids.length ? ['OT exceptions (' + ids.length + '): ' + rdy_list_(rdy_uniq_(ids))] : [];
+  var b = unknown.length ? ['OT exceptions for unknown EMP_ID (' + unknown.length + '): ' + rdy_list_(rdy_uniq_(unknown))] : [];
+  var h = own.length ? ['OT exceptions (' + own.length + '): ' + rdy_list_(rdy_uniq_(own))] : [];
   var w = inputs.pendingOtCount > 0 ? ['pending OT events: ' + inputs.pendingOtCount] : [];
-  return rdy_res_(b, w, 'No OT exceptions');
+  return rdy_res_(b, w, 'No OT exceptions', h);
 }
 
 function rdy_check8_(inputs) {
@@ -3224,7 +4369,7 @@ function rdy_check9_(inputs, ctx) {
     var id = rdy_id_(x);
     if (ctx.rosterSet[id] && dups.indexOf(id) < 0) dups.push(id);
   });
-  return rdy_res_(dups.length ? ['duplicate active EMP_ID in EMPLOYEE_MASTER: ' + rdy_list_(dups)] : [], [], 'No duplicates');
+  return rdy_res_([], [], 'No duplicates', dups.length ? ['duplicate active EMP_ID in EMPLOYEE_MASTER: ' + rdy_list_(dups)] : []);
 }
 
 function rdy_check10_(inputs, ctx) {
@@ -3236,8 +4381,8 @@ function rdy_check10_(inputs, ctx) {
     var basis = rdy_id_(r.PAY_BASIS).toUpperCase();
     return basis === 'MONTHLY_GROSS_PRORATED' && rdy_num_(ot[id]) > 0;
   });
-  return rdy_res_(bad.length ? ['monthly consultant with OT hours (BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM): ' + rdy_list_(bad)] : [],
-    [], 'No monthly consultant OT');
+  return rdy_res_([], [], 'No monthly consultant OT',
+    bad.length ? ['monthly consultant with OT hours (BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM): ' + rdy_list_(bad)] : []);
 }
 
 function rdy_check11_(inputs) {
@@ -3260,7 +4405,7 @@ function rdy_check12_(inputs) {
     var flagged = (res.exceptions || []).some(function (e) { return e.code === 'NEGATIVE_NET_PAY'; });
     if (flagged || (typeof row.NET_PAY === 'number' && row.NET_PAY < 0)) neg.push(rdy_id_(row.EMP_ID));
   });
-  return rdy_res_(neg.length ? ['negative net pay: ' + rdy_list_(neg)] : [], [], 'No negative net pay');
+  return rdy_res_([], [], 'No negative net pay', neg.length ? ['negative net pay: ' + rdy_list_(neg)] : []);
 }
 
 /**
@@ -3289,48 +4434,82 @@ function rdy_check13_(inputs, ctx) {
   return rdy_res_(b, w, 'Pay structure approved');
 }
 
+/** Splits exception rows into employees of this population (known) and unattributable ones (unknown). */
 function rdy_exceptionList_(rows, ctx, allowUnknown) {
-  var all = null;
-  var out = [];
+  var known = [], unknown = [];
   (rows || []).forEach(function (r) {
     var id = rdy_id_(r.EMP_ID);
-    var known = ctx.rosterSet[id];
-    if (known || allowUnknown(id)) out.push((id || '(blank EMP_ID)') + (r.reason ? ': ' + r.reason : ''));
+    var text = (id || '(blank EMP_ID)') + (r.reason ? ': ' + r.reason : '');
+    if (ctx.rosterSet[id]) known.push(text);
+    else if (allowUnknown(id)) unknown.push(text);
   });
-  return out;
+  return { known: known, unknown: unknown };
 }
 
 /**
  * Canteen / efficiency: when the LATEST response of an employee is invalid (EXCEPTION row) there is no fallback to an
- * older valid one, so every such current exception BLOCKS the population that owns the employee.
- * Unknown / inactive EMP_IDs block every population for canteen, and the worker population for efficiency.
+ * older valid one. The exception holds the employee (HOLD); unknown / inactive EMP_IDs cannot be attributed and block
+ * every population for canteen, and the worker population for efficiency.
  */
 function rdy_check14_(inputs, ctx) {
   var pop = inputs.population, all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
   var unknownAll = function (id) { return all ? !all[id] : false; };
   var canteen = rdy_exceptionList_(inputs.canteenExceptions, ctx, unknownAll);
   var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return pop === 'PERMANENT_WORKER' && unknownAll(id); });
-  var b = [];
-  if (canteen.length) b.push('canteen EXCEPTION rows (' + canteen.length + '): ' + rdy_list_(canteen));
-  if (eff.length) b.push('efficiency EXCEPTION rows (' + eff.length + '): ' + rdy_list_(eff));
-  return rdy_res_(b, [], 'No canteen / efficiency exceptions');
+  var b = [], h = [];
+  if (canteen.unknown.length) b.push('canteen EXCEPTION rows for unknown EMP_ID (' + canteen.unknown.length + '): ' + rdy_list_(canteen.unknown));
+  if (eff.unknown.length) b.push('efficiency EXCEPTION rows for unknown EMP_ID (' + eff.unknown.length + '): ' + rdy_list_(eff.unknown));
+  if (canteen.known.length) h.push('canteen EXCEPTION rows (' + canteen.known.length + '): ' + rdy_list_(canteen.known));
+  if (eff.known.length) h.push('efficiency EXCEPTION rows (' + eff.known.length + '): ' + rdy_list_(eff.known));
+  return rdy_res_(b, [], 'No canteen / efficiency exceptions', h);
 }
 
-/** Extra row (only when calcResults supplied): any other BLOCKER raised by the calculation. */
-function rdy_calcBlockers_(inputs) {
-  var ids = [];
-  inputs.calcResults.forEach(function (res) {
-    var other = (res.exceptions || []).some(function (e) { return e.severity === 'BLOCKER' && e.code !== 'NEGATIVE_NET_PAY'; });
-    if (other) ids.push(rdy_id_((res.row || {}).EMP_ID));
+/** Leave sync: current EXCEPTION rows in INPUT_LEAVE hold the employee; an unreachable leave source blocks the population. */
+function rdy_check15_(inputs, ctx) {
+  var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
+  var lv = rdy_exceptionList_(inputs.leaveExceptions, ctx, function (id) { return all ? !all[id] : false; });
+  var b = [], h = [];
+  if (rdy_id_(inputs.leaveSyncError)) b.push('LEAVE_SOURCE_UNREACHABLE: ' + rdy_id_(inputs.leaveSyncError));
+  if (lv.unknown.length) b.push('leave EXCEPTION rows for unknown EMP_ID (' + lv.unknown.length + '): ' + rdy_list_(lv.unknown));
+  if (lv.known.length) h.push('leave EXCEPTION rows (' + lv.known.length + '): ' + rdy_list_(lv.known));
+  return rdy_res_(b, [], 'No leave exceptions', h);
+}
+
+/** Daily-vs-register attendance disputes (October onward): each unresolved dispute holds that employee. */
+function rdy_check16_(inputs, ctx) {
+  var h = [];
+  (inputs.attendanceDisputes || []).forEach(function (d) {
+    var id = rdy_id_(d.EMP_ID);
+    if (ctx.rosterSet[id]) h.push(id + ' (' + (d.stage || 'DISPUTE') + ')');
   });
-  return rdy_res_(ids.length ? ['calculation blockers: ' + rdy_list_(ids)] : [], [], 'No calculation blockers');
+  return rdy_res_([], [], 'No open attendance disputes', h.length ? ['attendance disputes (' + h.length + '): ' + rdy_list_(h)] : []);
+}
+
+/**
+ * Extra row (only when calcResults supplied): BLOCKED for global calculation problems (GLOBAL_BLOCKER_CODES), HOLD for
+ * the other employee-level problems that have no dedicated check.
+ */
+function rdy_calcBlockers_(inputs) {
+  var blockers = [], holds = [];
+  inputs.calcResults.forEach(function (res) {
+    var id = rdy_id_((res.row || {}).EMP_ID);
+    var g = false, hd = false;
+    (res.exceptions || []).forEach(function (e) {
+      if (e.severity !== 'BLOCKER' && e.severity !== 'HOLD') return;
+      if (GLOBAL_BLOCKER_CODES.indexOf(e.code) >= 0) g = true;
+      else if (RDY_COVERED_CODES.indexOf(e.code) < 0) hd = true;
+    });
+    if (g) blockers.push(id); else if (hd) holds.push(id);
+  });
+  return rdy_res_(blockers.length ? ['calculation blockers: ' + rdy_list_(blockers)] : [], [], 'No calculation blockers',
+    holds.length ? ['calculation holds: ' + rdy_list_(holds)] : []);
 }
 
 /**
  * inputs = {period, population, roster, allActiveIds?, masterDuplicateIds?, periodCategoryRow, attendanceRows,
  *   dailyMissingByEmp (null = no daily data), salaryByEmp, rateByEmp, feedStatus, otExceptionRows, otHoursByEmp,
  *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, canteenExceptions?, efficiencyExceptions?,
- *   calcResults?}
+ *   leaveExceptions?, leaveSyncError?, attendanceDisputes?, calcResults?}
  * Returns [{PERIOD, POPULATION, CHECK, STATUS, DETAIL}].
  */
 function buildReadiness(inputs) {
@@ -3350,7 +4529,7 @@ function buildReadiness(inputs) {
     rdy_check1_(scoped), rdy_check2_(scoped, ctx), rdy_check3_(scoped, ctx), rdy_check4_(scoped, ctx),
     rdy_check5_(scoped, ctx), rdy_check6_(scoped), rdy_check7_(scoped, ctx), rdy_check8_(scoped),
     rdy_check9_(scoped, ctx), rdy_check10_(scoped, ctx), rdy_check11_(scoped), rdy_check12_(scoped),
-    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx)
+    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx), rdy_check15_(scoped, ctx), rdy_check16_(scoped, ctx)
   ];
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
@@ -3362,12 +4541,12 @@ function buildReadiness(inputs) {
   return out;
 }
 
-/** Summary of readiness rows: {blocked, warn, ready, byPopulation:{pop:{blocked,warn,ready}}}. */
+/** Summary of readiness rows: {blocked, hold, warn, ready, byPopulation:{pop:{blocked,hold,warn,ready}}}. */
 function rdy_summarize_(rows) {
-  var s = { blocked: 0, warn: 0, ready: 0, byPopulation: {} };
+  var s = { blocked: 0, hold: 0, warn: 0, ready: 0, byPopulation: {} };
   rows.forEach(function (r) {
-    var p = s.byPopulation[r.POPULATION] || (s.byPopulation[r.POPULATION] = { blocked: 0, warn: 0, ready: 0 });
-    var k = r.STATUS === 'BLOCKED' ? 'blocked' : (r.STATUS === 'WARN' ? 'warn' : 'ready');
+    var p = s.byPopulation[r.POPULATION] || (s.byPopulation[r.POPULATION] = { blocked: 0, hold: 0, warn: 0, ready: 0 });
+    var k = r.STATUS === 'BLOCKED' ? 'blocked' : (r.STATUS === 'HOLD' ? 'hold' : (r.STATUS === 'WARN' ? 'warn' : 'ready'));
     p[k]++; s[k]++;
   });
   return s;
@@ -3402,9 +4581,9 @@ function checkReadiness(period, population, opts) {
   engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
     function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
   var sum = rdy_summarize_(rows);
-  var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, warn: sum.warn,
-    ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };
-  audit('READINESS', period, population || '', { blocked: sum.blocked, warn: sum.warn, ready: sum.ready });
+  var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, hold: sum.hold,
+    warn: sum.warn, ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };
+  audit('READINESS', period, population || '', { blocked: sum.blocked, hold: sum.hold, warn: sum.warn, ready: sum.ready });
   return res;
 }
 
@@ -3412,6 +4591,9 @@ function checkReadiness(period, population, opts) {
 /**
  * 32_Engine.gs - payroll engine orchestration (DESIGN sections 5-7). Pure joiners first (buildEngineContexts,
  * engine_pickSalary, engine_calcPopulation, engine_recon), sheet-touching code after.
+ * Exception severities: BLOCKER = global (population) problem, HOLD = employee-level problem (that employee's row is
+ * written with FLAGS containing HOLD and NET_PAY null and is excluded from recon totals, the approval hash and the
+ * lock), WARN = informational.
  * Feed readers come from 20_Feeds.gs: sumOtHours, canteenByEmp, efficiencyByEmp, advanceByEmp, societyByEmp.
  * Helpers are prefixed engine_.
  */
@@ -3493,19 +4675,28 @@ function engine_ptExemptSet(rows, period) {
 function engine_rosterFromMaster(rows, period) {
   var all = [], counts = {}, excluded = [], warnings = [];
   var end = period ? periodEnd(period) : '';
+  var start = period ? periodStart(period) : '';
   (rows || []).forEach(function (r) {
-    if (String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() !== 'active') return;
+    var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = engine_id_(r.PAYROLL_CATEGORY), id = engine_id_(r.EMP_ID);
     if (!id || !isKnownPopulation(pop)) return;
+    var lv = { include: false, warn: '', lwd: '' };
+    if (!active) { // leaver with a last working day on/after the period start (same rule as buildRoster)
+      if (!start) return;
+      lv = leaverRosterDecision(masterLastWorkingDay_(r), start);
+      if (!lv.include) return;
+    }
     var dec = end ? dojRosterDecision(r.DOJ_AS_SOURCE, end) : { include: true, warn: '' };
     if (!dec.include) { if (excluded.indexOf(id) < 0) excluded.push(id); return; }
     counts[id] = (counts[id] || 0) + 1;
     if (dec.warn) warnings.push(id);
     var doj = '';
     if (typeof parseDoj === 'function') { try { doj = parseDoj(r.DOJ_AS_SOURCE) || ''; } catch (e) { doj = ''; } }
-    all.push({ EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || ''),
+    var entry = { EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || ''),
       DEPARTMENT: String(r.DEPARTMENT || '').trim(), DESIGNATION: String(r.DESIGNATION || '').trim(), DOJ: doj,
-      DOJ_WARN: dec.warn });
+      DOJ_WARN: dec.warn };
+    if (!active) { entry.LEAVER = true; entry.LWD = lv.lwd; entry.LWD_WARN = lv.warn; }
+    all.push(entry);
   });
   return { all: all, duplicateIds: Object.keys(counts).filter(function (k) { return counts[k] > 1; }),
     allActiveIds: Object.keys(counts), joinersExcluded: excluded, dojWarnings: warnings };
@@ -3607,7 +4798,27 @@ function engine_derive_(src, pop) {
   });
   var attendanceByEmp = {};
   attendanceRows.forEach(function (r) { var id = engine_id_(r.EMP_ID); if (!attendanceByEmp[id]) attendanceByEmp[id] = r; });
+  var attCount = {};
+  attendanceRows.forEach(function (r) { var id = engine_id_(r.EMP_ID); attCount[id] = (attCount[id] || 0) + 1; });
+  var exBy = function (list, valueKey) {
+    var m = {};
+    (list || []).forEach(function (x) {
+      var id = engine_id_(x.EMP_ID);
+      if (!id || !seen[id]) return;
+      (m[id] = m[id] || []).push(x[valueKey || 'reason'] || '');
+    });
+    return m;
+  };
+  var otExRows = (src.otRows || []).filter(function (r) {
+    return engine_id_(r.ELIGIBILITY).toUpperCase() === 'EXCEPTION' && normalizePeriod(r.PAYROLL_MONTH) === period;
+  }).map(function (r) { return { EMP_ID: r.EMP_ID, reason: engine_id_(r.EXCEPTION_REASON) }; });
   var d = {
+    attendanceCount: attCount,
+    otExByEmp: exBy(otExRows),
+    canteenExByEmp: exBy(engine_callOpt_('canteenExceptions', [src.canteenRows || [], period], [])),
+    efficiencyExByEmp: pop === 'PERMANENT_WORKER'
+      ? exBy(engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], period], [])) : {},
+    leaveExByEmp: exBy(engine_callOpt_('leaveExceptions', [src.leaveRows || [], period], [])),
     roster: roster, employees: employees, attendanceRows: attendanceRows, attendanceByEmp: attendanceByEmp,
     otByEmp: engine_call_('sumOtHours', [src.otRows, period]),
     canteenByEmp: engine_call_('canteenByEmp', [src.canteenRows, period]),
@@ -3622,12 +4833,16 @@ function engine_derive_(src, pop) {
       .concat(engine_callOpt_('societyIssues', [src.societyRows || [], period], [])),
     dailyMissingByEmp: null
   };
+  d.disputes = [];
   if (src.dailyRows && src.dailyRows.length) {
     var missing = {};
-    aggregateDaily(src.dailyRows, period, roster, src.holidayRows || [], '').forEach(function (rec) {
+    // employees paid from the monthly register are checked by the daily-vs-register comparison instead
+    var dailyRoster = roster.filter(function (e) { return !isRegisterRow_(attendanceByEmp[e.EMP_ID]); });
+    aggregateDaily(src.dailyRows, period, dailyRoster, src.holidayRows || [], '').forEach(function (rec) {
       if (rec.missingDates.length) missing[rec.EMP_ID] = rec.missingDates;
     });
     d.dailyMissingByEmp = missing;
+    d.disputes = engine_callOpt_('attendanceDisputesLive', [src, pop, roster, attendanceByEmp], []);
   }
   return d;
 }
@@ -3661,7 +4876,10 @@ function engine_readinessInputs_(src, pop, calcResults) {
     statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
     pendingOtCount: engine_pendingOt_(src, pop),
     canteenExceptions: engine_callOpt_('canteenExceptions', [src.canteenRows || [], src.period], []),
-    efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], [])
+    efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], []),
+    leaveExceptions: engine_callOpt_('leaveExceptions', [src.leaveRows || [], src.period], []),
+    leaveSyncError: src.leaveSyncError || '',
+    attendanceDisputes: d.disputes
   };
 }
 
@@ -3683,40 +4901,78 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
     efficiencyByEmp: d.efficiencyByEmp, adjustmentRows: src.adjustmentRows, cfg: d.statutory.values,
     ptExemptSet: d.ptExemptSet, efficiencyConfig: src.efficiencyConfig
   });
-  var rows = [], exceptions = [], results = [];
+  var rows = [], exceptions = [], results = [], held = [];
+  var leaverBy = {};
+  d.employees.forEach(function (e) { if (e.LEAVER) leaverBy[e.EMP_ID] = e; });
+  var disputeBy = {};
+  (d.disputes || []).forEach(function (x) { disputeBy[engine_id_(x.EMP_ID)] = x; });
   ctxs.forEach(function (ctx) {
     var res = calcEmployee(ctx);
+    var id = ctx.emp.EMP_ID;
     var extra = [];
-    if (!ctx.hasAttendance) extra.push({ severity: 'BLOCKER', code: 'MISSING_ATTENDANCE', message: 'No INPUT_ATTENDANCE row' });
-    else if (!ctx.attendanceApproved) extra.push({ severity: 'WARN', code: 'ATTENDANCE_NOT_APPROVED', message: 'Attendance row is not APPROVED' });
-    if (dupSet[ctx.emp.EMP_ID]) extra.push({ severity: 'BLOCKER', code: 'DUPLICATE_MASTER_ID', message: 'EMP_ID appears more than once among active master rows' });
+    var hold = function (code, message) { extra.push({ severity: 'HOLD', code: code, message: message }); };
+    if (!ctx.hasAttendance) hold('MISSING_ATTENDANCE', 'No INPUT_ATTENDANCE row');
+    else {
+      if ((d.attendanceCount[id] || 0) > 1) hold('DUPLICATE_ATTENDANCE_ROWS', 'More than one INPUT_ATTENDANCE row for the period');
+      attendanceRowProblems(d.attendanceByEmp[id], pop, src.period).forEach(function (p) { hold(p.code, p.message); });
+    }
+    if (dupSet[id]) hold('DUPLICATE_MASTER_ID', 'EMP_ID appears more than once among active master rows');
+    if (d.dailyMissingByEmp && d.dailyMissingByEmp[id] && d.dailyMissingByEmp[id].length) {
+      hold('DAILY_ATTENDANCE_MISSING', 'Daily attendance missing for ' + d.dailyMissingByEmp[id].length + ' date(s), from ' + d.dailyMissingByEmp[id][0]);
+    }
+    if (d.otExByEmp[id]) hold('OT_EXCEPTION', 'OT exception row(s): ' + d.otExByEmp[id].join(' / '));
+    if (d.canteenExByEmp[id]) hold('CANTEEN_EXCEPTION', 'Latest canteen response is invalid: ' + d.canteenExByEmp[id].join(' / '));
+    if (d.efficiencyExByEmp[id]) hold('EFFICIENCY_EXCEPTION', 'Latest efficiency response is invalid: ' + d.efficiencyExByEmp[id].join(' / '));
+    if (d.leaveExByEmp[id]) hold('LEAVE_EXCEPTION', 'Leave exception row(s): ' + d.leaveExByEmp[id].join(' / '));
+    if (disputeBy[id]) hold('ATTENDANCE_DISPUTE', 'Daily vs register attendance dispute: ' + (disputeBy[id].message || disputeBy[id].stage));
     (d.feedIssues || []).forEach(function (i) {
-      if (i.EMP_ID === ctx.emp.EMP_ID) extra.push({ severity: i.severity, code: i.code, message: i.message });
+      if (i.EMP_ID === id) extra.push({ severity: i.severity, code: i.code, message: i.message });
     });
-    if (dojWarn[ctx.emp.EMP_ID]) {
-      extra.push({ severity: 'WARN', code: 'DOJ_' + dojWarn[ctx.emp.EMP_ID],
+    if (dojWarn[id]) {
+      extra.push({ severity: 'WARN', code: 'DOJ_' + dojWarn[id],
         message: 'DOJ_AS_SOURCE could not be read unambiguously against the period end; employee included' });
     }
-    ((ctx.adjustments && ctx.adjustments.exceptions) || []).forEach(function (e) { extra.push(e); });
-    var all = res.exceptions.concat(extra);
-    var row = res.row;
-    if (extra.some(function (e) { return e.severity === 'BLOCKER'; }) && row.NET_PAY !== null &&
-        !res.exceptions.some(function (e) { return e.severity === 'BLOCKER' && e.code !== 'NEGATIVE_NET_PAY'; })) {
-      row.NET_PAY = null;
+    if (leaverBy[id]) {
+      extra.push({ severity: 'WARN', code: 'LEAVER_IN_PERIOD', message: 'Employee left on ' + (leaverBy[id].LWD || '?') +
+        (leaverBy[id].LWD_WARN ? ' (last working day ambiguous)' : '') });
     }
-    var seen = {}, codes = [];
+    ((ctx.adjustments && ctx.adjustments.exceptions) || []).forEach(function (e) { extra.push(e); });
+    // employee-level BLOCKERs become HOLD; only GLOBAL_BLOCKER_CODES keep blocking the whole population
+    var all = res.exceptions.concat(extra).map(function (e) {
+      return e.severity === 'BLOCKER' && GLOBAL_BLOCKER_CODES.indexOf(e.code) < 0
+        ? { severity: 'HOLD', code: e.code, message: e.message } : e;
+    });
+    var row = res.row;
+    var isHeld = all.some(function (e) { return e.severity === 'HOLD'; });
+    var isBlocked = all.some(function (e) { return e.severity === 'BLOCKER'; });
+    if (isHeld || isBlocked) row.NET_PAY = null;
+    var seen = {}, codes = isHeld ? ['HOLD'] : [];
+    if (isHeld) seen.HOLD = true;
     all.forEach(function (e) { if (!seen[e.code]) { seen[e.code] = true; codes.push(e.code); } });
     row.FLAGS = codes.join(';');
     row.RUN_ID = runId;
     row.CALCULATED_AT = calcAt;
     rows.push(row);
-    results.push({ row: row, exceptions: all });
+    results.push({ row: row, exceptions: all, held: isHeld });
+    if (isHeld) {
+      held.push({ EMP_ID: id, codes: all.filter(function (e) { return e.severity === 'HOLD'; }).map(function (e) { return e.code; }) });
+    }
     all.forEach(function (e) {
-      exceptions.push({ RUN_ID: runId, PERIOD: src.period, POPULATION: pop, EMP_ID: ctx.emp.EMP_ID, SEVERITY: e.severity,
+      exceptions.push({ RUN_ID: runId, PERIOD: src.period, POPULATION: pop, EMP_ID: id, SEVERITY: e.severity,
         CODE: e.code, MESSAGE: e.message });
     });
   });
-  return { rows: rows, exceptions: exceptions, results: results, ctxs: ctxs };
+  return { rows: rows, exceptions: exceptions, results: results, ctxs: ctxs, held: held };
+}
+
+/** True when a draft / locked row belongs to a held employee (FLAGS contains the token HOLD). */
+function engine_isHeldRow_(row) {
+  return String(row && row.FLAGS != null ? row.FLAGS : '').split(';').indexOf('HOLD') >= 0;
+}
+
+/** Rows that flow into NET totals, the approval hash and the lock (held employees excluded). */
+function engine_payableRows_(rows) {
+  return (rows || []).filter(function (r) { return !engine_isHeldRow_(r); });
 }
 
 function engine_sum_(rows, col) {
@@ -3760,6 +5016,7 @@ function engine_readSources_(period) {
   var daily = engine_readOpt_(TABS.ATTENDANCE_DAILY).filter(function (r) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
+  var ctl = getSheet(TABS.PAYROLL_CONTROL) ? readControlMap() : {};
   return {
     period: period,
     roster: engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period),
@@ -3780,7 +5037,11 @@ function engine_readSources_(period) {
     ptExemptRows: engine_readOpt_(TABS.PT_EXEMPTIONS),
     efficiencyConfig: engine_readOpt_(TABS.EFFICIENCY_CONFIG),
     lockedPrevRows: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_LOCKED), 'PERIOD', engine_prevPeriod(period)),
-    otPendingRaw: getSheet(TABS.PAYROLL_CONTROL) ? readControlMap()['OT_PENDING_' + period] : ''
+    otPendingRaw: ctl['OT_PENDING_' + period] === undefined ? '' : ctl['OT_PENDING_' + period],
+    leaveRows: engine_readOpt_(TABS.INPUT_LEAVE),
+    comparisonRows: engine_inPeriod_(engine_readOpt_(TABS.ATTENDANCE_COMPARISON), 'PERIOD', period),
+    leaveSyncError: String(ctl['LEAVE_SYNC_ERROR_' + period] || ''),
+    ownerEmail: String(ctl.OWNER_APPROVER_EMAIL || '').trim()
   };
 }
 
@@ -3843,6 +5104,8 @@ function calculateDraft(period, population) {
   guardPeriod_(period);
   var pops = population ? [population] : POPULATION_LIST.slice();
   pops.forEach(function (p) { if (!isKnownPopulation(p)) throw new Error('Unknown population "' + p + '"'); });
+  // the leave source is a separate spreadsheet: re-read it now; a failure is recorded (LEAVE feed OPEN + population BLOCKER)
+  var leaveSync = engine_callOpt_('leaveAutoSync_', [period], null);
   var src = engine_readSources_(period);
   var active = [], skippedLocked = [], prevStatus = {};
   pops.forEach(function (pop) {
@@ -3881,7 +5144,11 @@ function calculateDraft(period, population) {
     calcByPop[pop] = c.results;
     allRows = allRows.concat(c.rows);
     allEx = allEx.concat(c.exceptions);
-    recon.push(engine_recon(period, pop, c.rows, engine_prevNet_(src, pop), runId));
+    if (src.leaveSyncError) {
+      allEx.push({ RUN_ID: runId, PERIOD: period, POPULATION: pop, EMP_ID: '', SEVERITY: 'BLOCKER',
+        CODE: 'LEAVE_SOURCE_UNREACHABLE', MESSAGE: src.leaveSyncError });
+    }
+    recon.push(engine_recon(period, pop, engine_payableRows_(c.rows), engine_prevNet_(src, pop), runId));
   });
 
   var inActive = function (o) { return normalizePeriod(o.PERIOD) === period && active.indexOf(engine_id_(o.POPULATION)) >= 0; };
@@ -3895,7 +5162,7 @@ function calculateDraft(period, population) {
 
   active.forEach(function (pop) {
     var c = byPop[pop];
-    var hash = hashRows(c.rows, OUTPUT_COLUMNS, engine_sha256Hex_);
+    var hash = hashRows(engine_payableRows_(c.rows), OUTPUT_COLUMNS, engine_sha256Hex_);
     var pc = engine_periodCatRow_(src, pop);
     var reset = prevStatus[pop] === PERIOD_STATUS.HR_APPROVED || prevStatus[pop] === PERIOD_STATUS.ACCOUNTS_APPROVED;
     if (pc) {
@@ -3908,19 +5175,299 @@ function calculateDraft(period, population) {
     if (reset) {
       audit('STATUS_RESET', period, pop, { from: prevStatus[pop], to: PERIOD_STATUS.DRAFT, reason: 'draft recalculated', runId: runId });
     }
-    var blockers = c.exceptions.filter(function (e) { return e.SEVERITY === 'BLOCKER'; }).length;
-    var warns = c.exceptions.length - blockers;
-    var s = { population: pop, headcount: c.rows.length, blockers: blockers, warns: warns,
-      totalNet: engine_sum_(c.rows, 'NET_PAY'), hash: hash, statusFrom: prevStatus[pop], statusTo: PERIOD_STATUS.DRAFT,
-      statusUpdated: !!pc };
+    var blockers = c.exceptions.filter(function (e) { return e.SEVERITY === 'BLOCKER'; }).length +
+      (src.leaveSyncError ? 1 : 0);
+    var holds = c.exceptions.filter(function (e) { return e.SEVERITY === 'HOLD'; }).length;
+    var warns = c.exceptions.length - blockers - holds + (src.leaveSyncError ? 1 : 0);
+    var s = { population: pop, headcount: c.rows.length, payable: engine_payableRows_(c.rows).length,
+      held: c.held.map(function (h) { return h.EMP_ID; }), blockers: blockers, holds: holds, warns: warns,
+      totalNet: engine_sum_(engine_payableRows_(c.rows), 'NET_PAY'), hash: hash, statusFrom: prevStatus[pop],
+      statusTo: PERIOD_STATUS.DRAFT, statusUpdated: !!pc };
     summaries.push(s);
-    audit('CALC_DRAFT', period, pop, { runId: runId, headcount: s.headcount, blockers: blockers, warns: warns, hash: hash });
+    audit('CALC_DRAFT', period, pop, { runId: runId, headcount: s.headcount, payable: s.payable, held: s.held,
+      blockers: blockers, holds: holds, warns: warns, hash: hash });
   });
 
   var readiness = checkReadiness(period, population, { sources: src, calcResultsByPop: calcByPop });
-  return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked,
-    readiness: { blocked: readiness.blocked, warn: readiness.warn, ready: readiness.ready } };
+  return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
+    readiness: { blocked: readiness.blocked, hold: readiness.hold, warn: readiness.warn, ready: readiness.ready } };
 }
+
+// ===== 33_Comparison.gs =====
+/**
+ * 33_Comparison.gs - daily forms vs monthly register (October onward, only when daily data exists for the period)
+ * and the dispute flow (DESIGN section 2, "Daily vs register comparison and disputes").
+ *  - buildAttendanceComparison(period) writes ATTENDANCE_COMPARISON: DAILY_PRESENT (P + 0.5 x HD, OD excluded to match
+ *    the physical figure) against REGISTER_PRESENT (the register's PHYSICAL days). |DIFF| < 0.01 = MATCH, else DISPUTE.
+ *  - A DISPUTE holds that employee (ATTENDANCE_DISPUTE, employee-level HOLD) until HR filled HR_DECIDED_DAYS +
+ *    HR_REASON and submitted them (runner = HR_APPROVER_EMAIL) AND the owner approved (runner = OWNER_APPROVER_EMAIL).
+ *    The owner's approval writes the decided days into the PENDING INPUT_ATTENDANCE row (HR_OVERRIDE=Y + audit).
+ *    A REJECTED decision keeps the employee on hold.
+ * The engine and readiness compute the comparison LIVE (attendanceDisputesLive) and only merge the stored HR / owner
+ * columns, so a stale sheet can never release a hold.
+ * Pure: attendanceComparisonRows, attendanceDisputeStages, disputeHrPlan. Sheet-touching: the rest.
+ */
+var ATT_COMPARISON_COLUMNS = ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
+  'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
+var ATT_COMPARISON_KEEP = ['HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
+var ATT_COMPARISON_TOLERANCE = 0.01;
+
+// ================================================================ pure
+
+function cmp_str_(v) { return v == null ? '' : String(v).trim(); }
+function cmp_r2_(x) { return Math.round(x * 100) / 100; }
+
+/** The register's physical days of an INPUT_ATTENDANCE row: the pre-override snapshot when present, else the column. */
+function comparisonRegisterPhysical_(attRow) {
+  var v = NaN;
+  try {
+    var snap = attRow.GENERATED_VALUES_JSON ? JSON.parse(attRow.GENERATED_VALUES_JSON) : null;
+    if (snap && snap.PHYSICAL_PRESENT_DAYS !== undefined && snap.PHYSICAL_PRESENT_DAYS !== '') v = Number(snap.PHYSICAL_PRESENT_DAYS);
+  } catch (e) { v = NaN; }
+  if (isNaN(v)) v = attNum_(attRow.PHYSICAL_PRESENT_DAYS);
+  return v;
+}
+
+/**
+ * Pure. One comparison row per roster employee whose INPUT_ATTENDANCE row comes from the register.
+ * @param {Array} roster [{EMP_ID, PAYROLL_CATEGORY, DOJ?, NAME | EMPLOYEE_NAME}]
+ * @param {Array} attendanceRows INPUT_ATTENDANCE row objects of the period
+ * @param {Array} dailyRows ATTENDANCE_DAILY rows of the period
+ * @param {Array} storedRows existing ATTENDANCE_COMPARISON rows (HR / owner columns are carried over per EMP_ID)
+ */
+function attendanceComparisonRows(period, roster, attendanceRows, dailyRows, storedRows) {
+  var daily = {};
+  aggregateDaily(dailyRows || [], period, roster || [], [], '').forEach(function (r) { daily[r.EMP_ID] = r; });
+  var att = {};
+  (attendanceRows || []).forEach(function (r) {
+    var id = cmp_str_(r.EMP_ID);
+    if (normalizePeriod(r.PAYROLL_MONTH) === period && isRegisterRow_(r) && !(id in att)) att[id] = r;
+  });
+  var stored = {};
+  (storedRows || []).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) === period) stored[cmp_str_(r.EMP_ID)] = r;
+  });
+  var out = [];
+  (roster || []).forEach(function (e) {
+    var id = cmp_str_(e.EMP_ID), a = att[id];
+    if (!a) return;
+    var reg = comparisonRegisterPhysical_(a);
+    var dRec = daily[id];
+    var dp = dRec ? dRec.PHYSICAL_PRESENT_DAYS : 0;
+    var diff = cmp_r2_(reg - dp);
+    var row = { PERIOD: period, EMP_ID: id, NAME: e.NAME !== undefined ? e.NAME : (e.EMPLOYEE_NAME || ''),
+      POPULATION: e.PAYROLL_CATEGORY, DAILY_PRESENT: cmp_r2_(dp), REGISTER_PRESENT: isNaN(reg) ? '' : cmp_r2_(reg),
+      DIFF: isNaN(diff) ? '' : diff, STATUS: (!isNaN(diff) && Math.abs(diff) < ATT_COMPARISON_TOLERANCE) ? 'MATCH' : 'DISPUTE' };
+    var old = stored[id] || {};
+    ATT_COMPARISON_KEEP.forEach(function (k) { row[k] = old[k] === undefined ? '' : old[k]; });
+    out.push(row);
+  });
+  return out;
+}
+
+/** True when HR's decision on a comparison row is complete and stamped for exactly the days now in HR_DECIDED_DAYS. */
+function disputeHrStamped_(row, dim) {
+  var days = row.HR_DECIDED_DAYS === '' || row.HR_DECIDED_DAYS == null ? NaN : Number(row.HR_DECIDED_DAYS);
+  if (isNaN(days) || days < 0 || days > dim) return false;
+  if (!cmp_str_(row.HR_REASON) || !cmp_str_(row.HR_BY)) return false;
+  var st = row.HR_STAMPED_DAYS === '' || row.HR_STAMPED_DAYS == null ? NaN : Number(row.HR_STAMPED_DAYS);
+  return !isNaN(st) && Math.abs(st - days) < 1e-9;
+}
+
+/**
+ * Pure. Open disputes among live comparison rows: [{EMP_ID, stage, message}]. A DISPUTE is resolved only when HR's stamped
+ * decision exists, the owner APPROVED it (OWNER_BY = the configured owner) and the decided days are really in the
+ * employee's INPUT_ATTENDANCE row (HR_OVERRIDE=Y, reason ATTENDANCE_DISPUTE...). Stages: AWAITING_HR, AWAITING_OWNER,
+ * OWNER_REJECTED, OWNER_STAMP_INVALID, DECISION_NOT_APPLIED.
+ */
+function attendanceDisputeStages(liveRows, attendanceByEmp, ownerEmail, period) {
+  var dim = daysInMonth(period), out = [];
+  (liveRows || []).forEach(function (r) {
+    if (cmp_str_(r.STATUS).toUpperCase() !== 'DISPUTE') return;
+    var id = cmp_str_(r.EMP_ID);
+    var hold = function (stage, message) { out.push({ EMP_ID: id, stage: stage, message: message }); };
+    var diffTxt = 'daily ' + r.DAILY_PRESENT + ' vs register ' + r.REGISTER_PRESENT;
+    if (!disputeHrStamped_(r, dim)) return hold('AWAITING_HR', diffTxt + ': waiting for HR decision');
+    var od = cmp_str_(r.OWNER_DECISION).toUpperCase();
+    if (od === 'REJECTED') return hold('OWNER_REJECTED', diffTxt + ': owner rejected the decision');
+    if (od !== 'APPROVED') return hold('AWAITING_OWNER', diffTxt + ': waiting for owner approval');
+    if (!cmp_str_(ownerEmail) || cmp_str_(r.OWNER_BY).toLowerCase() !== cmp_str_(ownerEmail).toLowerCase()) {
+      return hold('OWNER_STAMP_INVALID', diffTxt + ': OWNER_BY is not the configured owner (use the owner menu action)');
+    }
+    var a = (attendanceByEmp || {})[id];
+    var applied = a && Math.abs(attNum_(a.PHYSICAL_PRESENT_DAYS) - Number(r.HR_DECIDED_DAYS)) < 0.01 &&
+      cmp_str_(a.HR_OVERRIDE).toUpperCase() === 'Y' && /^ATTENDANCE_DISPUTE/.test(cmp_str_(a.OVERRIDE_REASON));
+    if (!applied) return hold('DECISION_NOT_APPLIED', diffTxt + ': decided days are not in INPUT_ATTENDANCE (owner approval must be re-run)');
+  });
+  return out;
+}
+
+/**
+ * Engine hook (cross-file, called through engine_callOpt_): live disputes of one population.
+ * src = engine sources; roster = engine roster of the population; attendanceByEmp = {EMP_ID: INPUT_ATTENDANCE row}.
+ */
+function attendanceDisputesLive(src, pop, roster, attendanceByEmp) {
+  var rows = attendanceComparisonRows(src.period, roster, Object.keys(attendanceByEmp || {}).map(function (k) { return attendanceByEmp[k]; }),
+    src.dailyRows || [], src.comparisonRows || []);
+  return attendanceDisputeStages(rows, attendanceByEmp, src.ownerEmail, src.period);
+}
+
+/**
+ * Pure. What HR's submit does with each DISPUTE row: stamp (complete + changed), unchanged (already stamped for these
+ * days), awaiting (nothing entered yet), invalid (partial / out of range). A changed decision also resets an earlier
+ * owner decision (the owner approved other days).
+ */
+function disputeHrPlan(storedRows, period) {
+  var dim = daysInMonth(period), plan = { stamp: [], unchanged: [], awaiting: [], invalid: [] };
+  (storedRows || []).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) !== period || cmp_str_(r.STATUS).toUpperCase() !== 'DISPUTE') return;
+    var id = cmp_str_(r.EMP_ID);
+    var raw = r.HR_DECIDED_DAYS, reason = cmp_str_(r.HR_REASON);
+    var blankDays = raw === '' || raw == null;
+    if (blankDays && !reason) { plan.awaiting.push(id); return; }
+    var days = blankDays ? NaN : Number(raw);
+    if (isNaN(days) || days < 0 || days > dim) { plan.invalid.push(id + ': HR_DECIDED_DAYS must be 0..' + dim); return; }
+    if (!reason) { plan.invalid.push(id + ': HR_REASON is required'); return; }
+    if (disputeHrStamped_(r, dim)) { plan.unchanged.push(id); return; }
+    plan.stamp.push({ row: r, empId: id, days: days, resetsOwner: !!cmp_str_(r.OWNER_DECISION) });
+  });
+  return plan;
+}
+
+// ================================================================ sheet-touching
+
+function cmp_dailyRows_(period) {
+  return (getSheet(TABS.ATTENDANCE_DAILY) ? readObjects(TABS.ATTENDANCE_DAILY) : []).filter(function (r) {
+    return toIsoDate(r.DATE).slice(0, 7) === period;
+  });
+}
+
+function cmp_storedRows_(period) {
+  return (getSheet(TABS.ATTENDANCE_COMPARISON) ? readObjects(TABS.ATTENDANCE_COMPARISON) : []).filter(function (r) {
+    return normalizePeriod(r.PERIOD) === period;
+  });
+}
+
+/**
+ * Builds / refreshes ATTENDANCE_COMPARISON for the period (only when ATTENDANCE_DAILY has rows for it). HR / owner
+ * columns of existing EMP_IDs are kept; LOCKED populations are never touched.
+ */
+function buildAttendanceComparison(period) {
+  guardPeriod_(period);
+  var daily = cmp_dailyRows_(period);
+  if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - the daily-vs-register comparison only applies when daily data exists');
+  var pp = periodPopulationsOpen_(period);
+  var roster = buildRoster(period);
+  var att = readObjects(TABS.INPUT_ATTENDANCE).filter(function (r) { return normalizePeriod(r.PAYROLL_MONTH) === period; });
+  var rows = attendanceComparisonRows(period, roster, att, daily, cmp_storedRows_(period)).filter(function (r) {
+    return pp.locked.indexOf(r.POPULATION) < 0;
+  });
+  engine_replaceRows_(TABS.ATTENDANCE_COMPARISON, ATT_COMPARISON_COLUMNS, rows, function (o) {
+    return normalizePeriod(o.PERIOD) === period && pp.locked.indexOf(cmp_str_(o.POPULATION)) < 0;
+  });
+  var res = { period: period, compared: rows.length,
+    match: rows.filter(function (r) { return r.STATUS === 'MATCH'; }).length,
+    dispute: rows.filter(function (r) { return r.STATUS === 'DISPUTE'; }).length, lockedPopulations: pp.locked };
+  audit('ATT_COMPARISON', period, '', res);
+  return res;
+}
+
+/**
+ * HR submits the dispute decisions typed in ATTENDANCE_COMPARISON (HR_DECIDED_DAYS + HR_REASON): stamps HR_BY / HR_AT.
+ * Runner must be HR_APPROVER_EMAIL.
+ */
+function submitDisputeDecisions(period) {
+  guardPeriod_(period);
+  var user = approval_userEmail_();
+  var hr = getControl('HR_APPROVER_EMAIL', '');
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(hr) || approval_email_(user) !== approval_email_(hr)) {
+    audit('DISPUTE_HR_SUBMIT', period, '', { result: 'REFUSED', reason: 'USER_NOT_HR_APPROVER', user: user });
+    return { ok: false, reason: 'USER_NOT_HR_APPROVER' };
+  }
+  approval_requireStampColumns_(TABS.ATTENDANCE_COMPARISON, ['HR_BY', 'HR_AT', 'HR_STAMPED_DAYS', 'OWNER_DECISION']);
+  var plan = disputeHrPlan(cmp_storedRows_(period), period), now = nowIso_();
+  var pp = periodPopulationsOpen_(period);
+  var updates = [], skippedLocked = [];
+  plan.stamp.forEach(function (s) {
+    if (pp.locked.indexOf(cmp_str_(s.row.POPULATION)) >= 0) { skippedLocked.push(s.empId); return; }
+    var v = { HR_BY: user, HR_AT: now, HR_STAMPED_DAYS: s.days };
+    if (s.resetsOwner) { v.OWNER_DECISION = ''; v.OWNER_BY = ''; v.OWNER_AT = ''; }
+    updates.push({ row: s.row._row, values: v });
+  });
+  updateRows(TABS.ATTENDANCE_COMPARISON, updates);
+  var res = { ok: true, reason: 'OK', period: period, stamped: updates.length, unchanged: plan.unchanged.length,
+    awaitingHrInput: plan.awaiting, invalid: plan.invalid, ownerDecisionsReset: plan.stamp.filter(function (s) { return s.resetsOwner; })
+      .map(function (s) { return s.empId; }), skippedLocked: skippedLocked };
+  audit('DISPUTE_HR_SUBMIT', period, '', { result: 'STAMPED', user: user, stamped: res.stamped, invalid: res.invalid.length,
+    ownerDecisionsReset: res.ownerDecisionsReset });
+  return res;
+}
+
+/**
+ * Owner decision on the HR-stamped disputes. Runner must be OWNER_APPROVER_EMAIL.
+ * APPROVED: the decided days replace PRESENT_DAYS / PHYSICAL_PRESENT_DAYS of that employee's PENDING register row in
+ * INPUT_ATTENDANCE (HR_OVERRIDE=Y, OVERRIDE_REASON=ATTENDANCE_DISPUTE ...); a row that is already APPROVED, locked or not
+ * from the register is reported and its decision is NOT stamped (fail closed). REJECTED: the employee stays on hold.
+ * empIds (optional) limits the decision to those employees.
+ */
+function ownerDecideDisputes(period, decision, empIds) {
+  guardPeriod_(period);
+  decision = String(decision || 'APPROVED').trim().toUpperCase();
+  if (decision !== 'APPROVED' && decision !== 'REJECTED') throw new Error('Decision must be APPROVED or REJECTED');
+  var user = approval_userEmail_();
+  var owner = getOwnerApproverEmail();
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(owner) || approval_email_(user) !== approval_email_(owner)) {
+    audit('DISPUTE_OWNER_DECISION', period, '', { result: 'REFUSED', reason: 'USER_NOT_OWNER_APPROVER', user: user });
+    return { ok: false, reason: 'USER_NOT_OWNER_APPROVER' };
+  }
+  approval_requireStampColumns_(TABS.ATTENDANCE_COMPARISON, ['OWNER_DECISION', 'OWNER_BY', 'OWNER_AT']);
+  var want = null;
+  if (empIds && empIds.length) { want = {}; empIds.forEach(function (x) { want[cmp_str_(x)] = true; }); }
+  var dim = daysInMonth(period), pp = periodPopulationsOpen_(period), now = nowIso_();
+  var res = { ok: true, reason: 'OK', period: period, decision: decision, decided: [], skipped: [] };
+  var compUpdates = [], attUpdates = [];
+  var ctx = decision === 'APPROVED' ? register_ctx_(period) : null;
+  cmp_storedRows_(period).forEach(function (r) {
+    if (cmp_str_(r.STATUS).toUpperCase() !== 'DISPUTE') return;
+    var id = cmp_str_(r.EMP_ID);
+    if (want && !want[id]) return;
+    var skip = function (why) { res.skipped.push({ EMP_ID: id, reason: why }); };
+    if (pp.locked.indexOf(cmp_str_(r.POPULATION)) >= 0) return skip('POPULATION_LOCKED');
+    if (!disputeHrStamped_(r, dim)) return skip('HR_DECISION_MISSING_OR_NOT_SUBMITTED');
+    var cur = cmp_str_(r.OWNER_DECISION).toUpperCase();
+    if (cur === 'REJECTED' && decision === 'APPROVED') return skip('ALREADY_REJECTED_CLEAR_OWNER_DECISION_FIRST');
+    if (cur && cur !== decision) return skip('ALREADY_DECIDED_' + cur);
+    if (decision === 'APPROVED') {
+      var emp = ctx.rosterMap[id], row = ctx.existing[id];
+      if (!emp || !row || ctx.existing.__dups.indexOf(id) >= 0) return skip('NO_SINGLE_ATTENDANCE_ROW');
+      if (!isRegisterRow_(row)) return skip('NOT_A_REGISTER_ROW');
+      if (String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') {
+        return skip('ATTENDANCE_ALREADY_APPROVED (set the INPUT_ATTENDANCE row back to PENDING, then approve again)');
+      }
+      var d = register_derive_(ctx, emp, Number(row.REGISTER_DAYS_PRESENT), String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y');
+      if (!d.ok) return skip('REGISTER_ROW_INVALID');
+      var eff = applyPhysicalOverride(d, Number(r.HR_DECIDED_DAYS), emp.PAYROLL_CATEGORY, period);
+      var vals = {};
+      ATT_NUM_FIELDS.forEach(function (k) { vals[k] = eff[k]; });
+      vals.WORKED_DAYS = eff.WORKED_DAYS; vals.PAYABLE_DAYS = eff.WORKED_DAYS;
+      vals.GENERATED_VALUES_JSON = registerValuesFromDerived(d, '', '').GENERATED_VALUES_JSON;
+      vals.HR_OVERRIDE = 'Y';
+      vals.OVERRIDE_REASON = 'ATTENDANCE_DISPUTE: ' + cmp_str_(r.HR_REASON) + ' (HR ' + cmp_str_(r.HR_BY) + ', owner ' + user + ')';
+      attUpdates.push({ row: row._row, values: vals });
+    }
+    compUpdates.push({ row: r._row, values: { OWNER_DECISION: decision, OWNER_BY: user, OWNER_AT: now } });
+    res.decided.push(id);
+  });
+  updateRows(TABS.INPUT_ATTENDANCE, attUpdates);
+  updateRows(TABS.ATTENDANCE_COMPARISON, compUpdates);
+  audit('DISPUTE_OWNER_DECISION', period, '', { result: decision, user: user, decided: res.decided,
+    skipped: res.skipped.map(function (s) { return s.EMP_ID + ':' + s.reason; }) });
+  return res;
+}
+
+function ownerApproveDisputes(period) { return ownerDecideDisputes(period, 'APPROVED'); }
 
 // ===== 40_Approval.gs =====
 /**
@@ -3998,7 +5545,7 @@ function approval_ownerEmail_() {
 function approval_recomputeHash_(period, population, src) {
   src = src || engine_readSources_(period);
   var calc = engine_calcPopulation(src, population, '', nowIso_());
-  return { hash: hashRows(calc.rows, OUTPUT_COLUMNS, engine_sha256Hex_), src: src, calc: calc };
+  return { hash: hashRows(engine_payableRows_(calc.rows), OUTPUT_COLUMNS, engine_sha256Hex_), src: src, calc: calc };
 }
 
 function approval_pcRow_(period, population) {
@@ -4047,8 +5594,9 @@ function approval_run_(action, period, population) {
     vals[isHr ? 'HR_APPROVED_BY' : 'ACCOUNTS_APPROVED_BY'] = user;
     vals[isHr ? 'HR_APPROVED_AT' : 'ACCOUNTS_APPROVED_AT'] = nowIso_();
     approval_writePc_(pc, vals);
-    audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash });
-    return { ok: true, status: d.newStatus, reason: d.reason };
+    var held = re.calc.held.map(function (h) { return h.EMP_ID; });
+    audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash, held: held });
+    return { ok: true, status: d.newStatus, reason: d.reason, held: held };
   }
   if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
     if (status === PERIOD_STATUS.HR_APPROVED || status === PERIOD_STATUS.ACCOUNTS_APPROVED) {
@@ -4206,10 +5754,13 @@ function lockIdFor(period, population, date) {
   return 'LOCK-' + period + '-' + population + '-' + Utilities.formatDate(date || new Date(), HROS_TZ, 'yyyyMMddHHmm');
 }
 
-/** Draft rows of period x population -> PAYROLL_LOCKED objects (LOCK_ID first, then OUTPUT_COLUMNS). */
+/**
+ * Draft rows of period x population -> PAYROLL_LOCKED objects (LOCK_ID first, then OUTPUT_COLUMNS). Held employees
+ * (FLAGS contains HOLD) are never locked here; a later supplementary run may lock them under a second LOCK_ID.
+ */
 function buildLockRows(draftRows, lockId, period, population) {
   return (draftRows || []).filter(function (r) {
-    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population;
+    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population && !engine_isHeldRow_(r);
   }).map(function (r) {
     var o = { LOCK_ID: lockId };
     OUTPUT_COLUMNS.forEach(function (c) { o[c] = r[c] === undefined || r[c] === null ? '' : r[c]; });
@@ -4218,8 +5769,10 @@ function buildLockRows(draftRows, lockId, period, population) {
 }
 
 /**
- * lockDecision({status, userEmail, accountsEmail, ownerEmail, storedHash, currentHash, draftSheetHash, draftRowCount,
- * existingLockedCount}) -> {ok, newStatus, reason}. A hash mismatch gives newStatus DRAFT (caller resets + audits).
+ * lockDecision({status, userEmail, accountsEmail, ownerEmail, storedHash, currentHash, draftSheetHash, draftRowCount
+ * (payable = non-held rows), alreadyLockedEmpIds}) -> {ok, newStatus, reason}. A hash mismatch gives newStatus DRAFT
+ * (caller resets + audits). Only an EMP_ID that is already in PAYROLL_LOCKED for the period x population refuses the
+ * lock (a second LOCK_ID with different EMP_IDs is allowed); held employees never refuse it.
  */
 function lockDecision(a) {
   var status = String(a.status == null ? '' : a.status).trim().toUpperCase();
@@ -4229,13 +5782,13 @@ function lockDecision(a) {
   if (user !== approval_email_(a.accountsEmail) && user !== approval_email_(a.ownerEmail)) {
     return { ok: false, newStatus: status, reason: 'USER_NOT_ACCOUNTS_APPROVER_OR_OWNER' };
   }
-  if (a.existingLockedCount > 0) return { ok: false, newStatus: status, reason: 'ALREADY_IN_PAYROLL_LOCKED' };
+  if ((a.alreadyLockedEmpIds || []).length > 0) return { ok: false, newStatus: status, reason: 'EMP_ALREADY_LOCKED' };
   var stored = String(a.storedHash == null ? '' : a.storedHash).trim();
   if (!stored) return { ok: false, newStatus: status, reason: 'NO_DRAFT_HASH' };
   if (String(a.currentHash) !== stored || String(a.draftSheetHash) !== stored) {
     return { ok: false, newStatus: PERIOD_STATUS.DRAFT, reason: 'INPUTS_OR_DRAFT_CHANGED' };
   }
-  if (!(a.draftRowCount > 0)) return { ok: false, newStatus: status, reason: 'NO_DRAFT_ROWS' };
+  if (!(a.draftRowCount > 0)) return { ok: false, newStatus: status, reason: 'NO_PAYABLE_ROWS' };
   return { ok: true, newStatus: PERIOD_STATUS.LOCKED, reason: 'OK' };
 }
 
@@ -4251,21 +5804,26 @@ function lockPeriod(period, population) {
   var draftRows = readObjects(TABS.PAYROLL_DRAFT).filter(function (r) {
     return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population;
   });
+  var payable = engine_payableRows_(draftRows);
+  var heldRows = draftRows.filter(engine_isHeldRow_);
   var lockedSheet = getSheet(TABS.PAYROLL_LOCKED);
-  var existing = lockedSheet ? readObjects(lockedSheet).filter(function (r) {
-    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population;
-  }).length : 0;
+  var lockedIds = {};
+  (lockedSheet ? readObjects(lockedSheet) : []).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population) lockedIds[String(r.EMP_ID).trim()] = true;
+  });
+  var overlap = payable.map(function (r) { return String(r.EMP_ID).trim(); }).filter(function (id) { return lockedIds[id]; });
   var d = lockDecision({ status: status, userEmail: user, accountsEmail: getControl('ACCOUNTS_APPROVER_EMAIL', ''),
     ownerEmail: approval_ownerEmail_(), storedHash: pc.DRAFT_HASH, currentHash: re.hash,
-    draftSheetHash: hashRows(draftRows, OUTPUT_COLUMNS, engine_sha256Hex_), draftRowCount: draftRows.length,
-    existingLockedCount: existing });
+    draftSheetHash: hashRows(payable, OUTPUT_COLUMNS, engine_sha256Hex_), draftRowCount: payable.length,
+    alreadyLockedEmpIds: overlap });
   if (!d.ok) {
     if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
       approval_writePc_(pc, approval_resetValues_());
       audit('STATUS_RESET', period, population, { from: status, to: PERIOD_STATUS.DRAFT, reason: d.reason, user: user });
     }
-    audit('LOCK', period, population, { result: 'REFUSED', reason: d.reason, user: user, status: d.newStatus });
-    return { ok: false, status: d.newStatus, reason: d.reason };
+    audit('LOCK', period, population, { result: 'REFUSED', reason: d.reason, user: user, status: d.newStatus,
+      alreadyLocked: overlap });
+    return { ok: false, status: d.newStatus, reason: d.reason, alreadyLocked: overlap };
   }
   var lockId = lockIdFor(period, population, new Date());
   var sheet = ensureSheet(TABS.PAYROLL_LOCKED);
@@ -4274,8 +5832,10 @@ function lockPeriod(period, population) {
   appendObjects(sheet, rows);
   if (!isSheetProtected(sheet)) protectSheet(sheet, 'HR OS PAYROLL_LOCKED (append-only, owner edit)');
   approval_writePc_(pc, { STATUS: PERIOD_STATUS.LOCKED, LOCKED_AT: nowIso_(), LOCK_ID: lockId });
-  audit('LOCK', period, population, { result: 'LOCKED', lockId: lockId, rows: rows.length, user: user, hash: re.hash });
-  return { ok: true, status: PERIOD_STATUS.LOCKED, reason: 'OK', lockId: lockId, rows: rows.length };
+  var held = heldRows.map(function (r) { return { EMP_ID: String(r.EMP_ID).trim(), flags: String(r.FLAGS || '') }; });
+  audit('LOCK', period, population, { result: 'LOCKED', lockId: lockId, rows: rows.length, user: user, hash: re.hash,
+    heldNotLocked: held.map(function (h) { return h.EMP_ID; }) });
+  return { ok: true, status: PERIOD_STATUS.LOCKED, reason: 'OK', lockId: lockId, rows: rows.length, held: held };
 }
 
 // ===== 50_Payslips.gs =====
@@ -4334,8 +5894,17 @@ function pslEmp_(empCol, rowCol) {
   };
 }
 
-/** Leave balances: blank on the payslip (the external leave sheet is not a payroll feed). */
-var PAYSLIP_BLANK_TOKENS = ['EL_AVAILABLE', 'CL_AVAILABLE', 'SL_AVAILABLE'];
+/**
+ * Leave balances (EL_AVAILABLE / CL_AVAILABLE / SL_AVAILABLE): read at generation time, read-only, from the yearly balance
+ * tabs of the leave spreadsheet (21_Leave.gs leave_readBalances_). Blank when the balance cannot be identified confidently.
+ */
+var PAYSLIP_BALANCE_TOKENS = { EL_AVAILABLE: 'EL', CL_AVAILABLE: 'CL', SL_AVAILABLE: 'SL' };
+function pslBal_(type) {
+  return function (row, emp, sal, ident, bal) {
+    var v = bal ? bal[type] : undefined;
+    return v === undefined || v === null || v === '' || !isFinite(Number(v)) ? '' : payslipDays(v);
+  };
+}
 
 /**
  * Sensitive identity tokens (UAN, ESI number, PAN, bank name / account / IFSC) are printed on the payslip but are only
@@ -4349,7 +5918,7 @@ function pslZero_() { return '0'; }
 
 /**
  * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
- * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow, identity). A missing salary row makes
+ * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow, identity, leaveBalance). A missing salary row makes
  * buildReplacements throw, so that employee's payslip FAILS instead of printing blank/zero rates.
  */
 var PAYSLIP_RATE_COLUMNS = {
@@ -4390,7 +5959,7 @@ function pslCommonMap_() {
     NET_PAY: pslM_('NET_PAY'),
     NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
   };
-  PAYSLIP_BLANK_TOKENS.forEach(function (t) { m[t] = pslBlank_; });
+  Object.keys(PAYSLIP_BALANCE_TOKENS).forEach(function (t) { m[t] = pslBal_(PAYSLIP_BALANCE_TOKENS[t]); });
   Object.keys(PAYSLIP_IDENTITY_TOKENS).forEach(function (t) { m[t] = pslIdent_(PAYSLIP_IDENTITY_TOKENS[t]); });
   return m;
 }
@@ -4441,12 +6010,12 @@ function templateTokenCheck(templateText, map) {
   return { ok: missing.length === 0, tokens: tokens, missingTokens: missing };
 }
 
-/** {token: string} for every token of the population's map. Throws on non-numeric amounts. ident = identity record (or null). */
-function buildReplacements(population, lockedRow, emp, salary, ident) {
+/** {token: string} for every token of the population's map. Throws on non-numeric amounts. ident = identity record, bal = {EL, CL, SL} (or null). */
+function buildReplacements(population, lockedRow, emp, salary, ident, bal) {
   var map = payslipTokenMap(population), out = {};
   Object.keys(map).forEach(function (t) {
     var d = map[t];
-    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null, ident || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
+    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null, ident || null, bal || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
     out[t] = v == null ? '' : String(v);
   });
   return out;
@@ -4576,8 +6145,8 @@ function payslipTemplateId_(population) {
   return id;
 }
 
-function generateOnePayslip_(ctx, row, emp, salary, ident) {
-  var repl = buildReplacements(ctx.population, row, emp, salary, ident);
+function generateOnePayslip_(ctx, row, emp, salary, ident, bal) {
+  var repl = buildReplacements(ctx.population, row, emp, salary, ident, bal);
   var pdfName = payslipFileName(String(row.EMP_ID), ctx.period);
   var copy = null;
   try {
@@ -4624,6 +6193,12 @@ function generatePayslips(period, population, lockId, job_) {
   // UAN / ESI no / PAN / bank details: read from the hidden RAW master for this batch only; nothing is stored or logged
   var identity = payslipReadIdentity_(population, batch.map(function (r) { return String(r.EMP_ID); }));
 
+  // EL / CL / SL available balances from the leave spreadsheet (read-only; never written anywhere; blank when not identifiable)
+  var balances = { byEmp: {}, matched: 0, note: '' };
+  try { balances = leave_readBalances_(population, batch.map(function (r) { return String(r.EMP_ID); })); } catch (e) {
+    balances.note = String(e && e.message ? e.message : e);
+  }
+
   var root = DriveApp.getFolderById(pre.folderId);
   var folder = payslipSubfolder_(payslipSubfolder_(root, period), population);
   var ctx = { period: period, population: population, templateId: templateId, folder: folder };
@@ -4635,7 +6210,8 @@ function generatePayslips(period, population, lockId, job_) {
     var reg = { LOCK_ID: pre.lockId, PERIOD: period, EMP_ID: id, POPULATION: population, DOC_ID: '', PDF_ID: '',
       PDF_URL: '', GENERATED_AT: nowIso_(), STATUS: '' };
     try {
-      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null, identity.byEmp[feeds_empId_(id)] || null);
+      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null, identity.byEmp[feeds_empId_(id)] || null,
+        balances.byEmp[feeds_empId_(id)] || null);
       reg.DOC_ID = res.docId; reg.PDF_ID = res.pdfId; reg.PDF_URL = res.pdfUrl; reg.STATUS = 'GENERATED';
       ok++;
     } catch (e) {
@@ -4657,7 +6233,8 @@ function generatePayslips(period, population, lockId, job_) {
   }
   var summary = { period: period, population: population, lockId: pre.lockId, generated: ok, failed: failed,
     remaining: remaining, continuationScheduled: continuing,
-    identityMatched: identity.matched + ' of ' + batch.length + (identity.note ? ' (' + identity.note + ')' : '') };
+    identityMatched: identity.matched + ' of ' + batch.length + (identity.note ? ' (' + identity.note + ')' : ''),
+    leaveBalancesMatched: balances.matched + ' of ' + batch.length + (balances.note ? ' (' + balances.note + ')' : '') };
   audit('PAYSLIPS_GENERATED', period, population, summary);
   return summary;
 }
@@ -4822,10 +6399,16 @@ function onOpen() {
       .addItem('Install triggers', 'menuInstallTriggers'))
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
+      .addItem('Open monthly attendance register', 'menuOpenRegister')
       .addItem('Prepare monthly attendance (HR entry)', 'menuPrepareAttendance')
       .addItem('Generate monthly attendance from daily', 'menuGenerateAttendance')
       .addItem('Approve attendance (population)...', 'menuApproveAttendance')
       .addSeparator()
+      .addItem('Build daily vs register comparison', 'menuBuildComparison')
+      .addItem('Submit dispute decisions', 'menuSubmitDisputes')
+      .addItem('Owner: approve attendance disputes', 'menuOwnerApproveDisputes')
+      .addSeparator()
+      .addItem('Sync leave', 'menuSyncLeave')
       .addItem('Sync OT', 'menuSyncOt')
       .addItem('Sync canteen', 'menuSyncCanteen')
       .addItem('Sync efficiency', 'menuSyncEfficiency')
@@ -4912,6 +6495,24 @@ function menuMarkFeed() {
   });
 }
 
+function menuOpenRegister() { run_('Monthly attendance register', registerOpenDialog); }
+function menuSyncLeave() { run_('Sync leave', function () { var p = askPeriod_('Sync leave'); return p && syncLeaveFromSource(p); }); }
+function menuBuildComparison() { run_('Daily vs register comparison', function () { var p = askPeriod_('Daily vs register comparison'); return p && buildAttendanceComparison(p); }); }
+function menuSubmitDisputes() { run_('Submit dispute decisions', function () { var p = askPeriod_('Submit dispute decisions'); return p && submitDisputeDecisions(p); }); }
+/** Shows how many HR-submitted disputes are waiting, asks for a YES, then stamps (the runner check happens inside). */
+function menuOwnerApproveDisputes() {
+  run_('Owner: approve attendance disputes', function () {
+    var p = askPeriod_('Owner: approve attendance disputes'); if (!p) return null;
+    var waiting = cmp_storedRows_(p).filter(function (r) {
+      return String(r.STATUS).trim().toUpperCase() === 'DISPUTE' && String(r.HR_BY || '').trim() && !String(r.OWNER_DECISION || '').trim();
+    });
+    var text = waiting.length + ' HR-submitted dispute decision(s) wait for the owner (' +
+      waiting.slice(0, 20).map(function (r) { return r.EMP_ID + ' -> ' + r.HR_DECIDED_DAYS + ' days'; }).join(', ') +
+      ').\nYou must be logged in as OWNER_APPROVER_EMAIL. Approve them now?';
+    if (!confirm_('Owner: approve attendance disputes', text)) return 'Cancelled - nothing was approved.';
+    return ownerApproveDisputes(p);
+  });
+}
 function menuSyncOt() { run_('Sync OT', function () { var p = askPeriod_('Sync OT'); return p && callStage_('syncOtFromForm', 2, [p]); }); }
 function menuSyncCanteen() { run_('Sync canteen', function () { var p = askPeriod_('Sync canteen'); return p && callStage_('syncCanteenFromForm', 3, [p]); }); }
 function menuSyncEfficiency() { run_('Sync efficiency', function () { var p = askPeriod_('Sync efficiency'); return p && callStage_('syncEfficiencyFromForm', 3, [p]); }); }

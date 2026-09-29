@@ -43,11 +43,15 @@ Every file below must be created in the Apps Script project with the **same name
 | `01_SheetUtil.gs` | Safe reading and writing of sheet tabs (never clears or deletes). |
 | `02_Setup.gs` | "Run setup", "Prepare month", "Mark feed complete". |
 | `10_Attendance.gs` | Monthly attendance rows, daily-to-monthly summary, attendance approval. |
+| `12_Register.gs` | The monthly attendance register: one number per employee, everything else derived (week-off, holidays, leave). |
+| `13_RegisterPage.gs` | The register web page (opened from the menu as a dialog). |
 | `11_AttendanceForms.gs` | Creates the two daily attendance Google Forms (October onward) and holds the single form-submit trigger that feeds attendance, OT, canteen and efficiency into the sheet. |
 | `20_Feeds.gs` | Overtime, canteen and efficiency imports; advance and society readers and their checks. |
+| `21_Leave.gs` | Leave sync from the separate leave spreadsheet (INPUT_LEAVE) and the leave balances printed on payslips. |
 | `30_Calc.gs` | The pay calculation itself (STAFF, WORKER, CONSULTANT, PUNE). |
 | `31_Readiness.gs` | The readiness checks written to PAYROLL_READINESS. |
 | `32_Engine.gs` | Runs the calculation and writes the draft tabs. |
+| `33_Comparison.gs` | Daily-form vs register comparison and the HR + owner dispute decisions. |
 | `40_Approval.gs` | HR approve, Accounts approve, owner reopen; approval of the salary structure (HR) and of the statutory config (Accounts). |
 | `41_Lock.gs` | Lock: copies the approved draft into PAYROLL_LOCKED. |
 | `50_Payslips.gs` | Builds payslip PDFs from the two template Google Docs. |
@@ -85,6 +89,9 @@ Every file below must be created in the Apps Script project with the **same name
 | `OT_SOURCE_TAB` | Setup writes `OT_FORM_RESPONSES`: the tab the OT Google Form is linked into (in this sheet). If that tab does not exist the old `Overtime_Form` tab is used. |
 | `OT_SOURCE_SPREADSHEET_ID` | Setup leaves it **blank** (OT is read from the local tab above). Fill it only if the OT responses live in another spreadsheet; then `OT_SOURCE_TAB` must name the tab there (for example `Form Responses 1`). |
 | `OT_WINDOW_START_2026-09` | Setup writes `2026-08-26` (see "OT window" below). Leave it. |
+| `LEAVE_SOURCE_SPREADSHEET_ID` / `LEAVE_SOURCE_TAB` | Setup writes the VFL Leave Application 2026 spreadsheet ID and the tab `Leave_Applications`. **Share that spreadsheet (view access is enough) with the Google account that runs HR OS**, otherwise every leave sync fails and the month shows BLOCKED (`LEAVE_SOURCE_UNREACHABLE`). HR OS only reads it. |
+| `OWNER_APPROVER_EMAIL` | Setup writes `yash.munot@gmail.com` (note: confirm owner email). Only this login can approve attendance disputes. **Check it.** |
+| `REGISTER_ENTRY_EMAILS` | Optional, comma separated: extra people allowed to submit the monthly attendance register (HR approver and owner always may). |
 
    Also check `HR_APPROVER_EMAIL` (default `hr@varshaforgings.com`) and `ACCOUNTS_APPROVER_EMAIL` (default `accounts@varshaforgings.com`). Approvals only work when the person is logged in as exactly these accounts.
 5. Make sure the sheet has current data in: **EMPLOYEE_MASTER**, **SALARY_STRUCTURE** (STAFF and workers, with an EFFECTIVE_FROM date), **PAYROLL_RATE_PROFILE** (consultants and Pune), **STATUTORY_CONFIG**, **EFFICIENCY_CONFIG**.
@@ -105,23 +112,42 @@ The menu asks you to type the month as `YYYY-MM` (for example `2026-09`) and, wh
 
 ### Step A - Prepare the month (HR)
 
-1. **HR OS ▸ Month ▸ Prepare month...** - creates the four group rows in PAYROLL_PERIOD_CATEGORY and the eight feed rows in FEED_STATUS (all OPEN).
+1. **HR OS ▸ Month ▸ Prepare month...** - creates the four group rows in PAYROLL_PERIOD_CATEGORY and the nine feed rows in FEED_STATUS (all OPEN).
 2. In **PAYROLL_PERIOD_CATEGORY** type **WORKING_DAYS** for each of the four groups of that month (a positive number, not more than the days in the month).
 3. Add public holidays to **HOLIDAY_CALENDAR** if any (DATE, SITE = NASHIK / PUNE / ALL, HOLIDAY_NAME, PAID = Y/N).
 
 ### Step B - Attendance (HR)
 
-**September 2026 = monthly entry** (no daily forms yet; type in INPUT_ATTENDANCE - the old Days-Worked form was never built and is not used, a new monthly register replaces it later):
+**Monthly attendance register (September onward) - replaces typing into INPUT_ATTENDANCE:**
 
-1. **HR OS ▸ Month ▸ Prepare monthly attendance (HR entry)** - one PENDING row per active employee appears in INPUT_ATTENDANCE. Employees whose joining date is after the end of the month get no row (the result lists them); a joining date that cannot be read safely (for example `03/10/2026`, which could be 3 October or 10 March) keeps the employee in and shows a warning `DOJ_AMBIGUOUS`. The WORKING_DAYS column of the rows follows PAYROLL_PERIOD_CATEGORY: running this step again after HR changes the working days refreshes PENDING rows (approved rows are never changed).
-2. HR types the day counts per employee: PRESENT_DAYS, PHYSICAL_PRESENT_DAYS, WEEK_OFF, PH, EL_AVAILED, CL_AVAILED, SL_AVAILED, PAID_LEAVE_OTHER, ABSENT_LWP_DAYS. Leave nothing blank in PRESENT_DAYS. For PERMANENT_WORKER, PHYSICAL_PRESENT_DAYS drives the VDA; if it is left blank the efficiency form's "Physical present days" is used when given, otherwise PRESENT_DAYS (as in August) - never a blocker. Worked days for a worker = present + EL + CL + SL + PH + other paid leave (week-off is not counted for workers) and must not exceed WORKING_DAYS.
-3. **HR OS ▸ Month ▸ Approve attendance (population)...** once per group. Rows with a problem are listed and stay PENDING until fixed.
+1. **HR OS ▸ Month ▸ Open monthly attendance register.** A window opens. Pick the month (it proposes the latest open one).
+2. At the top, for each group choose **Days present EXCLUDES weekly offs** (default) or **INCLUDES weekly offs**, according to how the days were counted for that group. Workers have no week-off component: the choice is ignored for them (with a warning).
+3. Type **one number per employee** (0 to the days of the month, halves allowed). Leave a row blank if it is not entered yet. **Submit register.** Only PENDING rows are written; approved or locked rows are skipped and listed.
+4. Everything else is filled in for you: WEEK_OFF (weekly-off weekdays of the month, minus days that are paid holidays), PH (paid holidays of HOLIDAY_CALENDAR that are not on the weekly off), EL / CL / SL / C-Off / LWP from the approved leave, and OD days (added to present days but not to the physical days that drive VDA). If present + week-off + holidays + paid leave is **more than the days in the month**, that employee is put on **HOLD** (`ATTENDANCE_OVER_MONTH`) until the numbers are corrected.
+5. **Month ▸ Sync leave** (see "Leave" below) whenever leave changes: the register rows are recalculated with the new leave. You can submit the register again at any time before approval.
+6. **Month ▸ Approve attendance (population)...** once per group.
 
-**October onward = daily forms:**
+Employees who left during the month stay on the register if the master has a last working day (column `LAST_WORKING_DAY`) on or after the first of the month.
 
-1. Supervisors fill the daily Nashik / Pune forms each day (mark only exceptions; blanks count as present, weekly off or paid holiday). Sending the same date again replaces the earlier answer.
-2. At month end: **HR OS ▸ Month ▸ Generate monthly attendance from daily**. Any date without a record is shown as MISSING and blocks approval.
-3. If HR changes a generated number by hand, set HR_OVERRIDE = Y and write OVERRIDE_REASON. Then approve as in the September step 3.
+**October onward = daily forms plus the register:**
+
+1. Supervisors fill the daily Nashik / Pune forms each day (mark only exceptions; blanks count as present, weekly off or paid holiday). Sending the same date again replaces the earlier answer. HR still submits the monthly register: it is what is paid.
+2. At month end: **Month ▸ Build daily vs register comparison**. Each employee gets a row in **ATTENDANCE_COMPARISON**: `DAILY_PRESENT` (from the forms: present + half of half days; OD not counted) against `REGISTER_PRESENT` (the physical days of the register). Equal = `MATCH` and the employee is paid normally. Different = `DISPUTE`: **that employee alone is on HOLD** (the rest of the group is not blocked).
+3. To settle a dispute: HR types `HR_DECIDED_DAYS` and `HR_REASON` in ATTENDANCE_COMPARISON, then runs **Month ▸ Submit dispute decisions** (logged in as the HR approver). Then the owner runs **Month ▸ Owner: approve attendance disputes** (logged in as `OWNER_APPROVER_EMAIL`; shows the list and asks for a YES). The decided days replace the employee's present / physical days in INPUT_ATTENDANCE (the row shows HR_OVERRIDE = Y and the reason). Then approve attendance again and calculate. If the owner rejects (type `REJECTED` in OWNER_DECISION, or use the reject action), the employee stays on hold.
+   - Do the disputes **before** approving attendance for that group, or set the employee's INPUT_ATTENDANCE row back to PENDING; approved rows are never overwritten. Approve attendance leaves employees with an open dispute PENDING on its own.
+   - If HR changes the decided days after submitting them, submit again (an earlier owner decision is then cleared and the owner must decide again). Typing OWNER_DECISION by hand does not release anyone: only the owner's menu action does.
+4. Employees without a register row are paid from **Generate monthly attendance from daily** as before (missing dates block them).
+
+**Legacy:** *Prepare monthly attendance (HR entry)* still exists and pre-fills PENDING rows, but the register overwrites them.
+
+#### Leave (separate leave spreadsheet)
+
+The leave application form has its own spreadsheet, its own approval process and yearly balances. HR OS only **reads** it (never writes, never reads the password column).
+
+- **Month ▸ Sync leave** reads the approved leave that touches the month into **INPUT_LEAVE** (one row per approved leave, days inside the month only; leave over two months is split by date; half days counted; Rejected after Approved cancels it; weekly offs and paid holidays carry no leave). It also runs automatically at the start of **Calculate draft**.
+- Rows that cannot be counted are written as `EXCEPTION` with the reason (unknown employee or leave type, end before start, invalid dates or approved days, duplicate / overlapping leave). They put that employee on HOLD; fix the leave in the leave spreadsheet and sync again. Old bad rows of other months never block a new month.
+- If the leave spreadsheet cannot be opened, Sync leave says so (give the account that runs HR OS view access). During **Calculate draft** the failure marks the LEAVE feed OPEN and shows `LEAVE_SOURCE_UNREACHABLE` for every group; it clears with the next successful sync. Then mark the **LEAVE** feed complete.
+- After attendance is approved, later leave changes are **not** pushed into approved rows: the sync result lists them (`registerStaleApproved`); set those rows back to PENDING and submit the register again.
 
 ### Step C - Other feeds (HR)
 
@@ -142,7 +168,7 @@ The menu asks you to type the month as `YYYY-MM` (for example `2026-09`) and, wh
 - **Employees who are not on the OT form (CON## consultants, BUNG## Pune staff):** type a row in INPUT_OT with **SOURCE_REF = `HR_MANUAL`** (column D), **APPROVAL_STATUS = APPROVED**, PAYROLL_MONTH as `2026-09`, the EMP_ID and OT_HOURS. Such rows count in the payroll (September or later only) and are never touched by Sync OT.
 - Rows that cannot be paid (unknown employee, hours not a number, more than 16 hours in one event, ...) are written as EXCEPTION with OT_HOURS 0 and block the month until fixed.
 
-When a feed is finished for the month: **HR OS ▸ Month ▸ Mark feed complete...** and type the feed name. Do this for **all eight** feeds, even where there is nothing to enter ("empty" is only trusted once you mark it COMPLETE).
+When a feed is finished for the month: **HR OS ▸ Month ▸ Mark feed complete...** and type the feed name. Do this for **all nine** feeds (including LEAVE), even where there is nothing to enter ("empty" is only trusted once you mark it COMPLETE).
 
 ### Step D - Readiness (HR)
 
@@ -150,7 +176,8 @@ When a feed is finished for the month: **HR OS ▸ Month ▸ Mark feed complete.
 
 - **READY** - fine.
 - **WARN** - you may continue, but read the DETAIL (for example pending OT events, approved July proxy rates, EFFICIENCY_CONFIG state not marked CONFIRMED).
-- **BLOCKED** - must be fixed before approval. Fix the cause (table in section 8) and run Check readiness again.
+- **HOLD** - a problem of one employee (missing / unapproved attendance, an exception in OT, canteen, efficiency or leave, an open attendance dispute, negative net, ...). The DETAIL names the employees. They are left out of this run (their draft row shows `HOLD` in FLAGS and no net pay) but **the rest of the group is approved and locked normally**. Fix the cause and calculate again to release them.
+- **BLOCKED** - a problem of the whole group (working days missing, statutory or salary structure not approved, a feed not complete, leave source unreachable, calculation settings). Must be fixed before approval. Fix the cause (table in section 8) and run Check readiness again.
 
 ### Step E - Calculate and approve
 
@@ -158,7 +185,7 @@ When a feed is finished for the month: **HR OS ▸ Month ▸ Mark feed complete.
 1. **Payroll ▸ Calculate draft** (HR). Draft rows appear in PAYROLL_DRAFT and in PAYROLL_STAFF / _WORKER / _CONSULTANT / _PUNE_STAFF; PAYROLL_RECON shows totals against the previous locked month; PAYROLL_EXCEPTIONS lists every flag. Check the numbers.
 2. **Payroll ▸ HR approve (population)** - logged in as the HR approver, once per group. Refused if any BLOCKED check remains. (Approvals are HR, then Accounts; there is no other step.)
 3. **Payroll ▸ Accounts approve (population)** - logged in as the Accounts approver.
-4. **Payroll ▸ Lock period (population)** - Accounts (or the owner). The approved rows are copied into **PAYROLL_LOCKED**, which cannot be changed.
+4. **Payroll ▸ Lock period (population)** - Accounts (or the owner). The approved rows are copied into **PAYROLL_LOCKED**, which cannot be changed. Employees on HOLD are **not** locked and get no payslip; the lock result lists them. (A later release adds a supplementary run for them; until then settle them next month via INPUT_ADJUSTMENTS.) An employee that is already in PAYROLL_LOCKED can never be locked twice.
 
 Any change to an input after HR approval (for example editing a day count) is detected: the group drops back to **DRAFT**, approvals are cleared, and it must be recalculated and approved again. Nothing is silently paid on stale numbers.
 
@@ -192,13 +219,15 @@ Feed status: OPEN (still being entered) or COMPLETE. Email status: QUEUED, SENT,
 | What you see (PAYROLL_READINESS / PAYROLL_EXCEPTIONS) | Meaning | Fix |
 |---|---|---|
 | PERIOD_WORKING_DAYS: WORKING_DAYS must be a positive number | HR has not typed working days. | Fill WORKING_DAYS in PAYROLL_PERIOD_CATEGORY (not more than days in the month). |
-| ATTENDANCE_COVERAGE: no attendance row / duplicate / unknown | Someone active has no row, or has two. | Run Prepare monthly attendance again; delete the duplicate row; check the employee is Active in the master. |
-| ATTENDANCE_APPROVED_VALID: not APPROVED / blank or negative | Attendance not approved or bad number. | Correct the number, then Approve attendance for that group. |
+| ATTENDANCE_COVERAGE: no attendance row / duplicate / unknown (HOLD) | Someone active has no row (not entered in the register), or has two. | Enter the employee in the register; delete the duplicate row. An INPUT_ATTENDANCE row of an employee who is not on the roster blocks the group: check the employee is Active (or has a last working day) in the master. |
+| ATTENDANCE_APPROVED_VALID: not APPROVED / blank or negative / `ATTENDANCE_OVER_MONTH` (HOLD) | Attendance not approved, a bad number, or present + week-off + holidays + paid leave is more than the days in the month. | Correct the register entry (or the leave), then Approve attendance for that group. |
 | ...worked days exceed WORKING_DAYS (worker) | A worker's worked days are more than the month's working days. | Correct the day counts (this only warns for other groups). |
 | ...HR_OVERRIDE=Y without OVERRIDE_REASON | Override without a reason. | Write OVERRIDE_REASON. |
-| DAILY_ATTENDANCE_COMPLETE: missing daily dates | October onward: some dates have no record. | Have the form filled for those dates, then generate again. |
-| SALARY_PRESENT_NONZERO: no salary structure / zero pay | No structure effective for the month, or all zero. | Add or correct the row in SALARY_STRUCTURE (EFFECTIVE_FROM on or before month end) or PAYROLL_RATE_PROFILE. |
-| FEEDS_COMPLETE: feeds not COMPLETE | You did not mark a feed complete. | Month ▸ Mark feed complete... |
+| DAILY_ATTENDANCE_COMPLETE: missing daily dates (HOLD) | October onward, employee paid from generated daily data: some dates have no record. | Have the form filled for those dates, then generate again. (Register employees are compared instead.) |
+| ATTENDANCE_DISPUTES: `AWAITING_HR` / `AWAITING_OWNER` / `OWNER_REJECTED` / `OWNER_STAMP_INVALID` / `DECISION_NOT_APPLIED` (HOLD) | Daily forms and register disagree and the decision is not finished. | See Step B, October onward, point 3. |
+| LEAVE_EXCEPTIONS: leave EXCEPTION rows (HOLD) / `LEAVE_SOURCE_UNREACHABLE` (BLOCKED) | A leave could not be counted, or the leave spreadsheet cannot be opened. | Read EXCEPTION_REASON in INPUT_LEAVE; fix the leave source; for the unreachable source give the runner view access; Sync leave. |
+| SALARY_PRESENT_NONZERO: no salary structure / zero pay (HOLD) | No structure effective for the month, or all zero. | Add or correct the row in SALARY_STRUCTURE (EFFECTIVE_FROM on or before month end) or PAYROLL_RATE_PROFILE. |
+| FEEDS_COMPLETE: feeds not COMPLETE (includes LEAVE) | You did not mark a feed complete. | Month ▸ Mark feed complete... |
 | OT_EXCEPTIONS: OT exceptions | An OT event has an unknown employee, over 16 hours, bad hours or an unreadable date. (A later rejection is not an error: it simply removes the OT.) | Fix the source event in the OT tab (or the master) and Sync OT again; exceptions are never paid. |
 | OT_EXCEPTIONS: pending OT events (WARN) | Some OT requests have no manager decision yet. | Get the decision, then Sync OT again. Pending hours are not paid. |
 | STATUTORY_CONFIG: missing keys / invalid values | A rate or setting is missing for the month. | Add the key in STATUTORY_CONFIG with EFFECTIVE_FROM on or before the month. |
@@ -225,26 +254,30 @@ If something looks wrong and you are unsure, stop and check **AUDIT_LOG**: every
 - **Worker ESI basis is unconfirmed.** For permanent workers the ESI is worked out on the fixed monthly gross. Each worker with ESI above zero carries the flag `WORKER_ESI_BASIS_UNCONFIRMED` in the draft. Accounts should confirm the basis before September is paid.
 - **Worker efficiency pay:** the production allowance paid is the slab amount for the whole-number efficiency % (below 81 = 0; 81 to 85 = 4,500 / 5,000 / 6,500 / 7,500 / 8,500 from EFFICIENCY_CONFIG; above 85 = 8,500), not prorated, and there is no deduction. The readiness WARN `EFFICIENCY_CONFIG_CONFIRMED` only reflects the IMPLEMENTATION_STATE text in the EFFICIENCY_CONFIG tab; set it to CONFIRMED to clear it.
 - **Consultant and Pune rates are proxies.** PAYROLL_RATE_PROFILE currently holds July rates (VERSION_STATE `USER_APPROVED_JULY_PROXY`) used as a stand-in. They are accepted, but every such employee carries the warning `PROXY_RATE_JUL2026`. Replace them with confirmed rates before paying those groups for good.
-- **Payslip identity fields** (UAN, ESI number, PAN, bank name / account / IFSC) come from the hidden `RAW_STAFF_MASTER` / `RAW_WORKER_MASTER` tabs, matched on EMP CODE. An employee missing there gets empty fields; leave-balance fields are always empty. The salary "rate" columns on the payslip show the employee's fixed monthly structure from SALARY_STRUCTURE (the row effective for that month).
+- **Payslip identity fields** (UAN, ESI number, PAN, bank name / account / IFSC) come from the hidden `RAW_STAFF_MASTER` / `RAW_WORKER_MASTER` tabs, matched on EMP CODE. An employee missing there gets empty fields; the leave-balance fields (EL / CL / SL available) are read from the leave spreadsheet's yearly balance tabs (`Leave Databse Staff`, `Leave Dadabase PW`) only when their layout can be identified with certainty (one header row with an employee column and one `EL Available`, `CL Available`, `SL Available` column each, one row per employee); otherwise they stay empty and the audit entry of the payslip run says why. The salary "rate" columns on the payslip show the employee's fixed monthly structure from SALARY_STRUCTURE (the row effective for that month).
 - **The August worker example gap of about Rs 240** between the August worker example and what the calculation gives is **not yet explained**. Reconcile it with Accounts before trusting worker totals.
-- The external leave sheet is not a payroll feed in v1; HR types EL/CL/SL in attendance.
+- Leave comes from its own spreadsheet (read-only). Leave that changes after the attendance rows were approved is not applied automatically (see Leave above).
+- Held employees are not paid in the run; the supplementary run for them is not built yet.
 - Overtime: a form answer triggers a re-read of that OT date's month automatically; **Month ▸ Sync OT** does the same by hand.
 - The employee master has no HR sign-off yet (`HR_SIGNOFF_BY` blank): the code does not gate on it; only SALARY_STRUCTURE and STATUTORY_CONFIG approvals are enforced.
-- Old Days-Worked tabs (`PAYROLL_DAYS_FORM_RESPONSES`, `DAYS_WORKED_FORM_RAW`, `INPUT_DAYS_WORKED`, `PAYROLL_DAYS_EXCEPTIONS`) are ignored; a new monthly register will replace them in the next phase.
+- Old Days-Worked tabs (`PAYROLL_DAYS_FORM_RESPONSES`, `DAYS_WORKED_FORM_RAW`, `INPUT_DAYS_WORKED`, `PAYROLL_DAYS_EXCEPTIONS`) are ignored; the monthly attendance register replaces them.
+- **Please confirm:** `OWNER_APPROVER_EMAIL`; that week-off days are added for every group except workers (also daily-rate consultants); the exact wording of the half-day options in the leave form (values containing "half" count as half days, blank / "full" as full days, anything else becomes a leave exception).
 
-## 10. September checklist (first live month, period 2026-09)
+## 10. Monthly checklist (first live month: period 2026-09)
 
 1. Back up the sheet; look at existing triggers (section 4); create the private payslip folder.
-2. **Run setup**, then set `PAYSLIP_FOLDER_ID`. Check that `OT_SOURCE_TAB` matches the tab the OT form writes to (`OT_FORM_RESPONSES`) and that `OT_WINDOW_START_2026-09` is `2026-08-26`.
+2. **Run setup**, then set `PAYSLIP_FOLDER_ID`. Check `OT_SOURCE_TAB` (`OT_FORM_RESPONSES`), `OT_WINDOW_START_2026-09` (`2026-08-26`), **`OWNER_APPROVER_EMAIL`** and that the leave spreadsheet is **shared (view access) with the account that runs HR OS**.
 3. **Install triggers** (one trigger). Do **not** create daily attendance forms yet (October onward).
 4. **Approve the master data**: Approve salary structure (HR) for STAFF and PERMANENT_WORKER, Approve statutory config (Accounts). Check the PAYROLL_RATE_PROFILE rows (July proxy rates are accepted with a warning).
-5. **Prepare month** `2026-09`, then type the working days for the four groups in PAYROLL_PERIOD_CATEGORY (you may set STATUS to APPROVED afterwards, as before). Add holidays if any.
-6. **Prepare monthly attendance (HR entry)**, type the day counts in INPUT_ATTENDANCE (workers: PHYSICAL_PRESENT_DAYS too, or rely on PRESENT_DAYS), then **Approve attendance** per group.
-7. **OT:** requests approved in the OT form appear automatically; the September run covers **26-Aug to 30-Sep** (the August salary paid OT only to 25-Aug). Run **Sync OT** once by hand and read the summary. For CON##/BUNG## staff type INPUT_OT rows with SOURCE_REF `HR_MANUAL` and APPROVAL_STATUS APPROVED.
-8. **Canteen and efficiency:** collect the form answers (one efficiency % per worker); check that no EXCEPTION row is left. Type advances, society deductions (components are enough) and adjustments; only APPROVED rows count.
-9. **Mark all eight feeds complete**, then **Check readiness** until nothing is BLOCKED; read the WARN lines (pending OT, proxy rates, DOJ warnings, EFFICIENCY_NOT_SUBMITTED).
-10. **Calculate draft**, check PAYROLL_RECON and PAYROLL_EXCEPTIONS, then HR approve, Accounts approve, Lock per group.
-11. **Payslips** for STAFF and PERMANENT_WORKER; queue emails; release only when Accounts agrees.
+5. **Prepare month**, then type the working days for the four groups in PAYROLL_PERIOD_CATEGORY (you may set STATUS to APPROVED afterwards, as before). Add holidays to HOLIDAY_CALENDAR.
+6. **Sync leave** and read the summary (fix EXCEPTION rows at the source).
+7. **Open monthly attendance register**: choose INCLUDES / EXCLUDES weekly offs per group, type one number per employee, submit. Check the warnings (over-month, week-off warnings). Then **Approve attendance** per group.
+8. October onward only: **Build daily vs register comparison**, settle disputes (HR submits, owner approves), approve attendance again.
+9. **OT:** requests approved in the OT form appear automatically; the September run covers **26-Aug to 30-Sep**. Run **Sync OT** once by hand. For CON##/BUNG## staff type INPUT_OT rows with SOURCE_REF `HR_MANUAL` and APPROVAL_STATUS APPROVED.
+10. **Canteen and efficiency:** collect the form answers (one efficiency % per worker); no EXCEPTION row should be left. Type advances, society deductions and adjustments; only APPROVED rows count.
+11. **Mark all nine feeds complete** (ATTENDANCE, CANTEEN, OT, EFFICIENCY, ADVANCE, SOCIETY, ADJUSTMENTS, HOLIDAYS, LEAVE), then **Check readiness** until nothing is BLOCKED; read the HOLD and WARN lines (employees on hold, pending OT, proxy rates, DOJ warnings, EFFICIENCY_NOT_SUBMITTED).
+12. **Calculate draft**, check PAYROLL_RECON and PAYROLL_EXCEPTIONS (HOLD rows are the employees left out), then HR approve, Accounts approve, Lock per group (the lock lists the held employees).
+13. **Payslips** for STAFF and PERMANENT_WORKER (leave balances are filled in when the balance tab can be read); queue emails; release only when Accounts agrees.
 
 ## Handbook site
 
