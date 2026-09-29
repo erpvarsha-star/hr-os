@@ -205,7 +205,7 @@ function ptAmount(grossForPt, monthName, empId, cfg, ptExemptSet) {
   return slabs.length ? Number(slabs[slabs.length - 1].pt) : 0;
 }
 
-/** Slab amount for floor(pct): highest configured percent <= floor(pct); none -> 0 (<81), >=85 -> 85 slab. */
+/** Slab amount for floor(pct): highest configured percent <= floor(pct); none -> 0 (<81), >85 -> the 85 slab. It is the amount PAID (no deduction, no proration). */
 function efficiencySlab(pct, efficiencyConfigRows) {
   var p = Number(pct);
   if (calc_isBlank(pct) || !isFinite(p)) return null;
@@ -555,15 +555,23 @@ function calcWorker(ctx) {
   }
   if (inp.pp === null) calc_ex_(ex, 'BLOCKER', 'MISSING_PHYSICAL_PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS is required for VDA');
 
+  // Production (efficiency) pay = the slab amount for floor(pct) from EFFICIENCY_CONFIG: <81 -> 0, 81..85 -> slab,
+  // >85 -> the 85 slab. It is an earning; there is NO deduction and NO proration. No % submitted -> 0 + WARN.
   var pct = ctx.efficiencyPct;
   var pctNum = calc_isBlank(pct) ? NaN : calc_num(pct);
-  if (calc_isBlank(pct)) {
-    calc_ex_(ex, 'BLOCKER', 'MISSING_EFFICIENCY_PCT', 'Efficiency % is missing');
-  } else if (isNaN(pctNum) || pctNum < 0 || pctNum > 100) {
-    calc_ex_(ex, 'BLOCKER', 'INVALID_EFFICIENCY_PCT', 'Efficiency % must be between 0 and 100');
+  var pctMissing = calc_isBlank(pct);
+  if (pctMissing) {
+    calc_ex_(ex, 'WARN', 'EFFICIENCY_NOT_SUBMITTED', 'No efficiency % submitted: production allowance is 0');
+  } else {
+    if (isNaN(pctNum) || pctNum < 0 || pctNum > 100) {
+      calc_ex_(ex, 'BLOCKER', 'INVALID_EFFICIENCY_PCT', 'Efficiency % must be between 0 and 100');
+    }
+    if (!ctx.efficiencyConfig || !ctx.efficiencyConfig.length) {
+      calc_ex_(ex, 'BLOCKER', 'MISSING_EFFICIENCY_CONFIG', 'EFFICIENCY_CONFIG is empty');
+    }
   }
-  if (!ctx.efficiencyConfig || !ctx.efficiencyConfig.length) {
-    calc_ex_(ex, 'BLOCKER', 'MISSING_EFFICIENCY_CONFIG', 'EFFICIENCY_CONFIG is empty');
+  if (ctx.physicalDaysSource === 'EFFICIENCY_OVERRIDE') {
+    calc_ex_(ex, 'WARN', 'PHYSICAL_DAYS_FROM_EFFICIENCY_FORM', 'PHYSICAL_PRESENT_DAYS taken from the efficiency form override');
   }
   if (calc_hasBlocker_(ex)) return calc_finalize_(row, ex);
 
@@ -575,20 +583,13 @@ function calcWorker(ctx) {
   var edu = roundSheets(m.EDUCATION / wd * w);
   var heat = m.HEAT === 150 ? roundSheets(w * cfg.WORKER_HEAT_RATE) : 0;
   var vda = roundSheets(cfg.WORKER_VDA_RATE * pp);
-  var prod = m.PRODUCTION;
+  var eligible = pctMissing ? 0 : efficiencySlab(pctNum, ctx.efficiencyConfig);
+  var prod = eligible;
   var ap = basic + hra + conv + wash + edu;
   var ot = ((m.BASIC + m.VDA) / wd / 8) * Number(cfg.WORKER_OT_MULTIPLIER) * inp.ot;
   var extras = inp.DISPATCH_INCENTIVE + inp.OTHER_ALLOWANCE + inp.LEAVE_ENCASHMENT + inp.ARREARS +
     inp.PRODUCTION_INCENTIVE + inp.OT_EXTRA_WORK;
   var totalEarn = roundSheets(ap + heat + vda + prod + ot + extras);
-
-  var eligible = efficiencySlab(pctNum, ctx.efficiencyConfig);
-  var effDed = prod - eligible;
-  if (effDed < 0) {
-    calc_ex_(ex, 'WARN', 'EFFICIENCY_ELIGIBLE_EXCEEDS_PRODUCTION', 'Eligible efficiency amount exceeds production allowance; deduction clamped to 0');
-    effDed = 0;
-  }
-  calc_ex_(ex, 'WARN', 'EFFICIENCY_RULE_UNCONFIRMED', 'Efficiency deduction rule is unconfirmed');
 
   var pfWage = basic + vda;
   var pf = roundSheets(calc_pf_(pfWage, cfg, Number(cfg.PF_EMPLOYEE_RATE)));
@@ -598,7 +599,7 @@ function calcWorker(ctx) {
   var pt = ptAmount(totalEarn, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet);
   var mlwf = calc_mlwf_(ctx.period, cfg);
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA;
-  var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + effDed + mlwf + inp.TDS + otherDed;
+  var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + mlwf + inp.TDS + otherDed;
 
   calc_writeAdjustments_(row, inp);
   row.FIXED_GROSS = fg;
@@ -612,9 +613,9 @@ function calcWorker(ctx) {
   row.ESI_EMPLOYEE = esi;
   row.PT = pt;
   row.MLWF = mlwf;
-  row.EFFICIENCY_PCT = pctNum;
+  row.EFFICIENCY_PCT = pctMissing ? null : pctNum;
   row.EFFICIENCY_ELIGIBLE_AMOUNT = eligible;
-  row.EFFICIENCY_DEDUCTION = effDed;
+  row.EFFICIENCY_DEDUCTION = 0;
   row.TOTAL_DEDUCTIONS = calc_r2_(ded);
   row.NET_PAY = roundSheets(totalEarn - ded);
   row.EMPLOYER_PF = roundSheets(calc_pf_(pfWage, cfg, Number(cfg.EMPLOYER_PF_RATE_WORKER)));

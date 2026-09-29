@@ -126,10 +126,22 @@ function buildEngineContexts(args) {
     else ctx.rate = (args.rateByEmp || {})[id] || null;
     if (pop === 'PERMANENT_WORKER') {
       var pct = args.efficiencyByEmp ? args.efficiencyByEmp[id] : undefined;
+      var override = null;
       // real efficiencyByEmp (20_Feeds.gs) returns {pct, physicalDaysOverride, source}; calcWorker wants the number
-      if (pct !== null && typeof pct === 'object') pct = pct.pct;
+      if (pct !== null && typeof pct === 'object') { override = pct.physicalDaysOverride; pct = pct.pct; }
       ctx.efficiencyPct = pct === undefined ? null : pct;
       ctx.efficiencyConfig = args.efficiencyConfig || [];
+      // PHYSICAL_PRESENT_DAYS (VDA basis): HR's value, else the efficiency-form override, else PRESENT_DAYS
+      // (the August VDA used the Present column). Never a blocker.
+      if (attRow && (att.PHYSICAL_PRESENT_DAYS === '' || att.PHYSICAL_PRESENT_DAYS == null)) {
+        if (override !== null && override !== undefined && override !== '' && isFinite(Number(override))) {
+          att.PHYSICAL_PRESENT_DAYS = Number(override);
+          ctx.physicalDaysSource = 'EFFICIENCY_OVERRIDE';
+        } else if (att.PRESENT_DAYS !== '' && att.PRESENT_DAYS != null) {
+          att.PHYSICAL_PRESENT_DAYS = att.PRESENT_DAYS;
+          ctx.physicalDaysSource = 'PRESENT_DAYS';
+        }
+      }
     }
     return ctx;
   });

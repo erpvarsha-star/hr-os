@@ -23,7 +23,8 @@ const ot = (o) => {
   set('Approval Password (HT)', 'SECRET');
   return r;
 };
-const mapOt = (rows, existing = [], p = P) => plain(ctx.mapOtRows(OT_HDR, rows, p, roster, existing));
+const mapOt = (rows, existing = [], p = P, opts = undefined) => plain(ctx.mapOtRows(OT_HDR, rows, p, roster, existing, opts));
+const reasonOf = (e) => e.EXCEPTION_REASON.split(' | ')[0];
 
 test('OT: only explicit Approved approval rows count; apply rows are pending WARN', () => {
   const r = mapOt([
@@ -59,7 +60,7 @@ test('OT: pending events split by population (unknown EMP_IDs under UNKNOWN); OT
   assert.deepEqual(plain(ctx.feeds_parsePendingOt('')), {});
 });
 
-test('OT: ambiguous rows (Approved on Apply row, odd decision, later rejection) are exceptions, never valid', () => {
+test('OT: ambiguous rows (Approved on Apply row, odd decision) are exceptions; a later rejection revokes silently', () => {
   const r = mapOt([
     ot({ type: 'Apply For OT', dec: 'Approved', date: '2026-10-08' }),
     ot({ dec: 'Approved with changes', date: '2026-10-09' }),
@@ -67,9 +68,10 @@ test('OT: ambiguous rows (Approved on Apply row, odd decision, later rejection) 
     ot({ date: '2026-10-10', dec: 'Rejected', ts: '2026-10-12 09:00:00' }),
   ]);
   assert.equal(r.valid.length, 0);
-  assert.deepEqual(r.exceptions.map((e) => e.EXCEPTION_REASON).sort(),
-    ['APPROVED_ON_NON_APPROVAL_ROW', 'REVOKED_BY_LATER_REJECTION', 'UNRECOGNISED_DECISION']);
-  assert.ok(r.exceptions.every((e) => e.ELIGIBILITY === 'EXCEPTION'));
+  assert.deepEqual(r.exceptions.map(reasonOf).sort(), ['APPROVED_ON_NON_APPROVAL_ROW', 'UNRECOGNISED_DECISION']);
+  assert.ok(r.exceptions.every((e) => e.ELIGIBILITY === 'EXCEPTION' && e.OT_HOURS === 0), 'exceptions carry OT_HOURS=0');
+  assert.ok(r.exceptions.every((e) => /ORIGINAL_OT_HOURS=4\.5/.test(e.EXCEPTION_REASON)), 'original hours kept in the reason');
+  assert.equal(r.revokedCount, 1);
 });
 
 test('OT: key idempotency (existing keys skipped; same-run re-map identical)', () => {
@@ -106,8 +108,11 @@ test('OT: >16h, non numeric, zero and unknown EMP are exceptions', () => {
     ot({ emp: 'VFL9999', date: '2026-10-07' }), ot({ h: 16, date: '2026-10-08' })]);
   assert.equal(r.valid.length, 1);
   assert.equal(r.valid[0].OT_HOURS, 16);
-  assert.deepEqual(r.exceptions.map((e) => e.EXCEPTION_REASON),
+  assert.deepEqual(r.exceptions.map(reasonOf),
     ['HOURS_OVER_16', 'HOURS_NOT_NUMERIC', 'HOURS_NOT_POSITIVE', 'UNKNOWN_OR_INACTIVE_EMP_ID']);
+  assert.ok(r.exceptions.every((e) => e.OT_HOURS === 0), 'exception rows never carry hours (Monthly OT Report SUMIFS)');
+  assert.match(r.exceptions[0].EXCEPTION_REASON, /ORIGINAL_OT_HOURS=17/);
+  assert.match(r.exceptions[1].EXCEPTION_REASON, /ORIGINAL_OT_HOURS=abc/);
 });
 
 test('OT: out-of-period events are ignored entirely', () => {
@@ -174,7 +179,7 @@ test('canteen mapper: latest per PERIOD|EMP wins, invalid latest not replaced by
   assert.equal(noRef.exceptions[0].REMARKS, 'CORRECTION_WITHOUT_REFERENCE');
 });
 
-test('canteenByEmp: latest wins over form rows, HR_MANUAL rows preserved and counted, non-VALID ignored', () => {
+test('canteenByEmp: latest wins over form rows, HR_MANUAL rows preserved and counted, an invalid LATEST row leaves no value', () => {
   const rows = [
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', AMOUNT_INR: 500, SOURCE: 'FORM_CANTEEN', STATUS: 'VALID', ENTERED_AT: '2026-10-20T10:00:00' },
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', AMOUNT_INR: 650, SOURCE: 'FORM_CANTEEN', STATUS: 'VALID', ENTERED_AT: '2026-10-21T10:00:00' },
@@ -183,14 +188,20 @@ test('canteenByEmp: latest wins over form rows, HR_MANUAL rows preserved and cou
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', AMOUNT_INR: 300, SOURCE: 'FORM_CANTEEN', STATUS: 'VALID', ENTERED_AT: '2026-10-20T10:00:00' },
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', AMOUNT_INR: 350, SOURCE: 'HR_MANUAL', ENTERED_AT: '2026-10-23T10:00:00' },
   ];
-  assert.deepEqual(plain(ctx.canteenByEmp(rows, P)), { A: 650, M: 200, B: 350 });
+  // A: the latest response (10-25) is an EXCEPTION -> no silent fallback to the older 650
+  assert.deepEqual(plain(ctx.canteenByEmp(rows, P)), { M: 200, B: 350 });
+  assert.deepEqual(plain(ctx.canteenExceptions(rows, P)).map((e) => e.EMP_ID), ['A']);
+  // a later valid row (HR fixes it) clears the exception again
+  const fixed = rows.concat([{ PAYROLL_MONTH: '2026-10', EMP_ID: 'A', AMOUNT_INR: 700, SOURCE: 'HR_MANUAL', STATUS: 'VALID', ENTERED_AT: '2026-10-26T10:00:00' }]);
+  assert.deepEqual(plain(ctx.canteenByEmp(fixed, P)).A, 700);
+  assert.deepEqual(plain(ctx.canteenExceptions(fixed, P)), []);
 });
 
 const EFF_HDR = ['Timestamp', 'Email Address', 'Payroll Month', 'Employee ID', 'Employee Name (optional)', 'Plant / location',
   'Production efficiency percent', 'Physical present days (optional)', 'Submission type', 'Previous submission reference', 'Correction reason'];
 const eff = (ts, emp, pct, days = '') => [ts, 'm@y', '2026-10', emp, '', 'Waluj', pct, days, 'NEW', '', ''];
 
-test('efficiency mapper: EMP_ID and ALL_WORKERS, range validation, latest wins, staff rejected', () => {
+test('efficiency mapper: per employee, ALL_WORKERS retired, range validation, latest wins, staff rejected', () => {
   const rows = [
     eff('2026-10-30 10:00:00', 'ALL_WORKERS', 90),
     eff('2026-10-30 11:00:00', 'VFL4001', 80, 24),
@@ -200,23 +211,26 @@ test('efficiency mapper: EMP_ID and ALL_WORKERS, range validation, latest wins, 
   ];
   const r = plain(ctx.mapEfficiencyRows(EFF_HDR, rows, P, roster, []));
   const by = Object.fromEntries(r.valid.map((v) => [v.EMP_ID, v]));
-  assert.equal(by.ALL_WORKERS.EFFICIENCY_PCT, 90);
+  assert.ok(!by.ALL_WORKERS, 'no blanket row');
   assert.equal(by.VFL4001.EFFICIENCY_PCT, 82);
   assert.equal(by.VFL4001.PHYSICAL_PRESENT_DAYS_OVERRIDE, 25);
-  assert.deepEqual(r.exceptions.map((e) => e.REMARKS).sort(), ['EFFICIENCY_OUT_OF_RANGE', 'NOT_A_PERMANENT_WORKER']);
+  assert.deepEqual(r.exceptions.map((e) => e.REMARKS).sort(), ['ALL_WORKERS_NOT_SUPPORTED', 'EFFICIENCY_OUT_OF_RANGE', 'NOT_A_PERMANENT_WORKER']);
 });
 
-test('efficiencyByEmp: per-employee overrides ALL_WORKERS', () => {
+test('efficiencyByEmp: per employee only; ALL_WORKERS rows are ignored; invalid latest gives nothing', () => {
   const rows = [
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'ALL_WORKERS', EFFICIENCY_PCT: 90, PHYSICAL_PRESENT_DAYS_OVERRIDE: '', STATUS: 'VALID', ENTERED_AT: '2026-10-30T10:00:00' },
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'VFL4001', EFFICIENCY_PCT: 80, PHYSICAL_PRESENT_DAYS_OVERRIDE: 24, STATUS: 'VALID', ENTERED_AT: '2026-10-29T10:00:00' },
     { PAYROLL_MONTH: '2026-09', EMP_ID: 'VFL4002', EFFICIENCY_PCT: 10, STATUS: 'VALID' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'VFL4003', EFFICIENCY_PCT: 84, STATUS: 'VALID', ENTERED_AT: '2026-10-29T10:00:00' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'VFL4003', EFFICIENCY_PCT: '', STATUS: 'EXCEPTION', REMARKS: 'EFFICIENCY_OUT_OF_RANGE', ENTERED_AT: '2026-10-30T10:00:00' },
   ];
   const r = plain(ctx.efficiencyByEmp(rows, P, ['VFL4001', 'VFL4002', 'VFL4003']));
   assert.deepEqual(r.VFL4001, { pct: 80, physicalDaysOverride: 24, source: 'EMP' });
-  assert.deepEqual(r.VFL4002, { pct: 90, physicalDaysOverride: null, source: 'ALL_WORKERS' });
-  assert.equal(r.VFL4003.pct, 90);
-  assert.deepEqual(plain(ctx.efficiencyByEmp(rows.slice(1), P, ['VFL4002'])), {}); // no row for period -> missing
+  assert.ok(!('VFL4002' in r), 'no blanket fallback');
+  assert.ok(!('VFL4003' in r), 'invalid latest row: no fallback to the older 84');
+  assert.deepEqual(plain(ctx.efficiencyExceptions(rows, P)).map((e) => [e.EMP_ID, e.reason]), [['VFL4003', 'EFFICIENCY_OUT_OF_RANGE']]);
+  assert.deepEqual(plain(ctx.efficiencyByEmp(rows.slice(1, 2), P, ['VFL4002'])), {}); // no row for period -> missing
 });
 
 test('advance / society: APPROVED only, per period, summed', () => {
@@ -233,16 +247,6 @@ test('advance / society: APPROVED only, per period, summed', () => {
     { PAYROLL_MONTH: '2026-10', EMP_ID: 'X', TOTAL_RECOVERY_INR: 10, APPROVAL_STATUS: 'PENDING' },
   ];
   assert.deepEqual(plain(ctx.societyByEmp(soc, P)), { W: 4780 });
-});
-
-test('trigger planning: idempotent and capped at 5', () => {
-  const wanted = [{ handler: 'onCanteenFormSubmit', formId: 'c' }, { handler: 'onEfficiencyFormSubmit', formId: 'e' }];
-  const four = ['a', 'b', 'c2', 'd'].map((h) => ({ handler: h, sourceId: '' }));
-  assert.throws(() => ctx.feeds_planTriggers(four, wanted, 5), /exceed/);
-  const ex = [{ handler: 'onCanteenFormSubmit', sourceId: 'c' }];
-  const p = plain(ctx.feeds_planTriggers(ex, wanted, 5));
-  assert.equal(p.toCreate.length, 1);
-  assert.equal(p.present, 1);
 });
 
 function fakeSheet(headers, rows) {
@@ -290,13 +294,125 @@ test('sheet read never touches a password column (OT and form tabs)', () => {
   assert.equal(miss.rows.length, 0);
 });
 
-test('efficiency: hyphenated EMP_IDs are kept, only the ALL WORKERS sentinel is normalised', () => {
-  const hdr = ['Timestamp', 'Payroll Month', 'Employee ID', 'Production Efficiency Percent'];
+test('efficiency: hyphenated EMP_IDs are kept, "all workers" is an exception, correction-reason header with suffix is read', () => {
+  const hdr = ['Timestamp', 'Payroll Month', 'Employee ID', 'Production Efficiency Percent', 'Submission type',
+    'Previous submission reference (required if CORRECTION)', 'Correction reason (required if CORRECTION)'];
   const rost = [{ EMP_ID: 'TW-1', PAYROLL_CATEGORY: 'PERMANENT_WORKER' }];
-  const r = plain(ctx.mapEfficiencyRows(hdr, [['2026-10-02 10:00:00', '2026-10', 'all workers', 90], ['2026-10-02 10:00:00', '2026-10', 'tw-1', 82]], P, rost, []));
-  assert.deepEqual(r.valid.map((x) => x.EMP_ID).sort(), ['ALL_WORKERS', 'TW-1']);
+  const r = plain(ctx.mapEfficiencyRows(hdr, [['2026-10-02 10:00:00', '2026-10', 'all workers', 90, 'NEW', '', ''],
+    ['2026-10-02 10:00:00', '2026-10', 'tw-1', 82, 'CORRECTION', 'row 2', 'typo in first entry']], P, rost, []));
+  assert.deepEqual(r.valid.map((x) => x.EMP_ID), ['TW-1']);
+  assert.equal(r.valid[0].REMARKS, 'typo in first entry', 'correction reason picked up despite the "(required if CORRECTION)" suffix');
+  assert.deepEqual(r.exceptions.map((x) => x.REMARKS), ['ALL_WORKERS_NOT_SUPPORTED']);
   const rows = [{ PAYROLL_MONTH: P, EMP_ID: 'ALL-WORKERS', EFFICIENCY_PCT: 90, STATUS: 'VALID' }, { PAYROLL_MONTH: P, EMP_ID: 'TW-1', EFFICIENCY_PCT: 82, STATUS: 'VALID' }];
   const m = plain(ctx.efficiencyByEmp(rows, P, ['TW-1', 'TW-2']));
   assert.equal(m['TW-1'].pct, 82);
-  assert.equal(m['TW-2'].pct, 90);
+  assert.ok(!('TW-2' in m));
+});
+
+// ================================================================ OT window, reversals, re-sync, manual rows
+test('OT window: default = calendar month; OT_WINDOW_START_<period> moves the start (Sept catch-up from 26-Aug)', () => {
+  assert.deepEqual(plain(ctx.feeds_otWindow('2026-10', {})), { start: '2026-10-01', end: '2026-10-31', overridden: false });
+  assert.deepEqual(plain(ctx.feeds_otWindow('2026-09', { 'OT_WINDOW_START_2026-09': '2026-08-26' })), { start: '2026-08-26', end: '2026-09-30', overridden: true });
+  assert.deepEqual(plain(ctx.feeds_otWindow('2026-09', { 'OT_WINDOW_START_2026-09': new Date(2026, 7, 26) })).start, '2026-08-26');
+  assert.equal(ctx.feeds_otWindow('2026-10', { 'OT_WINDOW_START_2026-09': '2026-08-26' }).start, '2026-10-01', 'override is per period');
+  assert.throws(() => ctx.feeds_otWindow('2026-09', { 'OT_WINDOW_START_2026-09': 'soon' }), /must be a date/);
+  assert.throws(() => ctx.feeds_otWindow('2026-09', { 'OT_WINDOW_START_2026-09': '2026-10-02' }), /after the end/);
+  const w = plain(ctx.feeds_otWindow('2026-09', { 'OT_WINDOW_START_2026-09': '2026-08-26' }));
+  const rows = [ot({ date: '2026-08-25', kase: 1 }), ot({ date: '2026-08-26', emp: 'VFL4002', kase: 2 }), ot({ date: '2026-08-31', kase: 3 }),
+    ot({ date: '2026-09-30', emp: 'VFL4002', kase: 4 }), ot({ date: '2026-10-01', kase: 5 })];
+  const r = mapOt(rows, [], '2026-09', { windowStart: w.start, windowEnd: w.end });
+  assert.deepEqual(r.valid.map((v) => v.OT_DATE), ['2026-08-26', '2026-08-31', '2026-09-30']);
+  assert.ok(r.valid.every((v) => v.PAYROLL_MONTH === '2026-09'), 'catch-up days are paid in the September run');
+  assert.equal(mapOt(rows, [], '2026-09').valid.length, 1, 'without the override only 30-Sep is in September');
+});
+
+test('OT reversals: latest decisive row wins by case (rejection excludes, corrected approval takes latest hours)', () => {
+  const r = mapOt([
+    ot({ kase: 700, h: 4, ts: '2026-10-06 10:00:00' }),
+    ot({ kase: 700, h: 6, ts: '2026-10-07 10:00:00' }),                           // corrected approval -> 6 h
+    ot({ kase: 701, emp: 'VFL4002', h: 5, ts: '2026-10-06 10:00:00' }),
+    ot({ kase: 701, emp: 'VFL4002', dec: 'Rejected', ts: '2026-10-08 10:00:00' }), // rejected later -> nothing
+    ot({ kase: 702, date: '2026-10-09', h: 3, ts: '2026-10-06 10:00:00' }),
+    ot({ kase: 702, date: '2026-10-09', dec: 'Rejected', ts: '2026-10-07 10:00:00' }),
+    ot({ kase: 702, date: '2026-10-09', h: 2.5, ts: '2026-10-08 10:00:00' }),      // re-approved after rejection -> 2.5
+  ]);
+  assert.deepEqual(r.valid.map((v) => [v.EMP_ID, v.OT_DATE, v.OT_HOURS]).sort(), [['VFL4001', '2026-10-05', 6], ['VFL4001', '2026-10-09', 2.5]]);
+  assert.equal(r.exceptions.length, 0, 'a decision reversal is not an error');
+  assert.equal(r.revokedCount, 1);
+  assert.equal(r.correctedCount, 2, "cases 700 and 702 carry a corrected hours value");
+  // no case number: grouped by EMP + date
+  const n = mapOt([ot({ kase: '', h: 4, ts: '2026-10-06 10:00:00' }), ot({ kase: '', dec: 'Rejected', ts: '2026-10-07 10:00:00' })]);
+  assert.equal(n.valid.length, 0);
+});
+
+test('OT re-sync plan: identical rows kept, changed/reversed rows superseded (hours zeroed, original kept), legacy + manual untouched', () => {
+  const live = (o) => Object.assign({ PAYROLL_MONTH: '2026-10', EMP_ID: 'VFL4001', OT_HOURS: 4, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED',
+    NORMALIZER_VERSION: 'OT-1.0', ELIGIBILITY: 'VALID', EXCEPTION_REASON: '' }, o);
+  const existing = [
+    live({ _row: 2, OT_KEY: 'VFL4001|2026-10-05|2' }),                    // unchanged
+    live({ _row: 3, OT_KEY: 'VFL4001|2026-10-06|3', EMP_ID: 'VFL4002' }), // reversed (not in fresh any more)
+    live({ _row: 4, OT_KEY: 'VFL4001|2026-10-07|4', OT_HOURS: 3 }),      // corrected: fresh has new row/key
+    live({ _row: 5, OT_KEY: 'X|2026-10-08|5', ELIGIBILITY: 'SUPERSEDED' }),
+    { _row: 6, PAYROLL_MONTH: '2026-10', EMP_ID: 'VFL4001', OT_HOURS: 9, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED' },
+    { _row: 7, PAYROLL_MONTH: '2026-08', EMP_ID: 'VFL4001', OT_HOURS: 99, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED' },
+    live({ _row: 8, PAYROLL_MONTH: '2026-09', OT_KEY: 'VFL4001|2026-09-30|8' }),
+  ];
+  const fresh = [
+    { OT_KEY: 'VFL4001|2026-10-05|2', OT_HOURS: 4, ELIGIBILITY: 'VALID', EXCEPTION_REASON: '' },
+    { OT_KEY: 'VFL4001|2026-10-07|9', OT_HOURS: 5, ELIGIBILITY: 'VALID', EXCEPTION_REASON: '' },
+  ];
+  const plan = plain(ctx.feeds_planOtResync(existing, fresh, '2026-10'));
+  assert.deepEqual(plan.supersede.map((r) => r._row), [3, 4]);
+  assert.deepEqual(plan.append.map((r) => r.OT_KEY), ['VFL4001|2026-10-07|9']);
+  assert.equal(plan.unchanged, 1);
+  const v = plain(ctx.feeds_supersedeValues(existing[1], 'T'));
+  assert.equal(v.ELIGIBILITY, 'SUPERSEDED');
+  assert.equal(v.OT_HOURS, 0);
+  assert.match(v.EXCEPTION_REASON, /SUPERSEDED_BY_RESYNC T \| WAS=VALID \| ORIGINAL_OT_HOURS=4/);
+  assert.deepEqual(Object.keys(v).sort(), ['ELIGIBILITY', 'EXCEPTION_REASON', 'OT_HOURS']);
+});
+
+test('sumOtHours: SUPERSEDED never counts; HR_MANUAL rows (e.g. CON/BUNG staff) count when APPROVED and period >= MIN_PERIOD', () => {
+  const rows = [
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', OT_HOURS: 4, ELIGIBILITY: 'SUPERSEDED', NORMALIZER_VERSION: 'OT-1.0' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', OT_HOURS: 5, ELIGIBILITY: 'VALID', NORMALIZER_VERSION: 'OT-1.0' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'CON01', OT_HOURS: 12, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: new Date(2026, 9, 1), EMP_ID: 'con01', OT_HOURS: 3, SOURCE_REF: 'hr_manual', APPROVAL_STATUS: 'approved' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'BUNG23', OT_HOURS: 8, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'PENDING' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'BUNG24', OT_HOURS: 8, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED', ELIGIBILITY: 'EXCEPTION' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'BUNG25', OT_HOURS: 'x', SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-08', EMP_ID: 'CON01', OT_HOURS: 50, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'Z', OT_HOURS: 7, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED' }, // legacy-style: no version
+  ];
+  assert.deepEqual(plain(ctx.sumOtHours(rows, '2026-10')), { A: 5, CON01: 15 });
+  assert.deepEqual(plain(ctx.sumOtHours(rows, '2026-08')), {}, 'pre-MIN_PERIOD manual rows never count');
+});
+
+test('society: TOTAL_RECOVERY_INR, else component sum; both present and different -> WARN (total used)', () => {
+  const soc = [
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', TOTAL_RECOVERY_INR: '', GENERAL_EMI_INR: 1000, EMERGENCY_EMI_INR: 500, EDUCATION_EMI_INR: '', SHARES_OTHER_INR: 100, APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', TOTAL_RECOVERY_INR: 1500, GENERAL_EMI_INR: 1000, EMERGENCY_EMI_INR: 500, APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'C', TOTAL_RECOVERY_INR: 1000, GENERAL_EMI_INR: 1000, EMERGENCY_EMI_INR: 500, APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'D', TOTAL_RECOVERY_INR: '', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'E', GENERAL_EMI_INR: 900, APPROVAL_STATUS: 'PENDING' },
+  ];
+  assert.deepEqual(plain(ctx.societyByEmp(soc, P)), { A: 1600, B: 1500, C: 1000 });
+  const w = plain(ctx.societyIssues(soc, P));
+  assert.deepEqual(w.map((x) => [x.EMP_ID, x.severity, x.code]), [['C', 'WARN', 'SOCIETY_TOTAL_MISMATCH']]);
+});
+
+test('advance: WARN when recovery > opening balance; BLOCKER on duplicate ledger reference for the same EMP and period', () => {
+  const adv = [
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', OPENING_BALANCE_INR: 1000, RECOVERY_THIS_MONTH_INR: 1500, ACCOUNTS_LEDGER_REFERENCE: 'L1', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'A', OPENING_BALANCE_INR: 5000, RECOVERY_THIS_MONTH_INR: 500, ACCOUNTS_LEDGER_REFERENCE: 'l1', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', OPENING_BALANCE_INR: 1000, RECOVERY_THIS_MONTH_INR: 500, ACCOUNTS_LEDGER_REFERENCE: 'L1', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', OPENING_BALANCE_INR: 1000, RECOVERY_THIS_MONTH_INR: 500, ACCOUNTS_LEDGER_REFERENCE: '', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'B', OPENING_BALANCE_INR: 1000, RECOVERY_THIS_MONTH_INR: 500, ACCOUNTS_LEDGER_REFERENCE: '', APPROVAL_STATUS: 'APPROVED' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'C', OPENING_BALANCE_INR: 1, RECOVERY_THIS_MONTH_INR: 999, ACCOUNTS_LEDGER_REFERENCE: 'L1', APPROVAL_STATUS: 'PENDING' },
+    { PAYROLL_MONTH: '2026-10', EMP_ID: 'D', OPENING_BALANCE_INR: '', RECOVERY_THIS_MONTH_INR: 999, APPROVAL_STATUS: 'APPROVED' },
+  ];
+  const i = plain(ctx.advanceIssues(adv, P));
+  assert.deepEqual(i.map((x) => [x.EMP_ID, x.severity, x.code]),
+    [['A', 'WARN', 'ADVANCE_RECOVERY_EXCEEDS_BALANCE'], ['A', 'BLOCKER', 'ADVANCE_DUPLICATE_LEDGER_REFERENCE']]);
+  assert.deepEqual(plain(ctx.advanceByEmp(adv, P)), { A: 2000, B: 1500, D: 999 });
 });

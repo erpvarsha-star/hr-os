@@ -43,7 +43,10 @@ var HROS_CONTROL_DEFAULTS = [
   ['PAYSLIP_FOLDER_ID', '', 'Blank = payslip step blocked'],
   ['EMAIL_RELEASE_ENABLED', 'FALSE', 'Payslip email release switch'],
   ['NASHIK_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
-  ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance']
+  ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
+  ['OT_SOURCE_SPREADSHEET_ID', '1AssFUO5PJZLUzZCFINlqwGw9mckICIRnsYxHCmuhVkM', 'External OT form-response spreadsheet; blank = use the local Overtime_Form tab'],
+  ['OT_SOURCE_TAB', 'Form Responses 1', 'Tab of the OT source spreadsheet'],
+  ['OT_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug salary paid OT to 25-Aug']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [

@@ -136,8 +136,12 @@ const Utilities = {
 };
 const me = () => ({ getEmail: () => env.user });
 const dvBuilder = () => { const b = { requireValueInList() { return b; }, setAllowInvalid() { return b; }, build() { return {}; } }; return b; };
+// the real OT form-response spreadsheet is a different file: OT_SOURCE_SPREADSHEET_ID (seeded by setup), tab "Form Responses 1"
+const OT_EXT_ID = '1AssFUO5PJZLUzZCFINlqwGw9mckICIRnsYxHCmuhVkM';
+const extSheets = {};
+const extSs = { getSheetByName: (n) => extSheets[n] || null, getSheets: () => Object.values(extSheets) };
 const SpreadsheetApp = {
-  getActiveSpreadsheet: () => ss, openById: () => ss, getActive: () => ss, flush() {},
+  getActiveSpreadsheet: () => ss, openById: (id) => { if (id === OT_EXT_ID) return extSs; if (id === 'FAKE_SS_ID') return ss; throw new Error('cannot open ' + id); }, getActive: () => ss, flush() {},
   ProtectionType: { SHEET: 'SHEET' }, newDataValidation: dvBuilder,
 };
 const Session = { getActiveUser: me, getEffectiveUser: me };
@@ -176,7 +180,7 @@ const AUG_OT = [
   { PAYROLL_MONTH: '2026-08', EMP_ID: 'T-S1', OT_HOURS: 12, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED', ENTERED_AT: '2026-09-01', SOURCE_CASE_NOS: '17001', SOURCE_EVENT_COUNT: 2, DATE_RANGE: '2026-08-03..2026-08-20' },
   { PAYROLL_MONTH: '2026-08', EMP_ID: 'T-W1', OT_HOURS: 98.5, SOURCE_REF: 'OVERTIME_FORM', APPROVAL_STATUS: 'APPROVED', ENTERED_AT: '2026-09-01', SOURCE_CASE_NOS: '17002', SOURCE_EVENT_COUNT: 9, DATE_RANGE: '2026-08-01..2026-08-31' },
 ];
-let augBefore, histBefore, snapAfterSetup, auditLenAfterSetup;
+let augBefore, histBefore, snapAfterSetup, auditLenAfterSetup, ext;
 
 function seedWorld() {
   const stat = [['PF_WAGE_CEILING', 15000], ['PF_EMPLOYEE_RATE', 0.12], ['PF_MAX_EMPLOYEE', 1800], ['ESI_EMPLOYEE_RATE', 0.0075], ['ESI_EXEMPT_ABOVE', 21000],
@@ -217,17 +221,23 @@ function seedWorld() {
   put('PAYROLL_READINESS', ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT']);
   put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
   put('PAYROLL_HISTORY', HIST_HDR, HIST_ROWS);
+  // decoy local tab: must NOT be read while OT_SOURCE_SPREADSHEET_ID is set
   put('Overtime_Form', OT_HDR, []);
-  env.sheets.Overtime_Form.data.push(
+  env.sheets.Overtime_Form.data.push(otRow({ emp: 'T-S2', date: '2026-09-10', h: 8, kase: 9999 }));
+  ext = makeSheet('Form Responses 1');
+  ext.data = [OT_HDR.slice()];
+  extSheets['Form Responses 1'] = ext;
+  ext.data.push(
     otRow({ emp: 'T-S1', date: new Date(2026, 8, 12), h: 4, kase: 5001 }),
     otRow({ emp: 'T-W1', date: '2026-09-15', h: 3.5, kase: 5002 }),
-    otRow({ emp: 'T-W1', date: '2026-08-30', h: 6, kase: 5003 }), // August event: outside the period
+    otRow({ emp: 'T-W1', date: '2026-08-30', h: 6, kase: 5003 }), // 30-Aug: inside the one-time catch-up window (from 26-Aug) -> paid in September
+    otRow({ emp: 'T-W1', date: '2026-08-20', h: 7, kase: 5005 }), // 20-Aug: paid in the August run, outside the window
     otRow({ emp: 'T-W2', date: '2026-09-18', h: 2, type: 'Apply For OT', dec: '', kase: 5004 })); // still pending
   put('CANTEEN_FORM_RESPONSES', ['Timestamp', 'Payroll Month', 'Employee ID', 'Deduction Amount (INR)', 'Submission Type'], [
     { Timestamp: '2026-09-28 09:00:00', 'Payroll Month': '2026-09', 'Employee ID': 'T-S1', 'Deduction Amount (INR)': 600, 'Submission Type': 'New' },
     { Timestamp: '2026-09-28 09:05:00', 'Payroll Month': 'September 2026', 'Employee ID': 'T-W1', 'Deduction Amount (INR)': 450, 'Submission Type': 'New' }]);
   put('EFFICIENCY_FORM_RESPONSES', ['Timestamp', 'Payroll Month', 'Employee ID', 'Production Efficiency Percent'], [
-    { Timestamp: '2026-09-28 10:00:00', 'Payroll Month': '2026-09', 'Employee ID': 'ALL_WORKERS', 'Production Efficiency Percent': 90 },
+    { Timestamp: '2026-09-28 10:00:00', 'Payroll Month': '2026-09', 'Employee ID': 'T-W1', 'Production Efficiency Percent': 90 },
     { Timestamp: '2026-09-28 10:05:00', 'Payroll Month': '2026-09', 'Employee ID': 'T-W2', 'Production Efficiency Percent': 82 }]);
 }
 
@@ -312,16 +322,38 @@ test('4. monthly attendance: prepare, HR types counts, approve per population', 
 });
 
 test('5. feeds: OT sync (pending recorded), canteen/efficiency sync, manual advance/society/adjustments, mark all feeds complete', () => {
+  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_SPREADSHEET_ID').VALUE, OT_EXT_ID);
+  assert.equal(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_SOURCE_TAB').VALUE, 'Form Responses 1');
+  const win = rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_WINDOW_START_2026-09');
+  assert.equal(win.VALUE, '2026-08-26');
+  assert.match(win.NOTE, /Aug salary paid OT to 25-Aug/);
   const ot = plain(c.syncOtFromForm(P));
-  assert.equal(ot.validWritten, 2);
+  assert.equal(ot.window, '2026-08-26..2026-09-30');
+  assert.equal(ot.validWritten, 3);
   assert.equal(ot.exceptionsWritten, 0);
   assert.equal(ot.pending, 1);
   assert.deepEqual(ot.pendingByPopulation, { STAFF: 0, PERMANENT_WORKER: 1, CONSULTANT: 0, PUNE_STAFF: 0 });
   const ctl = Object.fromEntries(rowsOf('PAYROLL_CONTROL').map((r) => [r.KEY, r.VALUE]));
   assert.deepEqual(JSON.parse(ctl['OT_PENDING_' + P]), { STAFF: 0, PERMANENT_WORKER: 1, CONSULTANT: 0, PUNE_STAFF: 0 });
-  assert.equal(plain(c.syncOtFromForm(P)).validWritten, 0, 'OT sync is idempotent');
+  const again = plain(c.syncOtFromForm(P));
+  assert.deepEqual([again.validWritten, again.exceptionsWritten, again.superseded, again.unchanged], [0, 0, 0, 3], 'OT sync is idempotent');
   assert.deepEqual(JSON.parse(rowsOf('PAYROLL_CONTROL').find((r) => r.KEY === 'OT_PENDING_' + P).VALUE).PERMANENT_WORKER, 1);
   assert.equal(rowsOf('PAYROLL_CONTROL').filter((r) => r.KEY === 'OT_PENDING_' + P).length, 1, 'key updated in place, not duplicated');
+  // reversals: T-W1's 30-Aug event is rejected later, T-S1's 12-Sep approval is corrected 4 -> 5 h; re-sync reflects the latest decision
+  ext.data.push(otRow({ emp: 'T-W1', date: '2026-08-30', dec: 'Rejected', kase: 5003, ts: '2026-09-25 10:00:00', h: 6 }),
+    otRow({ emp: 'T-S1', date: '2026-09-12', h: 5, kase: 5001, ts: '2026-09-26 10:00:00' }));
+  const re = plain(c.syncOtFromForm(P));
+  assert.deepEqual([re.validWritten, re.superseded, re.unchanged, re.revokedByRejection, re.correctedApprovals], [1, 2, 1, 1, 1]);
+  const otRows = rowsOf('INPUT_OT').filter((r) => r.NORMALIZER_VERSION);
+  const sup = otRows.filter((r) => r.ELIGIBILITY === 'SUPERSEDED');
+  assert.equal(sup.length, 2);
+  sup.forEach((r) => { assert.equal(r.OT_HOURS, 0, 'superseded rows do not inflate the Monthly OT Report'); assert.match(r.EXCEPTION_REASON, /^SUPERSEDED_BY_RESYNC .*ORIGINAL_OT_HOURS=(4|6)$/); });
+  assert.deepEqual(plain(c.sumOtHours(rowsOf('INPUT_OT'), P)), { 'T-S1': 5, 'T-W1': 3.5 });
+  assert.equal(plain(c.syncOtFromForm(P)).superseded, 0, 're-sync after the reversal is idempotent');
+  // an employee who is not on the OT form (consultant): HR types an APPROVED HR_MANUAL row in INPUT_OT
+  addRows('INPUT_OT', [{ PAYROLL_MONTH: P, EMP_ID: 'T-C1', OT_HOURS: 5, SOURCE_REF: 'HR_MANUAL', APPROVAL_STATUS: 'APPROVED', ENTERED_AT: '2026-09-29' }]);
+  assert.equal(plain(c.sumOtHours(rowsOf('INPUT_OT'), P))['T-C1'], 5);
+  assert.equal(plain(c.syncOtFromForm(P)).superseded, 0, 'manual rows are never superseded by a re-sync');
   assert.equal(plain(c.syncCanteenFromForm(P)).written, 2);
   assert.equal(plain(c.syncEfficiencyFromForm(P)).written, 2);
   addRows('INPUT_CANTEEN', [{ PAYROLL_MONTH: P, EMP_ID: 'T-P1', AMOUNT_INR: 300, SOURCE: 'HR_MANUAL', KEY: P + '|T-P1', STATUS: 'VALID', ENTERED_AT: '2026-09-29T09:00:00' }]);
@@ -363,7 +395,7 @@ test('7. calculateDraft: 4 DRAFT populations, sane numbers, salary picked effect
   const row = (id) => draft.find((x) => x.EMP_ID === id);
   // T-S1: FG 31,500 (not the October 99,999), w=26 of wd=26, OT 4h, canteen 600, arrears 500
   assert.equal(row('T-S1').FIXED_GROSS, 31500);
-  assert.equal(row('T-S1').OT_HOURS, 4);
+  assert.equal(row('T-S1').OT_HOURS, 5, 'corrected approval (4 -> 5 h): the latest decision wins');
   assert.equal(row('T-S1').CANTEEN, 600);
   assert.equal(row('T-S1').ARREARS, 500);
   assert.equal(row('T-S2').ADVANCE, 1500);
@@ -371,8 +403,15 @@ test('7. calculateDraft: 4 DRAFT populations, sane numbers, salary picked effect
   assert.equal(row('T-W1').SOCIETY, 780);
   assert.equal(row('T-W1').ADVANCE, 0, 'PENDING advance ignored');
   assert.equal(row('T-W1').EFFICIENCY_PCT, 90);
-  assert.equal(row('T-W2').EFFICIENCY_PCT, 82, 'per-employee efficiency overrides ALL_WORKERS');
-  assert.equal(row('T-W1').OT_HOURS, 3.5);
+  assert.equal(row('T-W2').EFFICIENCY_PCT, 82);
+  // production pay = slab amount for floor(pct): 90% -> the 85 slab (8,500), 82% -> the 81 slab (3,000); no deduction
+  assert.equal(row('T-W1').PRODUCTION_ALLOWANCE, 8500);
+  assert.equal(row('T-W2').PRODUCTION_ALLOWANCE, 3000);
+  assert.equal(row('T-W1').EFFICIENCY_DEDUCTION, 0);
+  assert.equal(row('T-W2').EFFICIENCY_DEDUCTION, 0);
+  assert.equal(row('T-W1').OT_HOURS, 3.5, '30-Aug catch-up event was rejected later; 15-Sep event stays');
+  assert.equal(row('T-C1').OT_HOURS, 5, 'manual HR_MANUAL OT row counted');
+  assert.equal(row('T-C1').OT_AMOUNT, 437.5);
   assert.equal(row('T-C1').OTHER_ALLOWANCE, 0, 'PENDING adjustment ignored');
   assert.equal(row('T-C1').GROSS_EARNINGS, 700 * 24);
   assert.equal(row('T-P1').TDS, 0 + 100);
@@ -466,9 +505,10 @@ test('11. protected data intact: PAYROLL_HISTORY and August INPUT_OT rows byte-i
   const aug = ot.slice(1).filter((r) => String(r[0]) === '2026-08');
   assert.equal(JSON.stringify(aug.map((r) => r.slice(0, OT_LEGACY_HDR.length))), augBefore);
   aug.forEach((r) => assert.ok(r.slice(OT_LEGACY_HDR.length).every(blank)));
-  assert.equal(ot.length - 1, 2 + 2, 'only the two September OT events were appended');
+  assert.equal(ot.length - 1, 2 + 4 + 1, 'appended: 3 first-sync events + 1 corrected approval + the manual row (2 were superseded in place)');
   // Overtime_Form password columns were never copied anywhere
   Object.values(env.sheets).forEach((s) => assert.ok(!JSON.stringify(s.data).includes('SECRET-DO-NOT-READ') || s.name === 'Overtime_Form', s.name));
+  assert.ok(!rowsOf('INPUT_OT').some((r) => r.EMP_ID === 'T-S2'), 'the local Overtime_Form decoy was never read');
   assert.match(audits(), /HR_APPROVE/);
   assert.match(audits(), /PAYSLIPS_GENERATED/);
   assert.match(audits(), /PAYSLIP_EMAIL_REFUSED/);

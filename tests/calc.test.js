@@ -149,19 +149,19 @@ test('WORKER example reproduced exactly with synthetic masters', () => {
   assert.strictEqual(row.WORKED_PAYABLE_DAYS, 27);
   assert.strictEqual(row.HEAT, 156);
   assert.strictEqual(row.VDA, 2575);
-  assert.strictEqual(row.PRODUCTION_ALLOWANCE, 8500);
+  assert.strictEqual(row.PRODUCTION_ALLOWANCE, 0, '80% is below the 81 slab: production pay is the slab amount = 0');
   assert.strictEqual(row.GROSS_EARNINGS, 29107);
   assert.strictEqual(roundSheets(row.OT_AMOUNT), 16660);
-  assert.strictEqual(row.TOTAL_EARNINGS, 57238);
+  assert.strictEqual(row.TOTAL_EARNINGS, 48738);
   assert.strictEqual(row.EFFICIENCY_ELIGIBLE_AMOUNT, 0);
-  assert.strictEqual(row.EFFICIENCY_DEDUCTION, 8500);
+  assert.strictEqual(row.EFFICIENCY_DEDUCTION, 0, 'there is no efficiency deduction any more');
   assert.strictEqual(row.PF_EMPLOYEE, 1800);
   assert.strictEqual(row.ESI_EMPLOYEE, 0);
   assert.strictEqual(row.PT, 200);
   assert.strictEqual(row.MLWF, 0);
-  assert.strictEqual(row.TOTAL_DEDUCTIONS, 16780);
+  assert.strictEqual(row.TOTAL_DEDUCTIONS, 8280); // PF 1,800 + PT 200 + society 4,780 + advance 1,500
   assert.strictEqual(row.NET_PAY, 40458);
-  assert.ok(row.FLAGS.split(';').includes('EFFICIENCY_RULE_UNCONFIRMED'));
+  assert.ok(!row.FLAGS.includes('EFFICIENCY_RULE_UNCONFIRMED'), 'owner confirmed the rule: warning dropped');
   assert.ok(!row.FLAGS.includes('WORKER_ESI_BASIS_UNCONFIRMED'));
   assert.strictEqual(r.exceptions.filter((e) => e.severity === 'BLOCKER').length, 0);
   noNaN(row);
@@ -177,14 +177,18 @@ test('WORKER: VDA uses physical present days; WO excluded from worked days', () 
   assert.strictEqual(r.row.BASIC, roundSheets(15477 / 27 * 22));
 });
 
-test('WORKER: ESI flag, missing efficiency and missing pp are BLOCKERs, PT exemption', () => {
+test('WORKER: ESI flag, missing efficiency is a WARN (0 pay), missing pp is a BLOCKER, PT exemption', () => {
   const esi = calcWorker(workerCtx({ salary: Object.assign({}, workerSalary, { FIXED_GROSS_PM_AS_SOURCE_INR: 20000 }) }));
   assert.strictEqual(esi.row.ESI_EMPLOYEE, roundSheets(20000 * 0.0075 / 27 * 27));
   assert.ok(esi.row.FLAGS.includes('WORKER_ESI_BASIS_UNCONFIRMED'));
 
   const noEff = calcWorker(workerCtx({ efficiencyPct: null }));
-  assert.ok(codes(noEff).includes('MISSING_EFFICIENCY_PCT'));
-  assert.strictEqual(noEff.row.NET_PAY, null);
+  assert.ok(codes(noEff).includes('EFFICIENCY_NOT_SUBMITTED'));
+  assert.ok(!codes(noEff).includes('MISSING_EFFICIENCY_PCT'));
+  assert.strictEqual(noEff.exceptions.find((e) => e.code === 'EFFICIENCY_NOT_SUBMITTED').severity, 'WARN');
+  assert.strictEqual(noEff.row.PRODUCTION_ALLOWANCE, 0);
+  assert.strictEqual(noEff.row.EFFICIENCY_PCT, null);
+  assert.strictEqual(noEff.row.NET_PAY, 40458, 'not a blocker: production allowance simply 0');
 
   const att = Object.assign({}, workerCtx().attendance); delete att.PHYSICAL_PRESENT_DAYS;
   const noPp = calcWorker(workerCtx({ attendance: att }));
@@ -328,10 +332,31 @@ test('efficiencySlab', () => {
   assert.strictEqual(efficiencySlab(null, effCfg), null);
 });
 
-test('worker at 90% efficiency: eligible 8,500, deduction 0', () => {
-  const r = calcWorker(workerCtx({ efficiencyPct: 90 }));
-  assert.strictEqual(r.row.EFFICIENCY_DEDUCTION, 0);
-  assert.strictEqual(r.row.NET_PAY, 40458 + 8500);
+test('worker efficiency pay = slab amount (paid earning, not prorated, no deduction)', () => {
+  const at = (pct, over) => calcWorker(workerCtx(Object.assign({ efficiencyPct: pct }, over)));
+  const expect = { 0: 0, 80: 0, 80.99: 0, 81: 4500, 82: 5000, 83: 6500, 84: 7500, 84.9: 7500, 85: 8500, 85.5: 8500, 90: 8500, 100: 8500 };
+  Object.keys(expect).forEach((p) => {
+    const r = at(Number(p));
+    assert.strictEqual(r.row.PRODUCTION_ALLOWANCE, expect[p], p + '%');
+    assert.strictEqual(r.row.EFFICIENCY_ELIGIBLE_AMOUNT, expect[p], p + '%');
+    assert.strictEqual(r.row.EFFICIENCY_DEDUCTION, 0, p + '%');
+    assert.strictEqual(r.row.TOTAL_EARNINGS, 48738 + expect[p], p + '%');
+    assert.strictEqual(r.row.NET_PAY, 40458 + expect[p], p + '%');
+    assert.ok(!codes(r).includes('EFFICIENCY_RULE_UNCONFIRMED'));
+  });
+  // not prorated by days: fewer physical days change VDA but not the slab amount
+  const fewer = at(85, { attendance: { PRESENT_DAYS: 10, PHYSICAL_PRESENT_DAYS: 10, WEEK_OFF: 0, PH: 0, EL_AVAILED: 0, CL_AVAILED: 0, SL_AVAILED: 0, PAID_LEAVE_OTHER: 0 } });
+  assert.strictEqual(fewer.row.PRODUCTION_ALLOWANCE, 8500);
+  assert.strictEqual(at(150).exceptions.some((e) => e.code === 'INVALID_EFFICIENCY_PCT'), true, 'out-of-range % still blocks');
+  assert.strictEqual(at(85, { efficiencyConfig: [] }).exceptions.some((e) => e.code === 'MISSING_EFFICIENCY_CONFIG'), true);
+  assert.strictEqual(at(null, { efficiencyConfig: [] }).row.NET_PAY, 40458, 'no % and no config: 0 production, only the WARN');
+});
+
+test('worker: physical days taken from the efficiency form override carries a WARN', () => {
+  const r = calcWorker(workerCtx({ physicalDaysSource: 'EFFICIENCY_OVERRIDE' }));
+  assert.ok(codes(r).includes('PHYSICAL_DAYS_FROM_EFFICIENCY_FORM'));
+  assert.strictEqual(r.exceptions.filter((e) => e.severity === 'BLOCKER').length, 0);
+  assert.ok(!codes(calcWorker(workerCtx({ physicalDaysSource: 'PRESENT_DAYS' }))).includes('PHYSICAL_DAYS_FROM_EFFICIENCY_FORM'));
 });
 
 test('amountToIndianWords', () => {
