@@ -81,7 +81,7 @@ function load(world, g, user = 'accounts@varshaforgings.com') {
   const Utilities = { formatDate, getUuid: () => 'u', sleep() {} };
   const SpreadsheetApp = { getActiveSpreadsheet: () => (world ? world.ss : null), openById: () => (world ? world.ss : null) };
   const Session = { getActiveUser: () => ({ getEmail: () => user }), getEffectiveUser: () => ({ getEmail: () => user }) };
-  return loadGs(['00_Config.gs', '01_SheetUtil.gs', '99_Audit.gs', '30_Calc.gs', '32_Engine.gs', '50_Payslips.gs', '51_Email.gs'],
+  return loadGs(['00_Config.gs', '01_SheetUtil.gs', '99_Audit.gs', '20_Feeds.gs', '30_Calc.gs', '32_Engine.gs', '50_Payslips.gs', '51_Email.gs'],
     Object.assign({ Utilities, SpreadsheetApp, Session }, g || {}));
 }
 
@@ -93,7 +93,7 @@ const staffRow = { LOCK_ID: LOCK, PERIOD: P, POPULATION: 'STAFF', EMP_ID: 'VFL1'
   OT_HOURS: 2.5, OT_AMOUNT: 1000, ARREARS: 0, TOTAL_EARNINGS: 1234567, PF_EMPLOYEE: 1800, ESI_EMPLOYEE: 0, PT: 200, MLWF: 0, CANTEEN: 500, SOCIETY: 100, ADVANCE: 0, TDS: 250,
   OTHER_DEDUCTION: 1000, TOTAL_DEDUCTIONS: 3850, NET_PAY: 100000 };
 const workerRow = { LOCK_ID: 'LOCK-W', PERIOD: P, POPULATION: 'PERMANENT_WORKER', EMP_ID: 'VFL2', WORKING_DAYS: 27, PRESENT_DAYS: 25, EL: 2, CL: 0, SL: 0, PH_DAYS: 0, WORKED_PAYABLE_DAYS: 27,
-  BASIC: 8000, HEAT: 156, VDA: 2575, PRODUCTION_ALLOWANCE: 8500, EFFICIENCY_DEDUCTION: 8500, LEAVE_ENCASHMENT: 300, TOTAL_EARNINGS: 57238, TOTAL_DEDUCTIONS: 16780, NET_PAY: 40458 };
+  BASIC: 8000, HEAT: 156, VDA: 2575, PRODUCTION_ALLOWANCE: 0, EFFICIENCY_DEDUCTION: 0, LEAVE_ENCASHMENT: 300, TOTAL_EARNINGS: 48738, TOTAL_DEDUCTIONS: 8280, NET_PAY: 40458 };
 const emp1 = { EMP_ID: 'VFL1', EMPLOYEE_NAME: 'Asha Patil', DEPARTMENT: 'Accounts', DESIGNATION: 'Executive', DOJ_AS_SOURCE: '01/04/2019', EMAIL_ID: 'asha@x.com',
   UAN: '123', PAN: 'ABCDE1234F', BANK_ACCOUNT: '999' };
 
@@ -193,7 +193,8 @@ test('replacements for a worker locked row (no employee master row falls back to
   assert.equal(r.WORKING_DAYS, '27');
   assert.equal(r.HEAT_ALLOWANCE, '156');
   assert.equal(r.VDA, '2,575');
-  assert.equal(r.PRODUCTION_ALLOWANCE_OFFSET, '8,500');
+  assert.equal(r.PRODUCTION_ALLOWANCE_OFFSET, '0', 'no efficiency deduction any more; token stays mapped');
+  assert.equal(r.PRODUCTION_ALLOWANCE, '0', 'production pay printed = slab amount paid (80% -> 0)');
   assert.equal(r.LEAVE_ENCASHMENT, '300');
   assert.equal(r.NET_PAY, '40,458');
   assert.equal(r.BASIC_RATE, '8,000');
@@ -390,4 +391,86 @@ test('generatePayslips: RATE tokens come from effective-dated SALARY_STRUCTURE; 
   const reg = w.sheets.PAYSLIP_REGISTER.objs();
   assert.deepEqual(reg.map((x) => [x.EMP_ID, x.STATUS]), [['VFL1', 'GENERATED'], ['NOSAL', 'FAILED']]);
   assert.equal(g.calls.created.length, 1);
+});
+
+// ---- identity tokens from the hidden RAW masters (generation time only)
+function rawMaster(w, name, rows, opts = {}) {
+  // real layout: row 2 holds Bank Name .. ESI No., row 4 holds EMP CODE / Name / Email, data from row 5
+  const s = w.put(name, ['x']);
+  const width = 16;
+  const blankRow = () => new Array(width).fill('');
+  const r1 = blankRow(), r2 = blankRow(), r3 = blankRow(), r4 = blankRow();
+  r1[0] = 'CEOITBOX MASTERS SALARY SHEET';
+  ['Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN', 'ESI No.'].forEach((h, i) => { r2[3 + i] = h; });
+  r4[0] = 'EMP\nCODE'; r4[1] = 'Name'; r4[2] = 'Email ID'; r4[13] = 'CTC P.A.';
+  r4[14] = 'Mobile number'; r4[15] = 'Aadhar Number';
+  s.data = [r1, r2, r3, r4].concat(rows.map((o) => {
+    const r = blankRow();
+    r[0] = o.id; r[1] = 'NAME-NOT-READ'; r[2] = 'mail-not-read@x'; r[7] = o.bank; r[8] = o.ifsc; r[9] = o.acct; r[10] = o.uan; r[11] = o.pan; r[12] = o.esi;
+    r[14] = 'MOBILE-NOT-READ'; r[15] = 'AADHAAR-NOT-READ';
+    return r;
+  }));
+  const reads = [];
+  const orig = s.getRange;
+  s.getRange = (r, c, nr, nc) => { reads.push({ r, c, nr, nc }); return orig(r, c, nr, nc); };
+  s.reads = reads;
+  return s;
+}
+
+test('payslipIdentityColumns: header split over rows 2 and 4 is combined; unknown layout is tolerated', () => {
+  const c = load(null);
+  const sec = ['', '', '', 'Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN NO', 'ESI No.', 'TOTAL GROSS'];
+  const pri = ['EMP\nCODE', 'Name', 'Email ID', '', '', '', '', '', '', '', '', '', '', 'CTC PA'];
+  assert.deepEqual(plain(c.payslipIdentityColumns(sec, pri)), { emp: 0, UAN: 10, PAN: 11, ESI_NO: 12, BANK_NAME: 7, IFSC: 8, BANK_ACCOUNT: 9 });
+  assert.deepEqual(plain(c.payslipIdentityColumns([], [])), { emp: -1, UAN: -1, PAN: -1, ESI_NO: -1, BANK_NAME: -1, IFSC: -1, BANK_ACCOUNT: -1 });
+  assert.equal(c.payslipIdentityValue(123456789012), '123456789012');
+  assert.equal(c.payslipIdentityValue(' ABCDE1234F '), 'ABCDE1234F');
+  assert.equal(c.payslipIdentityValue(''), '');
+  assert.equal(c.payslipIdentityValue(null), '');
+});
+
+test('payslipReadIdentity_: matches EMP CODE, reads only the needed columns, missing tab/employee -> blank', () => {
+  const w = world();
+  const raw = rawMaster(w, 'RAW_STAFF_MASTER', [
+    { id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: 111122223333, uan: 100200300400, pan: 'ABCDE1234F', esi: '5555' },
+    { id: 'VFL9', bank: 'Other', ifsc: 'X', acct: 1, uan: 2, pan: 'Y', esi: '3' }]);
+  const c = load(w, fakeGoogle());
+  const r = plain(c.payslipReadIdentity_('STAFF', ['vfl1', 'NOPE']));
+  assert.equal(r.matched, 1);
+  assert.deepEqual(r.byEmp, { VFL1: { UAN: '100200300400', PAN: 'ABCDE1234F', ESI_NO: '5555', BANK_NAME: 'Test Bank', IFSC: 'TEST0001', BANK_ACCOUNT: '111122223333' } });
+  // only header rows 2 and 4 plus the EMP CODE / UAN / PAN / ESI / bank columns (D..M => 4..13 minus non-identity, A) are touched
+  raw.reads.forEach((x) => {
+    if (x.r === 2 || x.r === 4) return;
+    const lastCol = x.c + x.nc - 1;
+    assert.equal(x.nc, 1, 'one column at a time');
+    assert.ok([1, 8, 9, 10, 11, 12, 13].includes(x.c) && lastCol === x.c, 'column ' + x.c + ' is an identity column');
+  });
+  assert.ok(!JSON.stringify(r).includes('NOT-READ'));
+  assert.deepEqual(plain(c.payslipReadIdentity_('PERMANENT_WORKER', ['VFL2'])), { byEmp: {}, matched: 0, note: 'identity tab RAW_WORKER_MASTER not found' });
+  assert.deepEqual(plain(c.payslipReadIdentity_('STAFF', ['ZZZ'])).byEmp, {});
+});
+
+test('identity tokens: printed from the RAW master; missing employee -> blank; leave-available tokens stay blank; never stored', () => {
+  const c = load(null);
+  const ident = { UAN: '100200300400', PAN: 'ABCDE1234F', ESI_NO: '5555', BANK_NAME: 'Test Bank', IFSC: 'TEST0001', BANK_ACCOUNT: '111122223333' };
+  const r = plain(c.buildReplacements('STAFF', staffRow, emp1, salStaff, ident));
+  assert.deepEqual([r.UAN, r.PAN, r.ESI_NO, r.BANK_NAME, r.IFSC, r.BANK_ACCOUNT, r.ACCOUNT_NO], ['100200300400', 'ABCDE1234F', '5555', 'Test Bank', 'TEST0001', '111122223333', '111122223333']);
+  assert.deepEqual([r.EL_AVAILABLE, r.CL_AVAILABLE, r.SL_AVAILABLE], ['', '', '']);
+  const none = plain(c.buildReplacements('STAFF', staffRow, emp1, salStaff, null));
+  assert.deepEqual([none.UAN, none.PAN, none.ESI_NO, none.BANK_NAME, none.IFSC, none.BANK_ACCOUNT], ['', '', '', '', '', '']);
+  // worker: same tokens, deduction offset token is 0
+  const wk = plain(c.buildReplacements('PERMANENT_WORKER', workerRow, { EMP_ID: 'VFL2' }, salWorker, { UAN: '7' }));
+  assert.equal(wk.UAN, '7');
+  assert.equal(wk.PRODUCTION_ALLOWANCE_OFFSET, '0');
+  // generatePayslips: identity read per batch, only counts are reported, nothing written to any tab / audit
+  const w = world();
+  rawMaster(w, 'RAW_STAFF_MASTER', [{ id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: 111122223333, uan: 100200300400, pan: 'ABCDE1234F', esi: '5555' }]);
+  const g = fakeGoogle();
+  const cc = load(w, g);
+  const res = plain(cc.generatePayslips(P, 'STAFF'));
+  assert.equal(res.generated, 1);
+  assert.equal(res.identityMatched, '1 of 1');
+  Object.keys(w.sheets).filter((n) => n !== 'RAW_STAFF_MASTER').forEach((n) => {
+    ['100200300400', 'ABCDE1234F', '111122223333', 'TEST0001', 'Test Bank'].forEach((secret) => assert.ok(!JSON.stringify(w.sheets[n].data).includes(secret), n + ' must not contain identity data'));
+  });
 });

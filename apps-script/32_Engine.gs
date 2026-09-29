@@ -178,6 +178,12 @@ function engine_call_(name, args) {
   return fn.apply(null, args);
 }
 
+/** Like engine_call_ but returns dflt when the (optional) reader is not loaded. */
+function engine_callOpt_(name, args, dflt) {
+  var fn = (typeof globalThis !== 'undefined' ? globalThis : this)[name];
+  return typeof fn === 'function' ? fn.apply(null, args) : dflt;
+}
+
 /** Everything derived from the raw sheet bundle for one population. */
 function engine_derive_(src, pop) {
   var period = src.period;
@@ -201,6 +207,8 @@ function engine_derive_(src, pop) {
     salaryByEmp: engine_pickSalary(src.salaryRows, period),
     rateByEmp: engine_pickRate(src.rateRows),
     ptExemptSet: engine_ptExemptSet(src.ptExemptRows, period),
+    feedIssues: engine_callOpt_('advanceIssues', [src.advanceRows || [], period], [])
+      .concat(engine_callOpt_('societyIssues', [src.societyRows || [], period], [])),
     dailyMissingByEmp: null
   };
   if (src.dailyRows && src.dailyRows.length) {
@@ -240,7 +248,10 @@ function engine_readinessInputs_(src, pop, calcResults) {
     attendanceRows: src.attendance, dailyMissingByEmp: d.dailyMissingByEmp, salaryByEmp: d.salaryByEmp,
     rateByEmp: d.rateByEmp, feedStatus: src.feedStatus, otExceptionRows: otEx, otHoursByEmp: d.otByEmp,
     statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
-    pendingOtCount: engine_pendingOt_(src, pop)
+    pendingOtCount: engine_pendingOt_(src, pop),
+    canteenExceptions: engine_callOpt_('canteenExceptions', [src.canteenRows || [], src.period], []),
+    efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], []),
+    daysExceptions: src.daysExceptions || []
   };
 }
 
@@ -269,6 +280,9 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
     if (!ctx.hasAttendance) extra.push({ severity: 'BLOCKER', code: 'MISSING_ATTENDANCE', message: 'No INPUT_ATTENDANCE row' });
     else if (!ctx.attendanceApproved) extra.push({ severity: 'WARN', code: 'ATTENDANCE_NOT_APPROVED', message: 'Attendance row is not APPROVED' });
     if (dupSet[ctx.emp.EMP_ID]) extra.push({ severity: 'BLOCKER', code: 'DUPLICATE_MASTER_ID', message: 'EMP_ID appears more than once among active master rows' });
+    (d.feedIssues || []).forEach(function (i) {
+      if (i.EMP_ID === ctx.emp.EMP_ID) extra.push({ severity: i.severity, code: i.code, message: i.message });
+    });
     if (dojWarn[ctx.emp.EMP_ID]) {
       extra.push({ severity: 'WARN', code: 'DOJ_' + dojWarn[ctx.emp.EMP_ID],
         message: 'DOJ_AS_SOURCE could not be read unambiguously against the period end; employee included' });
@@ -356,6 +370,12 @@ function engine_readSources_(period) {
     ptExemptRows: engine_readOpt_(TABS.PT_EXEMPTIONS),
     efficiencyConfig: engine_readOpt_(TABS.EFFICIENCY_CONFIG),
     lockedPrevRows: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_LOCKED), 'PERIOD', engine_prevPeriod(period)),
+    daysExceptions: engine_readOpt_('PAYROLL_DAYS_EXCEPTIONS').filter(function (r) {
+      return String(r.KEY == null ? '' : r.KEY).indexOf(period + '|') === 0;
+    }).map(function (r) {
+      var k = String(r.KEY).split('|');
+      return { EMP_ID: engine_id_(k[1]), type: engine_id_(r.EXCEPTION_TYPE), detail: engine_id_(r.DETAIL) };
+    }),
     otPendingRaw: getSheet(TABS.PAYROLL_CONTROL) ? readControlMap()['OT_PENDING_' + period] : ''
   };
 }
@@ -429,6 +449,10 @@ function calculateDraft(period, population) {
       skippedLocked.push(pop);
       return;
     }
+    // legacy: the sheet note tells HR to set STATUS = APPROVED once the working days are entered and approved;
+    // that means "working days approved" and is treated exactly like PENDING (the legacy APPROVED_BY / APPROVED_AT
+    // columns keep the record; they are never overwritten by the payroll approvals)
+    if (st === LEGACY_WORKING_DAYS_APPROVED) st = PERIOD_STATUS.PENDING;
     if (st !== '' && [PERIOD_STATUS.PENDING, PERIOD_STATUS.DRAFT, PERIOD_STATUS.HR_APPROVED,
       PERIOD_STATUS.ACCOUNTS_APPROVED].indexOf(st) < 0) {
       throw new Error('Unknown STATUS "' + st + '" for ' + period + ' x ' + pop);

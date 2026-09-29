@@ -10,7 +10,8 @@ var RDY_ATT_FIELDS = ['PRESENT_DAYS', 'PHYSICAL_PRESENT_DAYS', 'WEEK_OFF', 'PH',
   'SL_AVAILED', 'PAID_LEAVE_OTHER', 'ABSENT_LWP_DAYS'];
 var RDY_CHECK_NAMES = ['PERIOD_WORKING_DAYS', 'ATTENDANCE_COVERAGE', 'ATTENDANCE_APPROVED_VALID',
   'DAILY_ATTENDANCE_COMPLETE', 'SALARY_PRESENT_NONZERO', 'FEEDS_COMPLETE', 'OT_EXCEPTIONS', 'STATUTORY_CONFIG',
-  'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY'];
+  'DUPLICATE_MASTER_IDS', 'CONSULTANT_MONTHLY_OT', 'EFFICIENCY_CONFIG_CONFIRMED', 'NEGATIVE_NET_PAY',
+  'PAY_STRUCTURE_APPROVED', 'CANTEEN_EFFICIENCY_EXCEPTIONS', 'DAYS_FORM_EXCEPTIONS'];
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -201,7 +202,10 @@ function rdy_check8_(inputs) {
   var b = [];
   if (st.missing && st.missing.length) b.push('missing keys: ' + st.missing.join(', '));
   if (st.invalid && st.invalid.length) b.push('invalid values: ' + st.invalid.join(', '));
-  return rdy_res_(b, [], 'All statutory keys present');
+  if (st.unapproved && st.unapproved.length) {
+    b.push('not approved by Accounts (APPROVED_BY blank; use HR OS > Payroll > Approve statutory config): ' + st.unapproved.join(', '));
+  }
+  return rdy_res_(b, [], 'All statutory keys present and approved');
 }
 
 function rdy_check9_(inputs, ctx) {
@@ -251,6 +255,67 @@ function rdy_check12_(inputs) {
   return rdy_res_(neg.length ? ['negative net pay: ' + rdy_list_(neg)] : [], [], 'No negative net pay');
 }
 
+/**
+ * Sheet rules R11 / R27 / PROCESS_FLOW 1.0: pay structures must be approved before they are used.
+ * STAFF / PERMANENT_WORKER: the effective SALARY_STRUCTURE row needs HR_APPROVED_BY (BLOCKER when blank).
+ * CONSULTANT / PUNE_STAFF: PAYROLL_RATE_PROFILE.VERSION_STATE must be an approved state (blank = no gate);
+ * USER_APPROVED_JULY_PROXY counts as approved but raises a WARN (PROXY_RATE_JUL2026, R28).
+ */
+function rdy_check13_(inputs, ctx) {
+  var pop = inputs.population, b = [], w = [];
+  if (pop === 'STAFF' || pop === 'PERMANENT_WORKER') {
+    var unsigned = ctx.rosterIds.filter(function (id) {
+      var s = (inputs.salaryByEmp || {})[id];
+      return s && rdy_id_(s.HR_APPROVED_BY) === '';
+    });
+    if (unsigned.length) {
+      b.push('SALARY_STRUCTURE not HR-approved (HR_APPROVED_BY blank; use HR OS > Payroll > Approve salary structure): ' + rdy_list_(unsigned));
+    }
+  } else {
+    var rates = inputs.rateByEmp || {};
+    var bad = ctx.rosterIds.filter(function (id) { return rates[id] && !calc_isRateApproved(rates[id]); });
+    var proxy = ctx.rosterIds.filter(function (id) { return rates[id] && calc_isRateApproved(rates[id]) && calc_isProxyRate(rates[id]); });
+    if (bad.length) b.push('PAYROLL_RATE_PROFILE not approved (VERSION_STATE): ' + rdy_list_(bad));
+    if (proxy.length) w.push('PROXY_RATE_JUL2026: ' + proxy.length + ' employee(s) paid on the approved July 2026 proxy rates');
+  }
+  return rdy_res_(b, w, 'Pay structure approved');
+}
+
+function rdy_exceptionList_(rows, ctx, allowUnknown) {
+  var all = null;
+  var out = [];
+  (rows || []).forEach(function (r) {
+    var id = rdy_id_(r.EMP_ID);
+    var known = ctx.rosterSet[id];
+    if (known || allowUnknown(id)) out.push((id || '(blank EMP_ID)') + (r.reason ? ': ' + r.reason : ''));
+  });
+  return out;
+}
+
+/**
+ * Canteen / efficiency: when the LATEST response of an employee is invalid (EXCEPTION row) there is no fallback to an
+ * older valid one, so every such current exception BLOCKS the population that owns the employee.
+ * Unknown / inactive EMP_IDs block every population for canteen, and the worker population for efficiency.
+ */
+function rdy_check14_(inputs, ctx) {
+  var pop = inputs.population, all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
+  var unknownAll = function (id) { return all ? !all[id] : false; };
+  var canteen = rdy_exceptionList_(inputs.canteenExceptions, ctx, unknownAll);
+  var eff = rdy_exceptionList_(inputs.efficiencyExceptions, ctx, function (id) { return pop === 'PERMANENT_WORKER' && unknownAll(id); });
+  var b = [];
+  if (canteen.length) b.push('canteen EXCEPTION rows (' + canteen.length + '): ' + rdy_list_(canteen));
+  if (eff.length) b.push('efficiency EXCEPTION rows (' + eff.length + '): ' + rdy_list_(eff));
+  return rdy_res_(b, [], 'No canteen / efficiency exceptions');
+}
+
+/** Days-Worked form (PAYROLL_DAYS_EXCEPTIONS) problems of the period: unknown / inactive employee, bad numbers, lone correction. */
+function rdy_check15_(inputs, ctx) {
+  var all = inputs.allActiveIds ? rdy_set_(inputs.allActiveIds) : null;
+  var rows = (inputs.daysExceptions || []).map(function (r) { return { EMP_ID: r.EMP_ID, reason: r.type }; });
+  var list = rdy_exceptionList_(rows, ctx, function (id) { return all ? !all[id] : false; });
+  return rdy_res_(list.length ? ['Days-form exceptions (' + list.length + '): ' + rdy_list_(list)] : [], [], 'No days-form exceptions');
+}
+
 /** Extra row (only when calcResults supplied): any other BLOCKER raised by the calculation. */
 function rdy_calcBlockers_(inputs) {
   var ids = [];
@@ -264,7 +329,8 @@ function rdy_calcBlockers_(inputs) {
 /**
  * inputs = {period, population, roster, allActiveIds?, masterDuplicateIds?, periodCategoryRow, attendanceRows,
  *   dailyMissingByEmp (null = no daily data), salaryByEmp, rateByEmp, feedStatus, otExceptionRows, otHoursByEmp,
- *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, calcResults?}
+ *   pendingOtCount?, statutoryResolved, efficiencyConfigRows, canteenExceptions?, efficiencyExceptions?, daysExceptions?,
+ *   calcResults?}
  * Returns [{PERIOD, POPULATION, CHECK, STATUS, DETAIL}].
  */
 function buildReadiness(inputs) {
@@ -283,7 +349,8 @@ function buildReadiness(inputs) {
   var results = [
     rdy_check1_(scoped), rdy_check2_(scoped, ctx), rdy_check3_(scoped, ctx), rdy_check4_(scoped, ctx),
     rdy_check5_(scoped, ctx), rdy_check6_(scoped), rdy_check7_(scoped, ctx), rdy_check8_(scoped),
-    rdy_check9_(scoped, ctx), rdy_check10_(scoped, ctx), rdy_check11_(scoped), rdy_check12_(scoped)
+    rdy_check9_(scoped, ctx), rdy_check10_(scoped, ctx), rdy_check11_(scoped), rdy_check12_(scoped),
+    rdy_check13_(scoped, ctx), rdy_check14_(scoped, ctx), rdy_check15_(scoped, ctx)
   ];
   var out = results.map(function (r, i) {
     return { PERIOD: inputs.period, POPULATION: pop, CHECK: RDY_CHECK_NAMES[i], STATUS: r.status, DETAIL: r.detail };
@@ -332,8 +399,19 @@ function checkReadiness(period, population, opts) {
     buildReadiness(inputs).forEach(function (r) { r.CHECKED_AT = checkedAt; rows.push(r); });
     done.push(pop);
   });
-  engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], rows,
-    function (o) { return normalizePeriod(o.PERIOD) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0; });
+  // The tab keeps its original header (PAYROLL_MONTH, FEED, OWNER, STATUS, ROW_COUNT, APPROVED_OR_ZERO_DECLARATION,
+  // DETAIL, UPDATED_AT); PERIOD / POPULATION / CHECK / CHECKED_AT are appended on the right. Both sets are filled so the
+  // tab reads correctly either way: PAYROLL_MONTH = period, FEED = the check name, UPDATED_AT = check time.
+  var sheetRows = rows.map(function (r) {
+    var o = {};
+    Object.keys(r).forEach(function (k) { o[k] = r[k]; });
+    o.PAYROLL_MONTH = period; o.FEED = r.CHECK; o.UPDATED_AT = r.CHECKED_AT;
+    return o;
+  });
+  engine_replaceRows_(TABS.PAYROLL_READINESS, ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'], sheetRows,
+    function (o) {
+      return (normalizePeriod(o.PERIOD) || normalizePeriod(o.PAYROLL_MONTH)) === period && done.indexOf(rdy_id_(o.POPULATION)) >= 0;
+    });
   var sum = rdy_summarize_(rows);
   var res = { period: period, populations: done, skippedLocked: skippedLocked, blocked: sum.blocked, warn: sum.warn,
     ready: sum.ready, byPopulation: sum.byPopulation, rows: rows };

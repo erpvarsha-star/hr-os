@@ -84,14 +84,12 @@ function approval_pcRow_(period, population) {
   throw new Error('No PAYROLL_PERIOD_CATEGORY row for ' + period + ' x ' + population);
 }
 
-var APPROVAL_STAMP_COLUMNS = ['HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT'];
-
-/** Update PAYROLL_PERIOD_CATEGORY row; legacy columns (APPROVED_BY/AT) only when present. */
+/** Update the PAYROLL_PERIOD_CATEGORY row. Only the new HR_/ACCOUNTS_ columns are ever stamped: the legacy
+ * APPROVED_BY / APPROVED_AT columns (working-days approval) are never overwritten. */
 function approval_writePc_(pcRow, values) {
-  var headers = getHeaders(resolveSheet_(TABS.PAYROLL_PERIOD_CATEGORY));
   var v = {};
   Object.keys(values).forEach(function (k) {
-    if ((k === 'APPROVED_BY' || k === 'APPROVED_AT') && headers.indexOf(k) < 0) return;
+    if (k === 'APPROVED_BY' || k === 'APPROVED_AT') throw new Error('Legacy column ' + k + ' is not written by payroll approvals');
     v[k] = values[k];
   });
   updateRows(TABS.PAYROLL_PERIOD_CATEGORY, [{ row: pcRow._row, values: v }]);
@@ -99,7 +97,7 @@ function approval_writePc_(pcRow, values) {
 
 function approval_resetValues_() {
   return { STATUS: PERIOD_STATUS.DRAFT, HR_APPROVED_BY: '', HR_APPROVED_AT: '', ACCOUNTS_APPROVED_BY: '',
-    ACCOUNTS_APPROVED_AT: '', APPROVED_BY: '', APPROVED_AT: '' };
+    ACCOUNTS_APPROVED_AT: '' };
 }
 
 function approval_run_(action, period, population) {
@@ -120,7 +118,7 @@ function approval_run_(action, period, population) {
     readinessRows: readiness.rows, storedHash: pc.DRAFT_HASH, currentHash: re.hash });
 
   if (d.ok) {
-    var vals = { STATUS: d.newStatus, APPROVED_BY: user, APPROVED_AT: nowIso_() };
+    var vals = { STATUS: d.newStatus };
     vals[isHr ? 'HR_APPROVED_BY' : 'ACCOUNTS_APPROVED_BY'] = user;
     vals[isHr ? 'HR_APPROVED_AT' : 'ACCOUNTS_APPROVED_AT'] = nowIso_();
     approval_writePc_(pc, vals);
@@ -159,4 +157,114 @@ function reopenPeriod(period, population) {
   approval_writePc_(pc, approval_resetValues_());
   audit('REOPEN', period, population, { result: 'REOPENED', from: status, to: PERIOD_STATUS.DRAFT, user: user });
   return { ok: true, status: PERIOD_STATUS.DRAFT, reason: d.reason };
+}
+
+// ================================================================ approval gates for master data (R11 / R27 / PROCESS_FLOW 1.0)
+
+/**
+ * Pure. Which effective SALARY_STRUCTURE rows of a population still need the HR stamp for the period.
+ * roster = engine roster entries ({EMP_ID, PAYROLL_CATEGORY}); rows = SALARY_STRUCTURE row objects ({_row, ...}).
+ * Returns {population, period, employees, withEffectiveRow, alreadyApproved, toStamp:[{row, empId}], withoutRow:[ids]}.
+ */
+function salaryApprovalPlan(salaryRows, roster, period, population) {
+  var pick = engine_pickSalary(salaryRows, period);
+  var ids = [], seen = {};
+  (roster || []).forEach(function (e) {
+    var id = engine_id_(e.EMP_ID);
+    if (engine_id_(e.PAYROLL_CATEGORY) !== population || seen[id]) return;
+    seen[id] = true; ids.push(id);
+  });
+  var plan = { population: population, period: period, employees: ids.length, withEffectiveRow: 0, alreadyApproved: 0,
+    toStamp: [], withoutRow: [] };
+  ids.forEach(function (id) {
+    var r = pick[id];
+    if (!r) { plan.withoutRow.push(id); return; }
+    plan.withEffectiveRow++;
+    if (engine_id_(r.HR_APPROVED_BY) !== '') plan.alreadyApproved++;
+    else plan.toStamp.push({ row: r._row, empId: id });
+  });
+  return plan;
+}
+
+/** Pure. STATUTORY_CONFIG rows applying to the period that still need Accounts' APPROVED_BY stamp. */
+function statutoryApprovalPlan(configRows, period) {
+  var best = calc_statutoryWinners_(configRows, period);
+  var plan = { period: period, keys: Object.keys(best).length, alreadyApproved: 0, toStamp: [] };
+  Object.keys(best).sort().forEach(function (k) {
+    if (best[k].approved) plan.alreadyApproved++;
+    else plan.toStamp.push({ row: best[k].row._row, key: k });
+  });
+  return plan;
+}
+
+function approval_requireStampColumns_(tab, cols) {
+  var headers = getHeaders(resolveSheet_(tab));
+  var missing = cols.filter(function (c) { return headers.indexOf(c) < 0; });
+  if (missing.length) throw new Error(tab + ' lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup)');
+}
+
+/** Read-only counts for the HR confirmation dialog. */
+function planSalaryStructureApproval(period, population) {
+  guardPeriod_(period);
+  if (population !== POP.STAFF && population !== POP.PERMANENT_WORKER) {
+    throw new Error('SALARY_STRUCTURE approval is for STAFF and PERMANENT_WORKER (got "' + population + '")');
+  }
+  var roster = engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period);
+  var plan = salaryApprovalPlan(readObjects('SALARY_STRUCTURE'), roster.all, period, population);
+  return plan;
+}
+
+/**
+ * HR approves the SALARY_STRUCTURE rows effective for the period of one population (active employees only).
+ * Runner must be HR_APPROVER_EMAIL. Stamps HR_APPROVED_BY / HR_APPROVED_AT on rows that are still blank; audited.
+ */
+function approveSalaryStructure(period, population) {
+  var plan = planSalaryStructureApproval(period, population);
+  var user = approval_userEmail_();
+  var approver = getControl('HR_APPROVER_EMAIL', '');
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(approver) || approval_email_(user) !== approval_email_(approver)) {
+    audit('SALARY_APPROVE', period, population, { result: 'REFUSED', reason: 'USER_NOT_HR_APPROVER', user: user });
+    return { ok: false, reason: 'USER_NOT_HR_APPROVER' };
+  }
+  approval_requireStampColumns_('SALARY_STRUCTURE', ['HR_APPROVED_BY', 'HR_APPROVED_AT']);
+  var now = nowIso_();
+  updateRows('SALARY_STRUCTURE', plan.toStamp.map(function (t) {
+    return { row: t.row, values: { HR_APPROVED_BY: user, HR_APPROVED_AT: now } };
+  }));
+  var res = { ok: true, reason: 'OK', period: period, population: population, stamped: plan.toStamp.length,
+    alreadyApproved: plan.alreadyApproved, employeesWithoutStructure: plan.withoutRow };
+  audit('SALARY_APPROVE', period, population, { result: 'APPROVED', user: user, stamped: res.stamped,
+    alreadyApproved: res.alreadyApproved, withoutStructure: plan.withoutRow.length });
+  return res;
+}
+
+/** Read-only counts for the Accounts confirmation dialog. */
+function planStatutoryApproval(period) {
+  guardPeriod_(period);
+  return statutoryApprovalPlan(readObjects(TABS.STATUTORY_CONFIG), period);
+}
+
+/**
+ * Accounts approves the STATUTORY_CONFIG rows that apply to the period. Runner must be ACCOUNTS_APPROVER_EMAIL.
+ * Stamps APPROVED_BY / APPROVED_AT on rows that are still blank; audited. No statutory value is used before this.
+ */
+function approveStatutoryConfig(period) {
+  var plan = planStatutoryApproval(period);
+  var user = approval_userEmail_();
+  var approver = getControl('ACCOUNTS_APPROVER_EMAIL', '');
+  if (!approval_email_(user)) return { ok: false, reason: 'USER_EMAIL_UNKNOWN' };
+  if (!approval_email_(approver) || approval_email_(user) !== approval_email_(approver)) {
+    audit('STATUTORY_APPROVE', period, '', { result: 'REFUSED', reason: 'USER_NOT_ACCOUNTS_APPROVER', user: user });
+    return { ok: false, reason: 'USER_NOT_ACCOUNTS_APPROVER' };
+  }
+  approval_requireStampColumns_(TABS.STATUTORY_CONFIG, ['APPROVED_BY', 'APPROVED_AT']);
+  var now = nowIso_();
+  updateRows(TABS.STATUTORY_CONFIG, plan.toStamp.map(function (t) {
+    return { row: t.row, values: { APPROVED_BY: user, APPROVED_AT: now } };
+  }));
+  var res = { ok: true, reason: 'OK', period: period, stamped: plan.toStamp.length, alreadyApproved: plan.alreadyApproved };
+  audit('STATUTORY_APPROVE', period, '', { result: 'APPROVED', user: user, stamped: res.stamped,
+    alreadyApproved: res.alreadyApproved, keys: plan.toStamp.map(function (t) { return t.key; }) });
+  return res;
 }

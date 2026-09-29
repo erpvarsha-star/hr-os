@@ -195,7 +195,8 @@ function seedWorld() {
       DESIGNATION: 'Staff', DOJ_AS_SOURCE: '01/04/2019', EMAIL_ID }))
       .concat([{ EMP_ID: 'T-GONE', EMPLOYEE_NAME: 'Left Company', PAYROLL_CATEGORY: 'STAFF', STATUS_AS_SOURCE: 'Inactive', DEPARTMENT: 'X', DESIGNATION: 'X', DOJ_AS_SOURCE: '01/01/2015', EMAIL_ID: 'gone@example.test' }]));
   const salHdr = ['EMP_ID', 'PAYROLL_CATEGORY', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
-    'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR', 'PRODUCTION_MASTER_INR', 'FIXED_GROSS_PM_AS_SOURCE_INR'];
+    'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR', 'PRODUCTION_MASTER_INR', 'FIXED_GROSS_PM_AS_SOURCE_INR',
+    'VERSION_STATE', 'HR_APPROVED_BY', 'HR_APPROVED_AT'];
   const staffSal = (id, fg, from) => ({ EMP_ID: id, PAYROLL_CATEGORY: 'STAFF', EFFECTIVE_FROM: from, BASIC_PM_INR: fg * 0.4, HRA_PM_INR: fg * 0.24, CONVEYANCE_PM_INR: fg * 0.06,
     EDUCATION_PM_INR: fg * 0.06, MEDICAL_PM_INR: fg * 0.06, PRO_DEV_PM_INR: fg * 0.03, COMMUNICATION_PM_INR: fg * 0.02, UNIFORM_PM_INR: fg * 0.04, WASHING_PM_INR: fg * 0.09,
     FIXED_GROSS_PM_AS_SOURCE_INR: fg });
@@ -204,11 +205,11 @@ function seedWorld() {
   put('SALARY_STRUCTURE', salHdr, [
     staffSal('T-S1', 31500, new Date(2026, 3, 1)), staffSal('T-S1', 99999, new Date(2026, 9, 1)), // October raise must NOT apply to September
     staffSal('T-S2', 42000, '2026-04-01'), workerSal('T-W1', 30000), workerSal('T-W2', 20000)]);
-  put('PAYROLL_RATE_PROFILE', ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 'MONTHLY_GROSS_INR'], [
-    { EMP_ID: 'T-C1', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'DAILY_RATE', RATE_AMOUNT_INR: 700 },
-    { EMP_ID: 'T-C2', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 20000 },
-    { EMP_ID: 'T-P1', PAYROLL_CATEGORY: 'PUNE_STAFF', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 30000 },
-    { EMP_ID: 'T-P2', PAYROLL_CATEGORY: 'PUNE_STAFF', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 25000 }]);
+  put('PAYROLL_RATE_PROFILE', ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 'MONTHLY_GROSS_INR', 'VERSION_STATE'], [
+    { EMP_ID: 'T-C1', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'DAILY_RATE', RATE_AMOUNT_INR: 700, VERSION_STATE: 'USER_APPROVED_JULY_PROXY' },
+    { EMP_ID: 'T-C2', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 20000, VERSION_STATE: 'USER_APPROVED_JULY_PROXY' },
+    { EMP_ID: 'T-P1', PAYROLL_CATEGORY: 'PUNE_STAFF', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 30000, VERSION_STATE: 'USER_APPROVED_JULY_PROXY' },
+    { EMP_ID: 'T-P2', PAYROLL_CATEGORY: 'PUNE_STAFF', PAY_BASIS: 'MONTHLY_GROSS_PRORATED', MONTHLY_GROSS_INR: 25000, VERSION_STATE: 'USER_APPROVED_JULY_PROXY' }]);
   put('EFFICIENCY_CONFIG', ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'IMPLEMENTATION_STATE'], [
     { EFFICIENCY_PERCENT_EXACT: 81, INCENTIVE_SLAB_INR: 3000, IMPLEMENTATION_STATE: 'PENDING' }, { EFFICIENCY_PERCENT_EXACT: 85, INCENTIVE_SLAB_INR: 8500, IMPLEMENTATION_STATE: 'PENDING' }]);
   put('INPUT_ATTENDANCE', ['PAYROLL_MONTH', 'EMP_ID', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'PRESENT_DAYS', 'WEEK_OFF', 'PH', 'EL_AVAILED', 'CL_AVAILED', 'SL_AVAILED',
@@ -233,6 +234,20 @@ function seedWorld() {
     otRow({ emp: 'T-W1', date: '2026-08-30', h: 6, kase: 5003 }), // 30-Aug: inside the one-time catch-up window (from 26-Aug) -> paid in September
     otRow({ emp: 'T-W1', date: '2026-08-20', h: 7, kase: 5005 }), // 20-Aug: paid in the August run, outside the window
     otRow({ emp: 'T-W2', date: '2026-09-18', h: 2, type: 'Apply For OT', dec: '', kase: 5004 })); // still pending
+  // hidden source masters: header split over rows 2 and 4, data from row 5 (synthetic fake identity values)
+  const raw = (name, rows) => {
+    const sh = put(name, ['x']);
+    const blankRow = () => new Array(16).fill('');
+    const r2 = blankRow(), r4 = blankRow();
+    ['Date Of Joining', 'Status', 'Department', 'Designation', 'Bank Name', 'IFSC ', 'Account No.', 'UAN ', 'PAN', 'ESI No.'].forEach((h, i) => { r2[3 + i] = h; });
+    r4[0] = 'EMP\nCODE'; r4[1] = 'Name'; r4[2] = 'Email ID'; r4[14] = 'Mobile number'; r4[15] = 'Aadhar Number';
+    sh.data = [blankRow(), r2, blankRow(), r4].concat(rows.map(([id, uan, pan, esi, bank, ifsc, acct]) => {
+      const r = blankRow(); r[0] = id; r[1] = 'FAKE-NAME'; r[7] = bank; r[8] = ifsc; r[9] = acct; r[10] = uan; r[11] = pan; r[12] = esi; r[14] = 'FAKE-MOBILE'; r[15] = 'FAKE-AADHAAR';
+      return r;
+    }));
+  };
+  raw('RAW_STAFF_MASTER', [['T-S1', 100000000001, 'FAKEPAN01A', 'FAKEESI01', 'Fake Bank', 'FAKE0000001', 900000000001]]); // T-S2 has no row: blank tokens
+  raw('RAW_WORKER_MASTER', [['T-W1', 100000000002, 'FAKEPAN02B', '', 'Fake Bank W', 'FAKE0000002', 900000000002], ['T-W2', 100000000003, 'FAKEPAN03C', '', 'Fake Bank W', 'FAKE0000002', 900000000003]]);
   put('CANTEEN_FORM_RESPONSES', ['Timestamp', 'Payroll Month', 'Employee ID', 'Deduction Amount (INR)', 'Submission Type'], [
     { Timestamp: '2026-09-28 09:00:00', 'Payroll Month': '2026-09', 'Employee ID': 'T-S1', 'Deduction Amount (INR)': 600, 'Submission Type': 'New' },
     { Timestamp: '2026-09-28 09:05:00', 'Payroll Month': 'September 2026', 'Employee ID': 'T-W1', 'Deduction Amount (INR)': 450, 'Submission Type': 'New' }]);
@@ -373,6 +388,47 @@ test('5. feeds: OT sync (pending recorded), canteen/efficiency sync, manual adva
   assert.throws(() => c.markFeedComplete(P, 'NOPE'), /Unknown feed/);
 });
 
+test('5b. approval gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG block; HR and Accounts stamp them via their own runners', () => {
+  env.user = HR;
+  const pre = plain(c.checkReadiness(P));
+  const by = (pop, check) => pre.rows.find((r) => r.POPULATION === pop && r.CHECK === check);
+  assert.equal(by('STAFF', 'PAY_STRUCTURE_APPROVED').STATUS, 'BLOCKED');
+  assert.match(by('STAFF', 'PAY_STRUCTURE_APPROVED').DETAIL, /HR_APPROVED_BY blank.*T-S1, T-S2/);
+  assert.equal(by('PERMANENT_WORKER', 'PAY_STRUCTURE_APPROVED').STATUS, 'BLOCKED');
+  assert.equal(by('STAFF', 'STATUTORY_CONFIG').STATUS, 'BLOCKED');
+  assert.match(by('STAFF', 'STATUTORY_CONFIG').DETAIL, /not approved by Accounts \(APPROVED_BY blank/);
+  assert.equal(by('CONSULTANT', 'PAY_STRUCTURE_APPROVED').STATUS, 'WARN', 'approved July proxy: WARN only');
+  assert.match(by('CONSULTANT', 'PAY_STRUCTURE_APPROVED').DETAIL, /PROXY_RATE_JUL2026: 2 employee/);
+  // wrong runners are refused and stamp nothing
+  env.user = ACC;
+  assert.deepEqual(plain(c.approveSalaryStructure(P, 'STAFF')), { ok: false, reason: 'USER_NOT_HR_APPROVER' });
+  env.user = HR;
+  assert.deepEqual(plain(c.approveStatutoryConfig(P)), { ok: false, reason: 'USER_NOT_ACCOUNTS_APPROVER' });
+  assert.ok(rowsOf('SALARY_STRUCTURE').every((r) => r.HR_APPROVED_BY === ''));
+  assert.ok(rowsOf('STATUTORY_CONFIG').every((r) => r.APPROVED_BY === ''));
+  assert.throws(() => c.approveSalaryStructure(P, 'CONSULTANT'), /STAFF and PERMANENT_WORKER/);
+  // counts (what the menu shows) then stamp: only the rows effective for September (the October raise stays unsigned)
+  const plan = plain(c.planSalaryStructureApproval(P, 'STAFF'));
+  assert.deepEqual([plan.employees, plan.withEffectiveRow, plan.toStamp.length, plan.alreadyApproved, plan.withoutRow], [2, 2, 2, 0, []]);
+  const a = plain(c.approveSalaryStructure(P, 'STAFF'));
+  assert.deepEqual([a.ok, a.stamped, a.alreadyApproved], [true, 2, 0]);
+  assert.equal(plain(c.approveSalaryStructure(P, 'PERMANENT_WORKER')).stamped, 2);
+  assert.equal(plain(c.approveSalaryStructure(P, 'STAFF')).stamped, 0, 'idempotent');
+  const sal = rowsOf('SALARY_STRUCTURE');
+  const oct = sal.find((r) => r.EMP_ID === 'T-S1' && Number(r.FIXED_GROSS_PM_AS_SOURCE_INR) === 99999);
+  assert.equal(oct.HR_APPROVED_BY, '', 'a future-dated version is not approved by accident');
+  assert.equal(sal.filter((r) => r.HR_APPROVED_BY === HR && r.HR_APPROVED_AT).length, 4);
+  env.user = ACC;
+  const sc = plain(c.approveStatutoryConfig(P));
+  assert.equal(sc.ok, true);
+  assert.ok(sc.stamped >= 20, 'existing + setup-seeded keys');
+  assert.ok(rowsOf('STATUTORY_CONFIG').every((r) => r.APPROVED_BY === ACC && r.APPROVED_AT));
+  assert.equal(plain(c.approveStatutoryConfig(P)).stamped, 0);
+  assert.match(audits(), /SALARY_APPROVE/);
+  assert.match(audits(), /STATUTORY_APPROVE/);
+  env.user = HR;
+});
+
 test('6. readiness: no BLOCKED anywhere; pending OT gives WARN on the worker population only', () => {
   const res = plain(c.checkReadiness(P));
   assert.equal(res.blocked, 0, JSON.stringify(res.rows.filter((r) => r.STATUS === 'BLOCKED')));
@@ -410,6 +466,9 @@ test('7. calculateDraft: 4 DRAFT populations, sane numbers, salary picked effect
   assert.equal(row('T-W1').EFFICIENCY_DEDUCTION, 0);
   assert.equal(row('T-W2').EFFICIENCY_DEDUCTION, 0);
   assert.equal(row('T-W1').OT_HOURS, 3.5, '30-Aug catch-up event was rejected later; 15-Sep event stays');
+  assert.match(row('T-C1').FLAGS, /PROXY_RATE_JUL2026/, 'approved July proxy rate carries the R28 warning flag');
+  assert.match(row('T-P1').FLAGS, /PROXY_RATE_JUL2026/);
+  assert.ok(!/PROXY_RATE_JUL2026/.test(row('T-S1').FLAGS));
   assert.equal(row('T-C1').OT_HOURS, 5, 'manual HR_MANUAL OT row counted');
   assert.equal(row('T-C1').OT_AMOUNT, 437.5);
   assert.equal(row('T-C1').OTHER_ALLOWANCE, 0, 'PENDING adjustment ignored');
@@ -466,7 +525,19 @@ test('9. payslips: STAFF + PERMANENT_WORKER generated with rates from salary str
   const texts = Object.values(g.calls.docTexts);
   assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /BASIC_RATE: 12,600/.test(t) && /HRA_RATE: 7,560/.test(t)), 'staff RATE tokens from SALARY_STRUCTURE (Sept row, not Oct)');
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /BASIC_RATE: 8,000/.test(t) && /VDA_RATE: 2,575/.test(t) && /HEAT_ALLOWANCE_RATE: 150/.test(t) && /PRODUCTION_ALLOWANCE_RATE: 8,500/.test(t)));
-  texts.forEach((t) => { assert.ok(!/\{\{/.test(t)); assert.ok(!/(UAN|ESI_NO|PAN): \S/.test(t), 'sensitive tokens blank'); });
+  texts.forEach((t) => { assert.ok(!/\{\{/.test(t)); assert.ok(!/(EL_AVAILABLE|CL_AVAILABLE|SL_AVAILABLE): \S/.test(t), 'leave-available tokens blank'); });
+  // identity printed from the hidden RAW masters (T-S2 has no row there -> blank)
+  assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /UAN: 100000000001/.test(t) && /PAN: FAKEPAN01A/.test(t) && /ESI_NO: FAKEESI01/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /UAN: 100000000002/.test(t) && /PAN: FAKEPAN02B/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && !/UAN: \S/.test(t) && !/PAN: \S/.test(t)));
+  assert.ok(texts.every((t) => !/FAKE-(NAME|MOBILE|AADHAAR)/.test(t)), 'only identity columns are read');
+  // production pay on the worker slips: 90% -> 8,500 paid; offset token 0
+  assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /PRODUCTION_ALLOWANCE: 8,500/.test(t) && /PRODUCTION_ALLOWANCE_OFFSET: 0/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-W2/.test(t) && /PRODUCTION_ALLOWANCE: 3,000/.test(t)));
+  // identity data is never written to any other tab or to the audit log
+  Object.values(env.sheets).filter((sh) => !/^RAW_/.test(sh.name)).forEach((sh) => {
+    assert.ok(!/FAKEPAN|FAKEESI|FAKE0000|10000000000|90000000000|Fake Bank/.test(JSON.stringify(sh.data)), sh.name + ' must not contain identity data');
+  });
   // idempotent
   assert.equal(plain(c.generatePayslips(P, 'STAFF')).generated, 0);
   assert.equal(rowsOf('PAYSLIP_REGISTER').length, 4);

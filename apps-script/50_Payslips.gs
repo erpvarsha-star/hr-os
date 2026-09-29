@@ -3,6 +3,7 @@
  * Template placeholder syntax (read from the two template Docs): {{TOKEN}}, e.g. {{PAYROLL_PERIOD}}.
  * Pure parts (token maps, formatting, replacements, templateTokenCheck) never touch Drive/Sheets.
  * PDFs are created in the owner-only payslip folder; sharing is never changed here.
+ * Identity tokens (UAN, ESI_NO, PAN, bank) come from the hidden RAW masters at generation time only.
  */
 var PAYSLIP_BATCH_SIZE = 25;
 var PAYSLIP_JOB_PROP = 'PAYSLIP_JOB';
@@ -52,13 +53,22 @@ function pslEmp_(empCol, rowCol) {
   };
 }
 
-/** Sensitive identifiers and leave balances: always blank in v1 (DESIGN section 8). */
-var PAYSLIP_BLANK_TOKENS = ['UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'ACCOUNT_NO', 'IFSC',
-  'EL_AVAILABLE', 'CL_AVAILABLE', 'SL_AVAILABLE'];
+/** Leave balances: blank on the payslip (the external leave sheet is not a payroll feed). */
+var PAYSLIP_BLANK_TOKENS = ['EL_AVAILABLE', 'CL_AVAILABLE', 'SL_AVAILABLE'];
+
+/**
+ * Sensitive identity tokens (UAN, ESI number, PAN, bank name / account / IFSC) are printed on the payslip but are only
+ * ever read at generation time from the hidden RAW_STAFF_MASTER / RAW_WORKER_MASTER tabs (see payslipReadIdentity_).
+ * They are never written to any tab, audit entry or log. token -> field of the identity record.
+ */
+var PAYSLIP_IDENTITY_TOKENS = { UAN: 'UAN', ESI_NO: 'ESI_NO', PAN: 'PAN', BANK_NAME: 'BANK_NAME', BANK_ACCOUNT: 'BANK_ACCOUNT',
+  ACCOUNT_NO: 'BANK_ACCOUNT', IFSC: 'IFSC' };
+function pslIdent_(field) { return function (row, emp, sal, ident) { return ident && ident[field] ? String(ident[field]) : ''; }; }
+function pslZero_() { return '0'; }
 
 /**
  * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
- * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow). A missing salary row makes
+ * engine_pickSalary). Token functions receive (lockedRow, empMasterRow, salaryRow, identity). A missing salary row makes
  * buildReplacements throw, so that employee's payslip FAILS instead of printing blank/zero rates.
  */
 var PAYSLIP_RATE_COLUMNS = {
@@ -100,6 +110,7 @@ function pslCommonMap_() {
     NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
   };
   PAYSLIP_BLANK_TOKENS.forEach(function (t) { m[t] = pslBlank_; });
+  Object.keys(PAYSLIP_IDENTITY_TOKENS).forEach(function (t) { m[t] = pslIdent_(PAYSLIP_IDENTITY_TOKENS[t]); });
   return m;
 }
 
@@ -120,7 +131,7 @@ var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
   VDA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.VDA_RATE),
   PRODUCTION_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRODUCTION_ALLOWANCE_RATE),
   HEAT_ALLOWANCE: pslM_('HEAT'), VDA: pslM_('VDA'), PRODUCTION_ALLOWANCE: pslM_('PRODUCTION_ALLOWANCE'),
-  PRODUCTION_ALLOWANCE_OFFSET: pslM_('EFFICIENCY_DEDUCTION'), LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
+  PRODUCTION_ALLOWANCE_OFFSET: pslZero_, LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
 });
 
 function payslipTokenMap(population) {
@@ -149,12 +160,12 @@ function templateTokenCheck(templateText, map) {
   return { ok: missing.length === 0, tokens: tokens, missingTokens: missing };
 }
 
-/** {token: string} for every token of the population's map. Throws on non-numeric amounts. */
-function buildReplacements(population, lockedRow, emp, salary) {
+/** {token: string} for every token of the population's map. Throws on non-numeric amounts. ident = identity record (or null). */
+function buildReplacements(population, lockedRow, emp, salary, ident) {
   var map = payslipTokenMap(population), out = {};
   Object.keys(map).forEach(function (t) {
     var d = map[t];
-    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
+    var v = typeof d === 'function' ? d(lockedRow, emp || {}, salary || null, ident || null) : (lockedRow[d] == null ? '' : lockedRow[d]);
     out[t] = v == null ? '' : String(v);
   });
   return out;
@@ -175,6 +186,70 @@ function payslipPending(lockedRows, registerRows, lockId, attempted) {
     var id = String(r.EMP_ID);
     return !done[id] && !tried[id];
   });
+}
+
+// ---------------------------------------------------------------- identity (UAN / ESI no / PAN / bank) from the hidden RAW masters
+
+var PAYSLIP_IDENTITY_TABS = { STAFF: 'RAW_STAFF_MASTER', PERMANENT_WORKER: 'RAW_WORKER_MASTER' };
+/** In the hidden masters the header is split: EMP CODE / Name on row 4, Bank Name / IFSC / Account No / UAN / PAN / ESI No on row 2; data from row 5. */
+var PAYSLIP_IDENTITY_HEADER_ROWS = { primary: 4, secondary: 2 };
+var PAYSLIP_IDENTITY_FIRST_DATA_ROW = 5;
+var PAYSLIP_IDENTITY_FIELDS = { UAN: ['uan'], PAN: ['pan', 'panno'], ESI_NO: ['esino'], BANK_NAME: ['bankname'], IFSC: ['ifsc'],
+  BANK_ACCOUNT: ['accountno', 'accountnumber', 'bankaccountno'] };
+
+/** Pure: combined header (primary row wins, blank -> secondary row) -> {emp, UAN, PAN, ESI_NO, BANK_NAME, IFSC, BANK_ACCOUNT} 0-based indexes (-1 = absent). */
+function payslipIdentityColumns(secondaryRow, primaryRow) {
+  var n = Math.max((secondaryRow || []).length, (primaryRow || []).length), names = [];
+  for (var i = 0; i < n; i++) {
+    var p = feeds_norm_((primaryRow || [])[i]);
+    names.push(p || feeds_norm_((secondaryRow || [])[i]));
+  }
+  var idx = {};
+  names.forEach(function (k, i) { if (k && !(k in idx)) idx[k] = i; });
+  var cols = { emp: feeds_col_(idx, ['empcode', 'empid', 'employeecode', 'employeeid']) };
+  Object.keys(PAYSLIP_IDENTITY_FIELDS).forEach(function (f) { cols[f] = feeds_col_(idx, PAYSLIP_IDENTITY_FIELDS[f]); });
+  return cols;
+}
+
+/** Pure: cell -> printable text (integers without exponent / decimals, trimmed). */
+function payslipIdentityValue(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') return isFinite(v) ? (v % 1 === 0 ? v.toFixed(0) : String(v)) : '';
+  if (Object.prototype.toString.call(v) === '[object Date]') return '';
+  return String(v).trim();
+}
+
+/**
+ * Reads identity values for the given EMP_IDs from the population's hidden RAW master (generation time only; values
+ * live in memory for the duration of the batch and are never written anywhere). Only the EMP CODE column and the
+ * needed identity columns are read (never mobile, Aadhaar, address ...). Missing tab / column -> blank tokens.
+ * Returns {byEmp:{EMP_ID:{UAN,PAN,ESI_NO,BANK_NAME,IFSC,BANK_ACCOUNT}}, matched:n, note:''}.
+ */
+function payslipReadIdentity_(population, empIds) {
+  var out = { byEmp: {}, matched: 0, note: '' };
+  var tab = PAYSLIP_IDENTITY_TABS[population];
+  var sheet = tab ? getSheet(tab) : null;
+  if (!sheet) { out.note = 'identity tab ' + (tab || '?') + ' not found'; return out; }
+  var lc = sheet.getLastColumn(), lr = sheet.getLastRow(), first = PAYSLIP_IDENTITY_FIRST_DATA_ROW;
+  if (lc < 1 || lr < first) { out.note = 'identity tab is empty'; return out; }
+  var sec = sheet.getRange(PAYSLIP_IDENTITY_HEADER_ROWS.secondary, 1, 1, lc).getValues()[0];
+  var pri = sheet.getRange(PAYSLIP_IDENTITY_HEADER_ROWS.primary, 1, 1, lc).getValues()[0];
+  var cols = payslipIdentityColumns(sec, pri);
+  if (cols.emp < 0) { out.note = 'EMP CODE column not found'; return out; }
+  var want = {};
+  (empIds || []).forEach(function (id) { want[feeds_empId_(id)] = true; });
+  var n = lr - first + 1;
+  var ids = sheet.getRange(first, cols.emp + 1, n, 1).getValues();
+  var hits = [];
+  ids.forEach(function (r, i) { var id = feeds_empId_(r[0]); if (id && want[id] && !(id in out.byEmp)) { out.byEmp[id] = {}; hits.push({ i: i, id: id }); } });
+  if (!hits.length) return out;
+  Object.keys(PAYSLIP_IDENTITY_FIELDS).forEach(function (f) {
+    if (cols[f] < 0) return;
+    var vals = sheet.getRange(first, cols[f] + 1, n, 1).getValues();
+    hits.forEach(function (h) { out.byEmp[h.id][f] = payslipIdentityValue(vals[h.i][0]); });
+  });
+  out.matched = hits.length;
+  return out;
 }
 
 // ---------------------------------------------------------------- orchestration
@@ -220,8 +295,8 @@ function payslipTemplateId_(population) {
   return id;
 }
 
-function generateOnePayslip_(ctx, row, emp, salary) {
-  var repl = buildReplacements(ctx.population, row, emp, salary);
+function generateOnePayslip_(ctx, row, emp, salary, ident) {
+  var repl = buildReplacements(ctx.population, row, emp, salary, ident);
   var pdfName = payslipFileName(String(row.EMP_ID), ctx.period);
   var copy = null;
   try {
@@ -265,6 +340,9 @@ function generatePayslips(period, population, lockId, job_) {
   // SALARY_STRUCTURE read once; same effective-dated pick as the engine. Missing row -> that employee FAILS.
   var salaryByEmp = engine_pickSalary(engine_readOpt_('SALARY_STRUCTURE'), period);
 
+  // UAN / ESI no / PAN / bank details: read from the hidden RAW master for this batch only; nothing is stored or logged
+  var identity = payslipReadIdentity_(population, batch.map(function (r) { return String(r.EMP_ID); }));
+
   var root = DriveApp.getFolderById(pre.folderId);
   var folder = payslipSubfolder_(payslipSubfolder_(root, period), population);
   var ctx = { period: period, population: population, templateId: templateId, folder: folder };
@@ -276,7 +354,7 @@ function generatePayslips(period, population, lockId, job_) {
     var reg = { LOCK_ID: pre.lockId, PERIOD: period, EMP_ID: id, POPULATION: population, DOC_ID: '', PDF_ID: '',
       PDF_URL: '', GENERATED_AT: nowIso_(), STATUS: '' };
     try {
-      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null);
+      var res = generateOnePayslip_(ctx, row, master[id], salaryByEmp[id.trim()] || null, identity.byEmp[feeds_empId_(id)] || null);
       reg.DOC_ID = res.docId; reg.PDF_ID = res.pdfId; reg.PDF_URL = res.pdfUrl; reg.STATUS = 'GENERATED';
       ok++;
     } catch (e) {
@@ -297,7 +375,8 @@ function generatePayslips(period, population, lockId, job_) {
     PropertiesService.getScriptProperties().deleteProperty(PAYSLIP_JOB_PROP);
   }
   var summary = { period: period, population: population, lockId: pre.lockId, generated: ok, failed: failed,
-    remaining: remaining, continuationScheduled: continuing };
+    remaining: remaining, continuationScheduled: continuing,
+    identityMatched: identity.matched + ' of ' + batch.length + (identity.note ? ' (' + identity.note + ')' : '') };
   audit('PAYSLIPS_GENERATED', period, population, summary);
   return summary;
 }

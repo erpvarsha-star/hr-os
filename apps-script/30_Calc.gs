@@ -149,11 +149,11 @@ function calc_parseStatutoryValue_(key, raw) {
 }
 
 /**
- * configRows: [{KEY, VALUE, EFFECTIVE_FROM, EFFECTIVE_TO, VERSION}]
- * Returns {values, missing, invalid}. `missing` is computed for `population`
- * when given, else for the union of STAFF and PERMANENT_WORKER keys.
+ * Per key, the STATUTORY_CONFIG row that applies to the period: effective (EFFECTIVE_FROM <= period, EFFECTIVE_TO
+ * blank or >= period), non-blank KEY and VALUE, highest VERSION (first row among equals).
+ * Returns {KEY: {ver, raw, row, approved}}; approved = APPROVED_BY is not blank.
  */
-function resolveStatutory(configRows, period, population) {
+function calc_statutoryWinners_(configRows, period) {
   var p = calc_periodKey(period);
   var best = {};
   (configRows || []).forEach(function (r) {
@@ -165,8 +165,19 @@ function resolveStatutory(configRows, period, population) {
     var ver = calc_isBlank(r.VERSION) ? 0 : Number(r.VERSION);
     if (isNaN(ver)) ver = 0;
     var key = String(r.KEY).trim();
-    if (!best[key] || ver > best[key].ver) best[key] = { ver: ver, raw: r.VALUE };
+    if (!best[key] || ver > best[key].ver) best[key] = { ver: ver, raw: r.VALUE, row: r, approved: !calc_isBlank(r.APPROVED_BY) };
   });
+  return best;
+}
+
+/**
+ * configRows: [{KEY, VALUE, EFFECTIVE_FROM, EFFECTIVE_TO, VERSION, APPROVED_BY}]
+ * Returns {values, missing, invalid, unapproved}. `missing` / `unapproved` are computed for `population` when given,
+ * else for the union of STAFF and PERMANENT_WORKER keys. unapproved = required keys whose applicable row has a blank
+ * APPROVED_BY (sheet rules R11 / R27: no statutory value is used before Accounts signs it).
+ */
+function resolveStatutory(configRows, period, population) {
+  var best = calc_statutoryWinners_(configRows, period);
   var values = {};
   var invalid = [];
   Object.keys(best).forEach(function (k) {
@@ -179,13 +190,26 @@ function resolveStatutory(configRows, period, population) {
   var req = population ? requiredStatutoryKeys(population)
     : requiredStatutoryKeys('STAFF').concat(requiredStatutoryKeys('PERMANENT_WORKER'));
   var seen = {};
-  var missing = [];
+  var missing = [], unapproved = [];
   req.forEach(function (k) {
     if (seen[k]) return;
     seen[k] = true;
     if (values[k] === undefined) missing.push(k);
+    else if (!best[k].approved) unapproved.push(k);
   });
-  return { values: values, missing: missing, invalid: invalid };
+  return { values: values, missing: missing, invalid: invalid, unapproved: unapproved };
+}
+
+/** PAYROLL_RATE_PROFILE row approved by the user as the July 2026 proxy (VERSION_STATE USER_APPROVED_JULY_PROXY) - R28. */
+function calc_isProxyRate(rateRow) {
+  return !!rateRow && /PROXY/i.test(String(rateRow.VERSION_STATE == null ? '' : rateRow.VERSION_STATE));
+}
+
+/** Rate profile approval: blank VERSION_STATE = no gate; any state containing APPROVED (not UNAPPROVED) counts as approved. */
+function calc_isRateApproved(rateRow) {
+  var st = String(rateRow && rateRow.VERSION_STATE != null ? rateRow.VERSION_STATE : '').trim().toUpperCase();
+  if (!st) return true;
+  return /(^|[^A-Z])APPROVED/.test(st);
 }
 
 /* ------------------------------------------------------------------ */
@@ -656,6 +680,9 @@ function calc_simple_(ctx, population) {
     }
     if (basis === 'MONTHLY_GROSS_PRORATED' && population === 'CONSULTANT' && inp.ot > 0) {
       calc_ex_(ex, 'BLOCKER', 'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM', 'Monthly-gross consultant has OT hours');
+    }
+    if (calc_isProxyRate(r)) {
+      calc_ex_(ex, 'WARN', 'PROXY_RATE_JUL2026', 'Rate is the approved July 2026 proxy (VERSION_STATE ' + r.VERSION_STATE + ')');
     }
   }
   if (inp.DISPATCH_INCENTIVE !== 0 || inp.LEAVE_ENCASHMENT !== 0) {

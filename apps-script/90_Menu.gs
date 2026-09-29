@@ -21,6 +21,9 @@ function onOpen() {
       .addItem('Sync efficiency', 'menuSyncEfficiency')
       .addItem('Mark feed complete...', 'menuMarkFeed'))
     .addSubMenu(ui.createMenu('Payroll')
+      .addItem('Approve salary structure (HR)...', 'menuApproveSalary')
+      .addItem('Approve statutory config (Accounts)...', 'menuApproveStatutory')
+      .addSeparator()
       .addItem('Check readiness', 'menuCheckReadiness')
       .addItem('Calculate draft', 'menuCalculateDraft')
       .addItem('HR approve (population)', 'menuHrApprove')
@@ -117,6 +120,35 @@ function menuHrApprove() { popAction_('HR approve', 'hrApprove', 6); }
 function menuAccountsApprove() { popAction_('Accounts approve', 'accountsApprove', 6); }
 function menuLock() { popAction_('Lock period', 'lockPeriod', 7); }
 function menuReopen() { popAction_('Reopen', 'reopenPeriod', 6); }
+/** Shows the counts, asks for a YES, then stamps (the runner check happens inside the approve function). */
+function confirm_(title, text) {
+  var ui = SpreadsheetApp.getUi();
+  return ui.alert(title, text, ui.ButtonSet.YES_NO) === ui.Button.YES;
+}
+function menuApproveSalary() {
+  run_('Approve salary structure', function () {
+    var p = askPeriod_('Approve salary structure'); if (!p) return null;
+    var pop = askPopulation_('Approve salary structure'); if (!pop) return null;
+    var plan = planSalaryStructureApproval(p, pop);
+    var text = 'Period ' + p + ', ' + pop + ': ' + plan.employees + ' active employee(s), ' + plan.withEffectiveRow +
+      ' with an effective SALARY_STRUCTURE row.\n' + plan.toStamp.length + ' row(s) will be stamped HR-approved, ' +
+      plan.alreadyApproved + ' already approved' + (plan.withoutRow.length ? ', ' + plan.withoutRow.length + ' employee(s) have NO structure (' + plan.withoutRow.slice(0, 15).join(', ') + ')' : '') +
+      '.\nYou must be logged in as HR_APPROVER_EMAIL. Stamp now?';
+    if (!confirm_('Approve salary structure', text)) return 'Cancelled - nothing was stamped.';
+    return approveSalaryStructure(p, pop);
+  });
+}
+function menuApproveStatutory() {
+  run_('Approve statutory config', function () {
+    var p = askPeriod_('Approve statutory config'); if (!p) return null;
+    var plan = planStatutoryApproval(p);
+    var text = 'Period ' + p + ': ' + plan.keys + ' STATUTORY_CONFIG key(s) apply; ' + plan.toStamp.length + ' will be stamped approved (' +
+      plan.toStamp.slice(0, 25).map(function (t) { return t.key; }).join(', ') + '), ' + plan.alreadyApproved +
+      ' already approved.\nYou must be logged in as ACCOUNTS_APPROVER_EMAIL. Stamp now?';
+    if (!confirm_('Approve statutory config', text)) return 'Cancelled - nothing was stamped.';
+    return approveStatutoryConfig(p);
+  });
+}
 function menuGeneratePayslips() { popAction_('Generate payslips', 'generatePayslips', 8); }
 function menuQueueEmails() { run_('Queue emails', function () { var p = askPeriod_('Queue emails'); return p && callStage_('queuePayslipEmails', 8, [p]); }); }
 function menuSendEmails() { run_('Send queued emails', function () { var p = askPeriod_('Send queued emails'); return p && callStage_('sendQueuedEmails', 8, [p]); }); }
