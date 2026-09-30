@@ -111,6 +111,7 @@ let body = `<h1>Script</h1>
 body += box("c0", "HR_OS.gs", hros, "1. HR_OS.gs (the whole program)", false);
 body += box("c1", "appsscript.json", read("deploy/appsscript.json"), "2. appsscript.json (project settings)", false);
 body += box("c2", "CLEANUP_OLD_SHEET.gs", read("deploy/CLEANUP_OLD_SHEET.gs"), "One-time old-sheet cleanup (already done - only for a fresh rebuild)", true);
+body += box("c3", "ORGANISE_TABS.gs", read("deploy/ORGANISE_TABS.gs"), "One-time: reorder and colour the tabs", true);
 body += `<script>document.querySelectorAll("button[data-f]").forEach(b=>b.onclick=async()=>{const t=document.getElementById(b.dataset.f).innerText;try{await navigator.clipboard.writeText(t);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}catch(e){b.textContent="Select & copy manually"}})</script>`;
 sub("code", "HR OS Script", "code", body);
 console.log(`Built dist/ (script version ${ver}).`);

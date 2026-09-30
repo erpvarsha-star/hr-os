@@ -45,6 +45,9 @@ function makeSheet(name) {
   s.deleteRow = (n) => { s.data.splice(n - 1, 1); };
   s.setName = (n) => { s.name = n; if (s.env) { const next = {}; Object.keys(s.env.sheets).forEach((k) => { next[k === name ? n : k] = s.env.sheets[k]; }); s.env.sheets = next; } name = n; };
   s.getFormUrl = () => s.formUrl || null;
+  s.tabColor = null;
+  s.setTabColor = (c) => { s.tabColor = c || null; return s; };
+  s.getTabColor = () => s.tabColor;
   s.protections = [];
   s.hidden = false;
   s.protect = () => {
@@ -74,6 +77,7 @@ function makeEnv(opts = {}) {
     getSheets: () => Object.values(env.sheets),
     deleteSheet: (sh) => { delete env.sheets[sh.getName()]; },
     setActiveSheet: (sh) => { env.active = sh; return sh; },
+    getActiveSheet: () => env.active || Object.values(env.sheets)[0],
     moveActiveSheet: (pos) => { // 1-based position among all tabs (tab order = insertion order of env.sheets)
       const names = Object.keys(env.sheets).filter((n) => env.sheets[n] !== env.active), me = env.active.getName();
       names.splice(Math.max(0, Math.min(names.length, pos - 1)), 0, me);

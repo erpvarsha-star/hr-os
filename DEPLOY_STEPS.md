@@ -105,6 +105,31 @@ E102, 15-08-2026
 
   Dates can be DD-MM-YYYY, DD/MM/YYYY or 31-Jul-2026. People already Non-Active are skipped. Lines with a problem are listed and not applied.
 
+## E4. One-time: put the tabs in order and colour them
+
+This is optional and can be done any time after the tabs exist. It only moves tabs and gives them a colour. It never deletes, renames or edits anything, and hidden tabs stay hidden.
+
+1. Open the HR OS sheet, click **Extensions ▸ Apps Script**.
+2. Click the **+** next to **Files**, choose **Script**, and name the new file **ORGANISE_TABS**.
+3. On the **Script** page of the handbook site open the box *One-time: reorder and colour the tabs*, press **Copy**, paste it into the new file (replace anything in it) and Save.
+4. Choose **organiseTabs_step1_preview** and click **Run**. Allow permissions if asked. A message in the sheet shows the new order, the colour of each group, and any tabs it does not recognise. **Read it.** This step changes nothing.
+5. If it looks right, choose **organiseTabs_step2_apply** and click **Run**. A message says how many tabs were moved and recoloured. Running it again is harmless.
+6. Delete the ORGANISE_TABS file (three dots next to it, **Delete**). The project must go back to only `HR_OS.gs` and `appsscript.json`.
+
+Tabs it does not recognise (for example an old `ATT_FORM_NASHIK_OLD`) are put at the very end with no colour. Look at them and delete them by hand if they are not needed.
+
+| Order | Group | Colour |
+|---|---|---|
+| 1 | Control & setup | Slate grey `#607D8B` |
+| 2 | Masters | Blue `#1E88E5` |
+| 3 | Attendance | Teal `#00ACC1` |
+| 4 | Monthly inputs | Green `#43A047` |
+| 5 | Form responses (raw, do not edit) | Orange `#FB8C00` |
+| 6 | Payroll run | Purple `#8E24AA` |
+| 7 | Payslips | Pink `#EC407A` |
+| 8 | Locked & audit | Dark red `#C62828` |
+| 9 | Not recognised (end) | No colour |
+
 ## F. Quick self-check
 
 - The **HR OS** menu is visible.
