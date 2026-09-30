@@ -20,12 +20,14 @@ function attEntryTime_(v) {
   return isNaN(t) ? 0 : t;
 }
 
-/** Parse DOJ. Date/ISO exact. dd/mm/yyyy: if ambiguous (both parts <= 12) take the EARLIER reading
+/** Parse DOJ. Date/ISO and d-Mon-yy / d-Mon-yyyy exact. dd/mm/yyyy: if ambiguous (both parts <= 12) take the EARLIER reading
  * (excludes fewer days -> more missing-date flags -> fail closed). Unparseable -> ''. */
 function parseDoj(v) {
   if (v == null || v === '') return '';
   var iso = toIsoDate(v);
   if (iso) return iso;
+  var mon = parseDojMonthText_(v);
+  if (mon) return mon;
   var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
   if (!m) return '';
   var a = +m[1], b = +m[2], y = +m[3];
@@ -48,6 +50,8 @@ function dojRosterDecision(v, endIso) {
   if (v == null || v === '') return { include: true, warn: '' };
   var iso = toIsoDate(v);
   if (iso) return { include: iso <= endIso, warn: '' };
+  var mon = parseDojMonthText_(v);
+  if (mon) return { include: mon <= endIso, warn: '' };
   var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
   if (!m) return { include: true, warn: 'UNPARSEABLE' };
   var a = +m[1], b = +m[2], y = +m[3];

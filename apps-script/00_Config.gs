@@ -159,6 +159,40 @@ function toIsoDate(v) {
   return m ? m[1] + '-' + m[2] + '-' + m[3] : '';
 }
 
+var DOJ_MONTHS_ = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * 'd-Mon-yy' / 'd-Mon-yyyy' / 'd Mon yyyy' text (e.g. 5-Jun-05, 05-Jun-2005) -> ISO date, or '' when not that shape / not a
+ * real date. Unambiguous (the month is a name). 2-digit years: > the current 2-digit year -> 19yy, else 20yy.
+ */
+function parseDojMonthText_(v) {
+  var m = /^(\d{1,2})[\s\-\/.]+([A-Za-z]{3,9})\.?[\s\-\/.,]+(\d{2}|\d{4})$/.exec(String(v == null ? '' : v).trim());
+  if (!m) return '';
+  var mo = DOJ_MONTHS_.indexOf(m[2].slice(0, 3).toLowerCase()) + 1;
+  if (mo < 1) return '';
+  var d = +m[1], y = +m[3];
+  if (m[3].length === 2) y = y > (new Date().getFullYear() % 100) ? 1900 + y : 2000 + y;
+  if (d < 1 || d > 31) return '';
+  var dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCMonth() === mo - 1 ? y + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+}
+
+/** DOJ cell -> ISO, DAY-FIRST for numeric text (dd/mm/yyyy); Date, ISO and d-Mon-yy(yy) exact. Unparseable -> ''. */
+function parseDojDayFirst_(v) {
+  if (v == null || v === '') return '';
+  var iso = toIsoDate(v);
+  if (iso) return iso;
+  var s = String(v).trim();
+  var mon = parseDojMonthText_(s);
+  if (mon) return mon;
+  var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(s);
+  if (!m) return '';
+  var d = +m[1], mo = +m[2], y = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  var dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCMonth() === mo - 1 ? y + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+}
+
 /** Throws if period is malformed or earlier than the minimum. Pure when minPeriod is passed/defaulted. */
 function assertPeriodAllowed(period, minPeriod) {
   parsePeriod(period);

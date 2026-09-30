@@ -90,3 +90,29 @@ test('roster DOJ rule: after period end excluded; ambiguous/unparseable included
   assert.ok(!eng.allActiveIds.includes('VFL7001'));
   assert.equal(eng.all.find((e) => e.EMP_ID === 'VFL7002').DOJ_WARN, 'AMBIGUOUS');
 });
+
+test('DOJ d-Mon-yy / d-Mon-yyyy text is read without DOJ_UNPARSEABLE (2-digit year: > current 2-digit year -> 19xx, else 20xx)', () => {
+  const { c } = makeEnv();
+  const d = (v) => plain(c.dojRosterDecision(v, '2026-09-30'));
+  assert.deepEqual(d('5-Jun-05'), { include: true, warn: '' });
+  assert.deepEqual(d('05-Jun-2005'), { include: true, warn: '' });
+  assert.deepEqual(d('12-Oct-26'), { include: false, warn: '' }, '26 -> 2026, after the period end');
+  assert.deepEqual(d('3-Sep-2026'), { include: true, warn: '' });
+  assert.deepEqual(d('1-Oct-2026'), { include: false, warn: '' });
+  assert.deepEqual(d('12-Sep-98'), { include: true, warn: '' });
+  assert.deepEqual(d('31-Feb-2020'), { include: true, warn: 'UNPARSEABLE' });
+  assert.deepEqual(d('5-Foo-2020'), { include: true, warn: 'UNPARSEABLE' });
+  assert.equal(c.parseDoj('5-Jun-05'), '2005-06-05');
+  assert.equal(c.parseDoj('07-Sep-1998'), '1998-09-07');
+  assert.equal(c.parseDoj('12-Sep-98'), '1998-09-12', '98 > current 2-digit year -> 1998');
+  assert.equal(c.parseDoj('1 Mar 21'), '2021-03-01');
+  assert.equal(c.parseDoj('5-Jun-2005'), '2005-06-05');
+  // through the roster builders
+  const env = world();
+  env.editCells('EMPLOYEE_MASTER', { EMP_ID: 'VFL7003' }, { DOJ_AS_SOURCE: '14-Mar-19' });
+  const roster = env.c.buildRoster(P);
+  assert.ok(!plain(roster.dojWarnings).includes('VFL7003'), 'no DOJ warning for a d-Mon-yy DOJ');
+  assert.equal(plain(roster.find((e) => e.EMP_ID === 'VFL7003')).DOJ, '2019-03-14');
+  const eng = plain(env.c.engine_rosterFromMaster(env.rowsOf('EMPLOYEE_MASTER'), P));
+  assert.ok(!eng.dojWarnings.includes('VFL7003'));
+});
