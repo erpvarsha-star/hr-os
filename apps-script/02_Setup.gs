@@ -161,6 +161,8 @@ var HROS_CONTROL_DEFAULTS = [
   ['LEAVE_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug payroll counted leave to 25-Aug; default leave window = calendar month'],
   ['OWNER_APPROVER_EMAIL', 'yash.munot@gmail.com', 'confirm owner email (owner approval of attendance disputes)'],
   ['REGISTER_ENTRY_EMAILS', '', 'Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may'],
+  ['REGISTER_ENTRY_EMAILS_VFL', 'hrmanager@varshaforgings.com', 'People (comma/space/semicolon separated) who may enter monthly days present for VFL employees only'],
+  ['REGISTER_ENTRY_EMAILS_PUNE', 'ea.varshaforgings@gmail.com', 'People (comma/space/semicolon separated) who may enter monthly days present for Pune employees only'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
   ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)']
 ];

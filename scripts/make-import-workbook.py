@@ -623,6 +623,16 @@ SCHEMA = json.loads(r"""{
    "Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may"
   ],
   [
+   "REGISTER_ENTRY_EMAILS_VFL",
+   "hrmanager@varshaforgings.com",
+   "People (comma/space/semicolon separated) who may enter monthly days present for VFL employees only"
+  ],
+  [
+   "REGISTER_ENTRY_EMAILS_PUNE",
+   "ea.varshaforgings@gmail.com",
+   "People (comma/space/semicolon separated) who may enter monthly days present for Pune employees only"
+  ],
+  [
    "LEAVE_SOURCE_SPREADSHEET_ID",
    "1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q",
    "Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet"

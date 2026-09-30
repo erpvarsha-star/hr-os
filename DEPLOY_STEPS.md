@@ -138,7 +138,7 @@ Tabs it does not recognise (for example an old `ATT_FORM_NASHIK_OLD`) are put at
 2. Share the live link with HR only. Run **Setup ▸ Install triggers** if not done (the same single trigger handles these forms).
 3. After joiners / leavers, run **Setup ▸ Refresh form rosters** (it updates the monthly forms too).
 
-HR fills the form once per month (it can be submitted in parts: only filled boxes are saved). The result arrives by email. Allowed emails: HR approver, owner, `REGISTER_ENTRY_EMAILS`; anyone else is rejected and nothing is written. HR then approves attendance per group as before. The in-sheet register still works and writes the same rows.
+HR fills the form once per month (it can be submitted in parts: only filled boxes are saved). The result arrives by email. Allowed emails: HR approver, owner, `REGISTER_ENTRY_EMAILS` (all sites); `REGISTER_ENTRY_EMAILS_VFL` (default hrmanager@varshaforgings.com) may enter VFL employees only and `REGISTER_ENTRY_EMAILS_PUNE` (default ea.varshaforgings@gmail.com) Pune employees only (the in-sheet register shows them only their site); anyone else is rejected and nothing is written. HR then approves attendance per group as before. The in-sheet register still works and writes the same rows.
 
 ## F. Quick self-check
 

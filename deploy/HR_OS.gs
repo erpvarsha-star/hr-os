@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 92a64f0';
+var HROS_VERSION = '2026-09-30 69ba20a';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -795,6 +795,8 @@ var HROS_CONTROL_DEFAULTS = [
   ['LEAVE_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug payroll counted leave to 25-Aug; default leave window = calendar month'],
   ['OWNER_APPROVER_EMAIL', 'yash.munot@gmail.com', 'confirm owner email (owner approval of attendance disputes)'],
   ['REGISTER_ENTRY_EMAILS', '', 'Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may'],
+  ['REGISTER_ENTRY_EMAILS_VFL', 'hrmanager@varshaforgings.com', 'People (comma/space/semicolon separated) who may enter monthly days present for VFL employees only'],
+  ['REGISTER_ENTRY_EMAILS_PUNE', 'ea.varshaforgings@gmail.com', 'People (comma/space/semicolon separated) who may enter monthly days present for Pune employees only'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
   ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)']
 ];
@@ -1886,7 +1888,7 @@ function hrosOnFormSubmit(e) {
       var mrow = e.range.getRow(), mlc = sheet.getLastColumn();
       var mh = sheet.getRange(1, 1, 1, mlc).getValues()[0];
       var mv = sheet.getRange(mrow, 1, 1, mlc).getValues()[0];
-      return processMonthlyAttendanceSubmit_(parseMonthlyAttendanceRow(mh, mv), e, name + '!' + mrow);
+      return processMonthlyAttendanceSubmit_(parseMonthlyAttendanceRow(mh, mv), e, name + '!' + mrow, route === 'ATT_MONTHLY_PUNE' ? SITE_PUNE : SITE_VFL);
     }
     if (route === 'OT') {
       var otPeriod = feeds_otPeriodOfRow_(sheet, e.range.getRow());
@@ -2135,19 +2137,22 @@ function monthlyResultEmail_(out) {
 }
 
 /** Authorises the respondent, applies the entries through registerApply_ (all-or-nothing), audits and mails the result. Never throws for a bad submission. */
-function processMonthlyAttendanceSubmit_(parsed, e, sourceRef) {
+function processMonthlyAttendanceSubmit_(parsed, e, sourceRef, formSite) {
   var email = String(parsed.email || '').trim();
   if (!email) { try { email = String(e.response.getRespondentEmail() || '').trim(); } catch (x) { email = ''; } }
   var out = { ok: false, period: parsed.period, reason: '', res: null, email: email };
   if (!email) out.reason = 'Respondent email not available (form must collect verified email addresses)';
   else {
     var ctl = readControlMap();
-    if (!registerUserAllowed(email, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) {
-      out.reason = 'Not allowed: ' + email + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS';
+    var mine = registerAllowedSites(email, ctl);
+    var sites = mine === 'ALL' ? [formSite] : mine.filter(function (s) { return s === formSite; });
+    if (!sites.length) {
+      out.reason = 'Not allowed: ' + email + ' may not enter attendance for site ' + formSite +
+        ' (needs HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL, REGISTER_ENTRY_EMAILS or REGISTER_ENTRY_EMAILS_' + formSite + ')';
     } else if (parsed.errors.length) out.reason = parsed.errors.join('; ');
     else {
       try {
-        out.res = registerApply_(parsed.period, parsed.includesWO, parsed.entries, email);
+        out.res = registerApply_(parsed.period, parsed.includesWO, parsed.entries, email, sites);
         out.ok = true;
       } catch (err) { out.reason = String(err && err.message ? err.message : err); }
     }
@@ -2358,8 +2363,23 @@ function pickDefaultRegisterPeriod(periodCatRows, minPeriod, todayPeriod) {
 function registerUserAllowed(user, hrEmail, ownerEmail, extraCsv) {
   var u = String(user == null ? '' : user).trim().toLowerCase();
   if (!u) return false;
-  var list = [hrEmail, ownerEmail].concat(String(extraCsv == null ? '' : extraCsv).split(','));
+  var list = [hrEmail, ownerEmail].concat(String(extraCsv == null ? '' : extraCsv).split(/[,;\s]+/));
   return list.some(function (e) { return String(e == null ? '' : e).trim().toLowerCase() === u; });
+}
+
+/**
+ * Pure. Sites the user may enter days present for: 'ALL' (HR approver, owner, REGISTER_ENTRY_EMAILS) or an array of site codes
+ * (union of the sites whose REGISTER_ENTRY_EMAILS_<SITE> lists the user; [] = not allowed). ctl = the PAYROLL_CONTROL map.
+ */
+function registerAllowedSites(user, ctl) {
+  ctl = ctl || {};
+  if (registerUserAllowed(user, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) return 'ALL';
+  var sites = [];
+  categoryList().forEach(function (c) {
+    if (!c.site || sites.indexOf(c.site) >= 0) return;
+    if (registerUserAllowed(user, '', '', ctl['REGISTER_ENTRY_EMAILS_' + c.site])) sites.push(c.site);
+  });
+  return sites;
 }
 
 /**
@@ -2388,15 +2408,16 @@ function validateRegisterEntries(rawEntries, rosterMap, period) {
 
 // ================================================================ sheet-touching
 
-/** Throws unless the active user may run the register (HR approver / owner / REGISTER_ENTRY_EMAILS). Returns the email. */
+/** Throws unless the active user may run the register (HR approver / owner / REGISTER_ENTRY_EMAILS[_<SITE>]). Returns {email, sites}. */
 function register_requireUser_() {
   var user = approval_userEmail_();
   if (!user) throw new Error('Cannot determine your Google account email - the register was not opened / saved');
   var ctl = readControlMap();
-  if (!registerUserAllowed(user, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) {
-    throw new Error('Not allowed: ' + user + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS');
+  var sites = registerAllowedSites(user, ctl);
+  if (sites !== 'ALL' && !sites.length) {
+    throw new Error('Not allowed: ' + user + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS / REGISTER_ENTRY_EMAILS_<SITE>');
   }
-  return user;
+  return { email: user, sites: sites };
 }
 
 function register_requireColumns_() {
@@ -2435,7 +2456,7 @@ function register_remarks_(existingRemarks, d) {
  * employees:[{empId, name, department, population, days, state:'OPEN'|'APPROVED'|'LOCKED'}]}.
  */
 function registerLoad(period) {
-  register_requireUser_();
+  var who = register_requireUser_();
   var min = getMinPeriod();
   var pcRows = readObjects(TABS.PAYROLL_PERIOD_CATEGORY);
   var today = normalizePeriod(new Date());
@@ -2446,7 +2467,7 @@ function registerLoad(period) {
   var incBy = {};
   var popList = populationList();
   popList.forEach(function (pop) { incBy[pop] = { Y: 0, N: 0 }; });
-  var employees = ctx.roster.map(function (e) {
+  var employees = ctx.roster.filter(function (e) { return who.sites === 'ALL' || who.sites.indexOf(e.SITE) >= 0; }).map(function (e) {
     var row = ctx.existing[e.EMP_ID];
     var days = '';
     if (row && row.REGISTER_DAYS_PRESENT !== '' && row.REGISTER_DAYS_PRESENT != null && isFinite(Number(row.REGISTER_DAYS_PRESENT))) {
@@ -2474,15 +2495,15 @@ function registerSubmit(payload) {
   payload = payload || {};
   var period = String(payload.period == null ? '' : payload.period).trim();
   guardPeriod_(period);
-  var user = register_requireUser_();
-  return registerApply_(period, payload.includesWO || {}, payload.entries, user);
+  var who = register_requireUser_();
+  return registerApply_(period, payload.includesWO || {}, payload.entries, who.email, who.sites);
 }
 
 /**
  * Shared core of the register dialog and the monthly Google Forms: no user lookup (the caller has already authorised `user`).
  * Throws (nothing written) on a bad period, missing columns or any invalid entry.
  */
-function registerApply_(period, includesWOMap, entries, user) {
+function registerApply_(period, includesWOMap, entries, user, allowedSites) {
   period = String(period == null ? '' : period).trim();
   guardPeriod_(period);
   register_requireColumns_();
@@ -2490,6 +2511,14 @@ function registerApply_(period, includesWOMap, entries, user) {
   var val = validateRegisterEntries(entries, ctx.rosterMap, period);
   if (val.errors.length) throw new Error('Register not saved - fix these first: ' + val.errors.slice(0, 20).join('; ') +
     (val.errors.length > 20 ? '; +' + (val.errors.length - 20) + ' more' : ''));
+  if (allowedSites !== 'ALL') { // fail closed: a missing site list allows nothing
+    var allowed = allowedSites || [], bad = [];
+    val.entries.concat(val.notEntered.map(function (id) { return { empId: id }; })).forEach(function (en) {
+      var emp = ctx.rosterMap[en.empId];
+      if (emp && allowed.indexOf(emp.SITE) < 0) bad.push(en.empId + ' belongs to site ' + emp.SITE + '; ' + user + ' may enter only ' + (allowed.join(', ') || 'no site'));
+    });
+    if (bad.length) throw new Error('Register not saved - ' + bad.slice(0, 20).join('; ') + (bad.length > 20 ? '; +' + (bad.length - 20) + ' more' : ''));
+  }
   var incMap = includesWOMap || {};
   var now = nowIso_();
   var creates = [], updates = [], res = { period: period, written: 0, created: 0, updated: 0, notEntered: val.notEntered,

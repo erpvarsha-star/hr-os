@@ -181,7 +181,7 @@ function hrosOnFormSubmit(e) {
       var mrow = e.range.getRow(), mlc = sheet.getLastColumn();
       var mh = sheet.getRange(1, 1, 1, mlc).getValues()[0];
       var mv = sheet.getRange(mrow, 1, 1, mlc).getValues()[0];
-      return processMonthlyAttendanceSubmit_(parseMonthlyAttendanceRow(mh, mv), e, name + '!' + mrow);
+      return processMonthlyAttendanceSubmit_(parseMonthlyAttendanceRow(mh, mv), e, name + '!' + mrow, route === 'ATT_MONTHLY_PUNE' ? SITE_PUNE : SITE_VFL);
     }
     if (route === 'OT') {
       var otPeriod = feeds_otPeriodOfRow_(sheet, e.range.getRow());
@@ -430,19 +430,22 @@ function monthlyResultEmail_(out) {
 }
 
 /** Authorises the respondent, applies the entries through registerApply_ (all-or-nothing), audits and mails the result. Never throws for a bad submission. */
-function processMonthlyAttendanceSubmit_(parsed, e, sourceRef) {
+function processMonthlyAttendanceSubmit_(parsed, e, sourceRef, formSite) {
   var email = String(parsed.email || '').trim();
   if (!email) { try { email = String(e.response.getRespondentEmail() || '').trim(); } catch (x) { email = ''; } }
   var out = { ok: false, period: parsed.period, reason: '', res: null, email: email };
   if (!email) out.reason = 'Respondent email not available (form must collect verified email addresses)';
   else {
     var ctl = readControlMap();
-    if (!registerUserAllowed(email, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) {
-      out.reason = 'Not allowed: ' + email + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS';
+    var mine = registerAllowedSites(email, ctl);
+    var sites = mine === 'ALL' ? [formSite] : mine.filter(function (s) { return s === formSite; });
+    if (!sites.length) {
+      out.reason = 'Not allowed: ' + email + ' may not enter attendance for site ' + formSite +
+        ' (needs HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL, REGISTER_ENTRY_EMAILS or REGISTER_ENTRY_EMAILS_' + formSite + ')';
     } else if (parsed.errors.length) out.reason = parsed.errors.join('; ');
     else {
       try {
-        out.res = registerApply_(parsed.period, parsed.includesWO, parsed.entries, email);
+        out.res = registerApply_(parsed.period, parsed.includesWO, parsed.entries, email, sites);
         out.ok = true;
       } catch (err) { out.reason = String(err && err.message ? err.message : err); }
     }

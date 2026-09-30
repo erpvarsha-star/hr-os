@@ -179,3 +179,37 @@ test('create + refresh: ids stored, response tab renamed, new employee in the ri
   // second create is a no-op
   assert.equal(plain(env.c.createAttendanceForms()).created.length, 0);
 });
+
+// ---- site-scoped respondents
+const EA = 'ea.varshaforgings@gmail.com', HRM = 'hrmanager@varshaforgings.com';
+const siteCtl = [{ KEY: 'REGISTER_ENTRY_EMAILS_VFL', VALUE: HRM }, { KEY: 'REGISTER_ENTRY_EMAILS_PUNE', VALUE: EA }];
+const PH = ['Timestamp', 'Email Address', 'Payroll month', 'Days present for Pune staff counted', 'P1 – Pune One', 'P2 – Pune Two', 'S1 – Staff One', 'Remarks'];
+const prow = (email, o = {}) => { const d = Object.assign({ Timestamp: 't', 'Email Address': email, 'Payroll month': P, 'Days present for Pune staff counted': 'Including weekly offs' }, o); return PH.map((h) => (h in d ? d[h] : '')); };
+const vfl = (env, email, o) => submit(env, row(Object.assign({ 'Email Address': email }, o)));
+const pune = (env, email, o) => submit(env, prow(email, o), 'ATT_MONTHLY_PUNE_RAW', PH);
+
+test('site scoping: ea@ Pune only, hrmanager@ VFL only, HR both, cross-site EMP_ID rejected', () => {
+  let env = mk({ control: siteCtl });
+  assert.equal(pune(env, EA, { 'P1 – Pune One': 26 }).ok, true);
+  assert.equal(att(env).length, 1);
+  env = mk({ control: siteCtl });
+  assert.equal(vfl(env, EA, { 'S1 – Staff One': 22 }).ok, false);
+  assert.equal(att(env).length, 0);
+  assert.match(env.mails[0].body, /Not allowed/);
+  env = mk({ control: siteCtl });
+  assert.equal(vfl(env, HRM, { 'S1 – Staff One': 22 }).ok, true);
+  assert.equal(att(env).length, 1);
+  assert.equal(pune(env, HRM, { 'P1 – Pune One': 26 }).ok, false);
+  assert.equal(att(env).length, 1);
+  env = mk({ control: siteCtl });
+  assert.equal(vfl(env, HR, { 'S1 – Staff One': 22 }).ok, true);
+  assert.equal(pune(env, HR, { 'P1 – Pune One': 26 }).ok, true);
+  assert.equal(att(env).length, 2);
+  // VFL form row carrying a Pune EMP_ID (header edited) -> rejected, nothing written
+  env = mk({ control: siteCtl });
+  const h = HDR.concat(['P1 – Pune One']);
+  const out = submit(env, row({ 'S1 – Staff One': 22 }).concat([20]), 'ATT_MONTHLY_VFL_RAW', h);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /P1 belongs to site PUNE/);
+  assert.equal(att(env).length, 0);
+});

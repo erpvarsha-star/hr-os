@@ -335,3 +335,31 @@ test('page script (tiny DOM stub): renders toggles + one input per employee, sub
   assert.equal(res.written, 2);
   assert.equal(env.rowsOf('INPUT_ATTENDANCE').find((x) => x.EMP_ID === 'S1').PRESENT_DAYS, 22);
 });
+
+// ---- site-scoped entry (Pune: ea@, VFL: hrmanager@)
+const EA = 'ea.varshaforgings@gmail.com', HRM = 'hrmanager@varshaforgings.com';
+const siteCtl = [{ KEY: 'REGISTER_ENTRY_EMAILS_VFL', VALUE: HRM }, { KEY: 'REGISTER_ENTRY_EMAILS_PUNE', VALUE: 'x@x.com; ' + EA.toUpperCase() }, { KEY: 'REGISTER_ENTRY_EMAILS', VALUE: 'glob@x.com' }];
+
+test('registerAllowedSites matrix', () => {
+  const env = world({ control: siteCtl });
+  const ctl = plain(env.c.readControlMap());
+  const s = (u) => plain(env.c.registerAllowedSites(u, ctl));
+  assert.equal(s(HR), 'ALL');
+  assert.equal(s(OWNER), 'ALL');
+  assert.equal(s('glob@x.com'), 'ALL');
+  assert.deepEqual(s(HRM), ['VFL']);
+  assert.deepEqual(s(EA), ['PUNE']);
+  assert.deepEqual(s('nobody@x.com'), []);
+  assert.deepEqual(s(''), []);
+});
+
+test('in-sheet register: ea@ sees only Pune staff and cannot submit a VFL employee', () => {
+  const env = world({ control: siteCtl });
+  env.user = EA;
+  assert.deepEqual(plain(env.c.registerLoad(P)).employees.map((e) => e.empId), ['P1']);
+  assert.throws(() => env.c.registerSubmit({ period: P, entries: [{ empId: 'P1', days: 20 }, { empId: 'S1', days: 20 }] }), /S1 belongs to site VFL; ea\.varshaforgings@gmail\.com may enter only PUNE/);
+  assert.equal(env.rowsOf('INPUT_ATTENDANCE').length, 0);
+  assert.equal(plain(env.c.registerSubmit({ period: P, entries: [{ empId: 'P1', days: 20 }] })).written, 1);
+  env.user = HRM;
+  assert.deepEqual(plain(env.c.registerLoad(P)).employees.map((e) => e.empId), ['S1', 'S2', 'W1', 'C1']);
+});
