@@ -159,6 +159,7 @@ var HROS_CONTROL_DEFAULTS = [
   ['PAYSLIP_TEMPLATE_WORKER_ID', '1MSmi8qVRL8SI8-svVihasYbLFGNo8Xkzko4VUaIX8SU', 'Worker payslip template Doc'],
   ['PAYSLIP_FOLDER_ID', '', 'Blank = payslip step blocked'],
   ['EMAIL_RELEASE_ENABLED', 'FALSE', 'Payslip email release switch'],
+  ['EMAIL_QUOTA_RESERVE', '10', 'Daily mail recipients kept free for alerts; payslip sending stops at this many remaining and resumes next day 09:00 IST'],
   ['VFL_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],

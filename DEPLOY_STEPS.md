@@ -165,7 +165,7 @@ If something is missing: run **HR OS ▸ Setup ▸ Run setup** once more (it is 
 
 ## G. September payroll run
 
-Follow the monthly runbook in [README.md](README.md) (section 6, "Monthly runbook", and section 10, "Monthly checklist"). In short: Prepare month 2026-09, sync leave / OT / canteen / efficiency, approve attendance, Check readiness, Calculate draft, HR approve, Accounts approve, Lock, Generate payslips. Do not send payslip emails until HR says so (`EMAIL_RELEASE_ENABLED` stays FALSE).
+Follow the monthly runbook in [README.md](README.md) (section 6, "Monthly runbook", and section 10, "Monthly checklist"). In short: Prepare month 2026-09, sync leave / OT / canteen / efficiency, approve attendance, Check readiness, Calculate draft, HR approve, Accounts approve, Lock, Generate payslips. Do not send payslip emails until HR says so (`EMAIL_RELEASE_ENABLED` stays FALSE). To preview a real payslip before any lock, run **Payslips ▸ Send test payslip to me...** after Calculate draft (goes only to you; creates the payslip folder if `PAYSLIP_FOLDER_ID` is blank). Payslip sending stops at `EMAIL_QUOTA_RESERVE` (10) remaining daily e-mails and resumes automatically next day about 09:00 IST.
 
 ## H. Troubleshooting
 

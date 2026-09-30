@@ -2,7 +2,60 @@
  * 51_Email.gs - Stage 8: payslip email queue and gated sending.
  * Sending needs EMAIL_RELEASE_ENABLED=TRUE, EMAIL_RELEASE_<period>=TRUE and runner = ACCOUNTS_APPROVER_EMAIL.
  */
-var EMAIL_QUOTA_RESERVE = 5;
+/** Default recipients kept free for alerts; PAYROLL_CONTROL EMAIL_QUOTA_RESERVE overrides (seeded 10). */
+var EMAIL_QUOTA_RESERVE = 10;
+var EMAIL_CONTINUE_FN = 'continueEmails_';
+var EMAIL_JOB_PROP = 'EMAIL_JOBS';
+var EMAIL_RESUME_HOUR_IST = 9;
+
+function emailQuotaReserve_(control) {
+  var v = Number(control && control.EMAIL_QUOTA_RESERVE);
+  return control && control.EMAIL_QUOTA_RESERVE !== '' && control.EMAIL_QUOTA_RESERVE != null && isFinite(v) && v >= 0 ? Math.floor(v) : EMAIL_QUOTA_RESERVE;
+}
+
+/** Pure: does this error mean the daily mail quota is used up ("Service invoked too many times for one day: email")? */
+function emailIsQuotaError_(e) {
+  return /too many times|quota|daily limit|limit exceeded/i.test(String(e && e.message ? e.message : e));
+}
+
+/** Pure: 09:00 Asia/Kolkata (03:30 UTC) of the day after `now` (IST calendar day). */
+function emailNextResumeAt_(now) {
+  var ist = new Date((now || new Date()).getTime() + 330 * 60000);
+  return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + 1, EMAIL_RESUME_HOUR_IST, 0, 0) - 330 * 60000);
+}
+
+function emailJobs_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(EMAIL_JOB_PROP) || '[]') || []; } catch (e) { return []; }
+}
+function emailSaveJobs_(jobs) {
+  var p = PropertiesService.getScriptProperties();
+  if (jobs.length) p.setProperty(EMAIL_JOB_PROP, JSON.stringify(jobs)); else p.deleteProperty(EMAIL_JOB_PROP);
+}
+function emailTriggers_() {
+  return ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === EMAIL_CONTINUE_FN; });
+}
+
+/** Remember the unfinished job and make sure exactly one resume trigger exists (next day 09:00 IST). */
+function emailScheduleResume_(period, population, lockId) {
+  var jobs = emailJobs_().filter(function (j) { return !(j.period === period && j.population === population && j.lockId === lockId); });
+  jobs.push({ period: period, population: population, lockId: lockId });
+  emailSaveJobs_(jobs);
+  if (!emailTriggers_().length) ScriptApp.newTrigger(EMAIL_CONTINUE_FN).timeBased().at(emailNextResumeAt_(new Date())).create();
+}
+function emailJobDone_(period, population, lockId) {
+  emailSaveJobs_(emailJobs_().filter(function (j) { return !(j.period === period && j.population === population && j.lockId === lockId); }));
+}
+
+/** Counts only (no salaries) to the HR approver through notify_ (Telegram, else e-mail). Never throws. */
+function emailNotifyHr_(period, population, sum) {
+  try {
+    if (typeof notify_ !== 'function' || !(sum.sent || sum.remainingQueued || sum.failed)) return;
+    var msg = 'Payslips ' + period + ' ' + population + ': ' + sum.sent + ' sent, ' +
+      (sum.remainingQueued ? sum.remainingQueued + (sum.stoppedForQuota ? ' continue tomorrow' : ' still queued') : 'none pending') +
+      (sum.failed ? ', ' + sum.failed + ' failed' : '');
+    notify_(String(getControl('HR_APPROVER_EMAIL', '')), 'HR OS payslip emails', msg);
+  } catch (e) { /* alerts never block sending */ }
+}
 
 function emailValid_(s) { return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(String(s == null ? '' : s).trim()); }
 
@@ -79,11 +132,12 @@ function queuePayslipEmailsOne_(period, population, lockId) {
   return summary;
 }
 
-function sendQueuedEmailsOne_(period, population, lockId) {
+function sendQueuedEmailsOne_(period, population, lockId, resume) {
   guardPeriod_(period);
   if (payslipPopulations().indexOf(population) < 0) throw new Error('Payslip emails are only for ' + payslipPopulations().join(' and '));
   var control = readControlMap();
-  var gate = emailReleaseAllowed(control, period, auditUser_(), control.ACCOUNTS_APPROVER_EMAIL);
+  // a resume run (time trigger) was started by the approver's own send; the release flags are still re-checked
+  var gate = emailReleaseAllowed(control, period, resume ? control.ACCOUNTS_APPROVER_EMAIL : auditUser_(), control.ACCOUNTS_APPROVER_EMAIL);
   if (!gate.allowed) {
     audit('PAYSLIP_EMAIL_REFUSED', period, population, gate.reasons);
     throw new Error('Email release refused: ' + gate.reasons.join('; '));
@@ -94,30 +148,58 @@ function sendQueuedEmailsOne_(period, population, lockId) {
   readObjects(TABS.PAYSLIP_REGISTER).forEach(function (r) {
     if (String(r.LOCK_ID) === st.lockId && String(r.POPULATION) === population) inPop[String(r.EMP_ID)] = true;
   });
-  var queued = readObjects(TABS.PAYSLIP_EMAIL_LOG).filter(function (l) {
+  var log = readObjects(TABS.PAYSLIP_EMAIL_LOG);
+  var already = {};
+  log.forEach(function (l) { if (String(l.LOCK_ID) === st.lockId && String(l.STATUS) === 'SENT') already[String(l.EMP_ID)] = true; });
+  var queued = log.filter(function (l) {
     return String(l.LOCK_ID) === st.lockId && String(l.STATUS) === 'QUEUED' && inPop[String(l.EMP_ID)];
   });
-  var sent = 0, failed = 0, stoppedForQuota = false;
+  var reserve = emailQuotaReserve_(control);
+  var sent = 0, failed = 0, dupes = 0, stoppedForQuota = false;
   for (var i = 0; i < queued.length; i++) {
-    var l = queued[i];
-    if (MailApp.getRemainingDailyQuota() <= EMAIL_QUOTA_RESERVE) { stoppedForQuota = true; break; }
+    var l = queued[i], eid = String(l.EMP_ID);
+    if (already[eid]) { // never send the same payslip twice
+      updateRows(TABS.PAYSLIP_EMAIL_LOG, [{ row: l._row, values: { STATUS: 'SKIPPED', ATTEMPTED_AT: nowIso_(), ERROR: 'already SENT' } }]);
+      dupes++;
+      continue;
+    }
+    if (MailApp.getRemainingDailyQuota() <= reserve) { stoppedForQuota = true; break; }
     var upd;
     try {
       var blob = DriveApp.getFileById(String(l.PDF_ID)).getBlob();
       MailApp.sendEmail({ to: String(l.TO_EMAIL), subject: emailSubject(period), body: emailBody_(period),
         attachments: [blob], name: 'Varsha Forgings HR' });
       upd = { STATUS: 'SENT', ATTEMPTED_AT: nowIso_(), ERROR: '' };
+      already[eid] = true;
       sent++;
     } catch (e) {
+      if (emailIsQuotaError_(e)) { stoppedForQuota = true; break; } // stays QUEUED; resumes after the quota resets
       upd = { STATUS: 'FAILED', ATTEMPTED_AT: nowIso_(), ERROR: String(e && e.message ? e.message : e) };
       failed++;
     }
     updateRows(TABS.PAYSLIP_EMAIL_LOG, [{ row: l._row, values: upd }]);
   }
+  var remaining = queued.length - sent - failed - dupes;
   var summary = { period: period, population: population, lockId: st.lockId, sent: sent, failed: failed,
-    remainingQueued: queued.length - sent - failed, stoppedForQuota: stoppedForQuota };
+    remainingQueued: remaining, stoppedForQuota: stoppedForQuota };
+  if (stoppedForQuota && remaining > 0) { emailScheduleResume_(period, population, st.lockId); summary.resumeScheduled = true; }
+  else emailJobDone_(period, population, st.lockId);
   audit('PAYSLIP_EMAILS_SENT', period, population, summary);
+  emailNotifyHr_(period, population, summary);
   return summary;
+}
+
+/** Time-trigger entry: remove its own trigger(s), then resume each stored job (a job that hits the quota again re-schedules itself). */
+function continueEmails_() {
+  emailTriggers_().forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  var jobs = emailJobs_();
+  emailSaveJobs_([]);
+  var out = [];
+  jobs.forEach(function (j) {
+    try { out.push(sendQueuedEmailsOne_(j.period, j.population, j.lockId, true)); }
+    catch (e) { audit('PAYSLIP_EMAIL_RESUME_FAILED', j.period, j.population, String(e && e.message ? e.message : e)); }
+  });
+  return out;
 }
 
 /** Menu passes only the period: with no population, handle each payslip population (errors reported per population). */

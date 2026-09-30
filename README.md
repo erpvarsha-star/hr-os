@@ -85,6 +85,7 @@ Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / tr
 
 | KEY | What to put |
 |---|---|
+| `EMAIL_QUOTA_RESERVE` | Daily mail recipients kept free for alerts (default 10); payslip sending stops there and resumes next day. |
 | `PAYSLIP_FOLDER_ID` | The private payslip folder ID. Blank means payslips are blocked. |
 | `OT_SOURCE_TAB` | Setup writes `OT_FORM_RESPONSES`: the tab the OT Google Form is linked into (in this sheet). If that tab does not exist the old `Overtime_Form` tab is used. |
 | `OT_SOURCE_SPREADSHEET_ID` | Setup leaves it **blank** (OT is read from the local tab above). Fill it only if the OT responses live in another spreadsheet; then `OT_SOURCE_TAB` must name the tab there (for example `Form Responses 1`). |
@@ -208,6 +209,10 @@ Any change to an input after HR approval (for example editing a day count) is de
    The payslip shows UAN, ESI number, PAN and the bank details of each employee; they are looked up while the PDF is made and are not stored anywhere else. Leave balances (EL / CL / SL available) are filled from the leave spreadsheet when the balance tab can be read. Amounts print with Indian grouping and 2 decimals, the joining date as DD-MMM-YYYY, days with 1 decimal; earning / deduction lines that are zero are left blank (totals and net pay always show). Earnings without a line of their own (production incentive, extra-work OT and, on the staff slip, leave encashment) are added into the "Other Allowance" line. For workers the "Production Allowance" line shows the slab amount paid and the "Production Allowance Offset" line follows the efficiency deduction (blank while it is 0).
 2. **Payslips ▸ Queue emails** - fills **PAYSLIP_EMAIL_LOG**. Employees with no valid EMAIL_ID in the master are marked SKIPPED (give them the PDF manually).
 3. **Releasing the email.** Sending is off by default. To release: in PAYROLL_CONTROL set `EMAIL_RELEASE_ENABLED` to `TRUE`, and add a row with KEY `EMAIL_RELEASE_2026-09` (use the month) and VALUE `TRUE`. Then **Accounts** (logged in as the Accounts approver) runs **Payslips ▸ Send queued emails**. Sending as anyone else is refused. Set the two flags back to FALSE afterwards.
+
+   **Email limit.** A consumer Google account can send only about 100 e-mails a day. Sending never goes below `EMAIL_QUOTA_RESERVE` (default 10) remaining recipients, which are kept for alerts. When it gets there it stops cleanly, leaves the rest QUEUED (nothing is marked FAILED and nobody gets two), sets one resume trigger for the next day about 09:00 IST, and sends HR a count such as "Payslips 2026-09 STAFF: 82 sent, 43 continue tomorrow". The resume re-checks the release flags and removes its trigger when everything is sent.
+
+   **Test payslip.** **Payslips ▸ Send test payslip to me...** (HR or owner only) asks for an EMP_ID (default VFL1001) and a period (blank = the latest calculated draft, else the latest locked row; calculate a draft first if neither exists). It builds the real payslip from the same template, marks it `TEST – NOT A PAYSLIP` (put `{{TEST_MARK}}` in the template to choose where; otherwise a line is added at the top) and e-mails it only to you, whatever `EMAIL_RELEASE_ENABLED` says. It writes no register or e-mail log rows (only an audit entry `TEST_PAYSLIP`). If `PAYSLIP_FOLDER_ID` is blank it creates the Drive folder "VFL HR OS Payslips" and stores its id.
 
 CONSULTANT and PUNE_STAFF get **no payslips** (the program refuses); use PAYROLL_LOCKED for their payment sheet.
 

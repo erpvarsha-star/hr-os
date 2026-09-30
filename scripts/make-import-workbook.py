@@ -592,6 +592,11 @@ SCHEMA = json.loads(r"""{
    "Payslip email release switch"
   ],
   [
+   "EMAIL_QUOTA_RESERVE",
+   "10",
+   "Daily mail recipients kept free for alerts; payslip sending stops at this many remaining and resumes next day 09:00 IST"
+  ],
+  [
    "VFL_WEEKLY_OFF",
    "SUN",
    "Weekly off used to default blank attendance"

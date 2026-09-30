@@ -49,7 +49,9 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Payslips')
       .addItem('Generate payslips (locked only)', 'menuGeneratePayslips')
       .addItem('Queue emails', 'menuQueueEmails')
-      .addItem('Send queued emails', 'menuSendEmails'))
+      .addItem('Send queued emails', 'menuSendEmails')
+      .addSeparator()
+      .addItem('Send test payslip to me...', 'menuTestPayslip'))
     .addSubMenu(ui.createMenu('Alerts')
       .addItem('Payroll status...', 'menuPayrollStatus')
       .addSeparator()
@@ -241,6 +243,13 @@ function lockAction_(title, fn) {
 }
 function menuGeneratePayslips() { lockAction_('Generate payslips', 'generatePayslips'); }
 function menuQueueEmails() { lockAction_('Queue emails', 'queuePayslipEmails'); }
+function menuTestPayslip() {
+  run_('Send test payslip to me', function () {
+    var id = ask_('Send test payslip to me', 'EMP_ID (blank = VFL1001)'); if (id === null) return null;
+    var p = ask_('Send test payslip to me', 'PERIOD YYYY-MM (blank = latest draft, else latest locked)'); if (p === null) return null;
+    return callStage_('payslipTestSend', 8, [id || 'VFL1001', p || '']);
+  });
+}
 function menuSendEmails() { lockAction_('Send queued emails', 'sendQueuedEmails'); }
 
 // ---- Alerts: status, Telegram, reminder triggers (61_Notify.gs, 62_Reminders.gs)
