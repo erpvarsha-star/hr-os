@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 e3f6d75';
+var HROS_VERSION = '2026-09-30 92a64f0';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -1991,7 +1991,12 @@ function attMonthlyModeItem_(form, pop) {
 
 function buildMonthlyAttendanceForm_(def, roster) {
   var form = FormApp.create(def.title);
-  form.setCollectEmail(true);
+  // VERIFIED = signed-in Google account; a typed-in email would let anyone pose as HR.
+  if (typeof form.setEmailCollectionType === 'function' && typeof FormApp.EmailCollectionType !== 'undefined') {
+    form.setEmailCollectionType(FormApp.EmailCollectionType.VERIFIED);
+  } else {
+    form.setCollectEmail(true);
+  }
   form.setDescription(ATT_MONTHLY_DESCRIPTION);
   form.setLimitOneResponsePerUser(false);
   form.setAllowResponseEdits(false);

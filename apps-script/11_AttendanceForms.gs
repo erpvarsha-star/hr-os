@@ -286,7 +286,12 @@ function attMonthlyModeItem_(form, pop) {
 
 function buildMonthlyAttendanceForm_(def, roster) {
   var form = FormApp.create(def.title);
-  form.setCollectEmail(true);
+  // VERIFIED = signed-in Google account; a typed-in email would let anyone pose as HR.
+  if (typeof form.setEmailCollectionType === 'function' && typeof FormApp.EmailCollectionType !== 'undefined') {
+    form.setEmailCollectionType(FormApp.EmailCollectionType.VERIFIED);
+  } else {
+    form.setCollectEmail(true);
+  }
   form.setDescription(ATT_MONTHLY_DESCRIPTION);
   form.setLimitOneResponsePerUser(false);
   form.setAllowResponseEdits(false);
