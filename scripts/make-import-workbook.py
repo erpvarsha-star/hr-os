@@ -111,7 +111,8 @@ SCHEMA = json.loads(r"""{
    "HR_SIGNOFF_BY",
    "HR_SIGNOFF_AT",
    "REVIEW_NOTE",
-   "LAST_WORKING_DAY"
+   "LAST_WORKING_DAY",
+   "GENDER"
   ],
   "SALARY_STRUCTURE": [
    "EMP_ID",
@@ -641,6 +642,16 @@ SCHEMA = json.loads(r"""{
    "LEAVE_SOURCE_TAB",
    "Leave_Applications",
    "Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)"
+  ],
+  [
+   "AUTO_FULL_ATTENDANCE_EMP_IDS",
+   "VFL1001",
+   "Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)"
+  ],
+  [
+   "ZERO_PAY_ALLOWED_EMP_IDS",
+   "VFL1001",
+   "Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)"
   ]
  ],
  "statutoryDefaults": [
@@ -648,6 +659,11 @@ SCHEMA = json.loads(r"""{
    "PT_FEB_AMOUNT",
    "300",
    "February PT amount"
+  ],
+  [
+   "PT_WOMEN_EXEMPT_UPTO",
+   "25000",
+   "Maharashtra PT: women (EMPLOYEE_MASTER GENDER = F) whose PT basis is up to this monthly amount pay no PT; above it the normal slabs apply"
   ],
   [
    "MLWF_MONTHS",

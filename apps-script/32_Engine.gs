@@ -140,7 +140,7 @@ function engine_rosterFromMaster(rows, period) {
     if (typeof parseDoj === 'function') { try { doj = parseDoj(r.DOJ_AS_SOURCE) || ''; } catch (e) { doj = ''; } }
     var entry = { EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || ''),
       DEPARTMENT: String(r.DEPARTMENT || '').trim(), DESIGNATION: String(r.DESIGNATION || '').trim(), DOJ: doj,
-      DOJ_WARN: dec.warn };
+      GENDER: normalizeGender(r.GENDER), DOJ_WARN: dec.warn };
     if (!active) { entry.LEAVER = true; entry.LWD = lv.lwd; entry.LWD_WARN = lv.warn; }
     all.push(entry);
   });
@@ -168,7 +168,8 @@ function buildEngineContexts(args) {
       population: pop,
       method: method,
       emp: { EMP_ID: id, EMPLOYEE_NAME: e.EMPLOYEE_NAME !== undefined ? e.EMPLOYEE_NAME : (e.NAME || ''),
-        DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '' },
+        DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '', GENDER: normalizeGender(e.GENDER) },
+      zeroPayAllowed: !!(args.zeroPayIds && args.zeroPayIds[id.toUpperCase()]),
       workingDays: args.workingDays,
       attendance: att,
       otHours: num(args.otByEmp, id),
@@ -287,7 +288,7 @@ function engine_derive_(src, pop) {
   if (src.dailyRows && src.dailyRows.length) {
     var missing = {};
     // employees paid from the monthly register are checked by the daily-vs-register comparison instead
-    var dailyRoster = roster.filter(function (e) { return !isRegisterRow_(attendanceByEmp[e.EMP_ID]); });
+    var dailyRoster = roster.filter(function (e) { return !isRegisterRow_(attendanceByEmp[e.EMP_ID]) && !isAutoAttendanceRow_(attendanceByEmp[e.EMP_ID]); });
     aggregateDaily(src.dailyRows, period, dailyRoster, src.holidayRows || [], '').forEach(function (rec) {
       if (rec.missingDates.length) missing[rec.EMP_ID] = rec.missingDates;
     });
@@ -330,7 +331,7 @@ function engine_readinessInputs_(src, pop, calcResults) {
     masterDuplicateIds: src.roster.duplicateIds, periodCategoryRow: engine_periodCatRow_(src, pop),
     attendanceRows: src.attendance, dailyMissingByEmp: d.dailyMissingByEmp, salaryByEmp: d.salaryByEmp,
     rateByEmp: d.rateByEmp, feedStatus: src.feedStatus, otExceptionRows: otEx, otHoursByEmp: d.otByEmp,
-    statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
+    zeroPayIds: src.zeroPayIds, statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
     pendingOtCount: engine_pendingOt_(src, pop),
     canteenExceptions: engine_callOpt_('canteenExceptions', [src.canteenRows || [], src.period], []),
     efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], []),
@@ -356,7 +357,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
     attendanceByEmp: d.attendanceByEmp, salaryByEmp: d.salaryByEmp, rateByEmp: d.rateByEmp, otByEmp: d.otByEmp,
     canteenByEmp: d.canteenByEmp, societyByEmp: d.societyByEmp, advanceByEmp: d.advanceByEmp,
     efficiencyByEmp: d.efficiencyByEmp, adjustmentRows: src.adjustmentRows, cfg: d.statutory.values,
-    ptExemptSet: d.ptExemptSet, efficiencyConfig: src.efficiencyConfig
+    ptExemptSet: d.ptExemptSet, efficiencyConfig: src.efficiencyConfig, zeroPayIds: src.zeroPayIds
   });
   var rows = [], exceptions = [], results = [], held = [];
   var leaverBy = {};
@@ -481,13 +482,23 @@ function engine_readSources_(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   var ctl = getSheet(TABS.PAYROLL_CONTROL) ? readControlMap() : {};
+  var roster = engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period);
+  var attendance = engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period);
+  var holidayRows = engine_readOpt_(TABS.HOLIDAY_CALENDAR), leaveRows = engine_readOpt_(TABS.INPUT_LEAVE);
+  // AUTO_FULL_ATTENDANCE_EMP_IDS: an APPROVED full-attendance row is added IN MEMORY for listed employees without a row
+  // (nothing is written to the sheet, so HR's later row simply replaces it); readiness, calc and lock all read this list
+  var autoIds = parseIdSet_(ctl.AUTO_FULL_ATTENDANCE_EMP_IDS);
+  if (Object.keys(autoIds).length) {
+    attendance = attendance.concat(autoFullAttendanceRows(period, roster.all, attendance, autoIds, holidayRows,
+      { VFL: getWeeklyOff(SITE_VFL), PUNE: getWeeklyOff(SITE_PUNE) }, leaveByEmp(leaveRows, period), nowIso_()));
+  }
   return {
     period: period,
-    roster: engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period),
+    roster: roster,
     periodCat: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_PERIOD_CATEGORY), 'PAYROLL_MONTH', period),
-    attendance: engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
+    attendance: attendance,
     dailyRows: daily,
-    holidayRows: engine_readOpt_(TABS.HOLIDAY_CALENDAR),
+    holidayRows: holidayRows,
     salaryRows: engine_readOpt_(TABS.SALARY_STRUCTURE),
     rateRows: engine_readOpt_(TABS.PAYROLL_RATE_PROFILE),
     feedStatus: engine_feedStatusMap(engine_readOpt_(TABS.FEED_STATUS), period),
@@ -502,7 +513,8 @@ function engine_readSources_(period) {
     efficiencyConfig: engine_readOpt_(TABS.EFFICIENCY_CONFIG),
     lockedPrevRows: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_LOCKED), 'PERIOD', engine_prevPeriod(period)),
     otPendingRaw: ctl['OT_PENDING_' + period] === undefined ? '' : ctl['OT_PENDING_' + period],
-    leaveRows: engine_readOpt_(TABS.INPUT_LEAVE),
+    leaveRows: leaveRows,
+    zeroPayIds: parseIdSet_(ctl.ZERO_PAY_ALLOWED_EMP_IDS),
     comparisonRows: engine_inPeriod_(engine_readOpt_(TABS.ATTENDANCE_COMPARISON), 'PERIOD', period),
     leaveSyncError: String(ctl['LEAVE_SYNC_ERROR_' + period] || ''),
     ownerEmail: String(ctl.OWNER_APPROVER_EMAIL || '').trim()

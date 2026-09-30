@@ -41,7 +41,7 @@ test('setup creates every tab with exact headers, seeds, hides + protects the se
   assert.equal(env.rowsOf('PAYROLL_CATEGORY_CONFIG').map((r) => r.CATEGORY_CODE).join(), 'STAFF,PERMANENT_WORKER,CONSULTANT,PUNE_STAFF');
   assert.ok(env.rowsOf('PAYROLL_CATEGORY_CONFIG').every((r) => r.APPROVED_BY === ''));
   assert.equal(env.rowsOf('PT_EXEMPTIONS').length, 3);
-  assert.equal(env.rowsOf('STATUTORY_CONFIG').length, 12);
+  assert.equal(env.rowsOf('STATUTORY_CONFIG').length, 13);
   // order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Payroll -> Payslips -> Audit, forms next to what they feed
   const order = Object.keys(env.sheets);
   const at = (n) => order.indexOf(n);

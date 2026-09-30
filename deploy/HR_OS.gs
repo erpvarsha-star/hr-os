@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 69ba20a';
+var HROS_VERSION = '2026-09-30 a97918f';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -392,6 +392,29 @@ function getWeeklyOff(site) {
   return v;
 }
 
+/** Pure. "VFL1001, VFL1002;VFL1003" -> {VFL1001: true, ...} (comma / semicolon / whitespace separated, upper-cased). */
+function parseIdSet_(v) {
+  var out = {};
+  String(v == null ? '' : v).split(/[\s,;]+/).forEach(function (x) { x = x.trim().toUpperCase(); if (x) out[x] = true; });
+  return out;
+}
+
+/** PAYROLL_CONTROL key holding a list of EMP_IDs -> {EMP_ID: true} (empty when the key is absent or blank). */
+function controlIdSet_(key) { return getSheet(TABS.PAYROLL_CONTROL) ? parseIdSet_(getControl(key, '')) : {}; }
+
+/** Employees marked present for every working day without any register / form entry (PAYROLL_CONTROL AUTO_FULL_ATTENDANCE_EMP_IDS). */
+function autoFullAttendanceIdSet_() { return controlIdSet_('AUTO_FULL_ATTENDANCE_EMP_IDS'); }
+
+/** Pure. Drops the auto-attendance employees from a roster (they need no register / monthly-form entry). */
+function withoutAutoAttendance_(roster, autoIds) {
+  var out = (roster || []).filter(function (e) { return !(autoIds && autoIds[String(e.EMP_ID).trim().toUpperCase()]); });
+  ['duplicates', 'joinersExcluded', 'dojWarnings'].forEach(function (k) { if (roster && roster[k] !== undefined) out[k] = roster[k]; });
+  return out;
+}
+
+/** Employees whose zero salary is intentional: no ZERO_SALARY_STRUCTURE hold (PAYROLL_CONTROL ZERO_PAY_ALLOWED_EMP_IDS). */
+function zeroPayAllowedIdSet_() { return controlIdSet_('ZERO_PAY_ALLOWED_EMP_IDS'); }
+
 /** Owner approver (approves attendance disputes). PAYROLL_CONTROL OWNER_APPROVER_EMAIL, seeded by setup. */
 function getOwnerApproverEmail() { return String(getControl('OWNER_APPROVER_EMAIL', '')).trim(); }
 
@@ -647,7 +670,7 @@ var HROS_EFFICIENCY_HEADERS = ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR',
 var HROS_EMPLOYEE_MASTER_HEADERS = ['EMP_ID', 'EMPLOYEE_NAME', 'EMAIL_ID', 'DOJ_AS_SOURCE', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE',
   'DEPARTMENT', 'DESIGNATION', 'PLANT_TO_VERIFY', 'MANAGER_EMAIL_TO_VERIFY', 'STATUTORY_PROFILE_TO_VERIFY', 'SOURCE_RECORD_KEY',
   'SOURCE_TAB', 'SOURCE_ROW', 'DUPLICATE_FLAG', 'VALIDATION_STATE', 'SOURCE_SNAPSHOT_DATE', 'HR_SIGNOFF_BY', 'HR_SIGNOFF_AT',
-  'REVIEW_NOTE', 'LAST_WORKING_DAY'];
+  'REVIEW_NOTE', 'LAST_WORKING_DAY', 'GENDER'];
 var HROS_SALARY_STRUCTURE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'SOURCE_PAYROLL_MONTH', 'EFFECTIVE_FROM', 'EFFECTIVE_TO',
   'EMPLOYMENT_STATUS_AT_SOURCE', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
   'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR',
@@ -719,7 +742,8 @@ function hrosTabSpecs_() {
     { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
     { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
       validations: [['SITE', ['VFL', 'PUNE', 'ALL']], ['PAID', yn]] },
-    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
+    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS,
+      validations: [['GENDER', ['M', 'F']]] },
     { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
     { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
     { name: TABS.EMPLOYEE_STATUTORY_IDS, group: 'Masters', headers: HROS_STATUTORY_ID_HEADERS, hidden: true,
@@ -798,11 +822,14 @@ var HROS_CONTROL_DEFAULTS = [
   ['REGISTER_ENTRY_EMAILS_VFL', 'hrmanager@varshaforgings.com', 'People (comma/space/semicolon separated) who may enter monthly days present for VFL employees only'],
   ['REGISTER_ENTRY_EMAILS_PUNE', 'ea.varshaforgings@gmail.com', 'People (comma/space/semicolon separated) who may enter monthly days present for Pune employees only'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
-  ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)']
+  ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)'],
+  ['AUTO_FULL_ATTENDANCE_EMP_IDS', 'VFL1001', 'Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)'],
+  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [
   ['PT_FEB_AMOUNT', '300', 'February PT amount'],
+  ['PT_WOMEN_EXEMPT_UPTO', '25000', 'Maharashtra PT: women (EMPLOYEE_MASTER GENDER = F) whose PT basis is up to this monthly amount pay no PT; above it the normal slabs apply'],
   ['MLWF_MONTHS', '6,12', 'Months MLWF is deducted'],
   ['STAFF_OT_MULTIPLIER', '2', ''],
   ['WORKER_OT_MULTIPLIER', '2', ''],
@@ -1534,7 +1561,7 @@ function refreshAttendanceWorkingDays_(period) {
 function prepareMonthlyAttendance(period) {
   guardPeriod_(period);
   var pp = periodPopulationsOpen_(period);
-  var roster = buildRoster(period), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var rows = [], skipped = 0;
   roster.forEach(function (e) {
     if (pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID)) { skipped++; return; }
@@ -1561,7 +1588,7 @@ function generateMonthlyAttendance(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
-  var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_VFL));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
@@ -1784,7 +1811,7 @@ function createAttendanceForms() {
     var k = job.key, def = job.def;
     if (String(getControl(def.idKey, '')).trim()) { res.skipped.push(k + ' (form id already in PAYROLL_CONTROL)'); return; }
     var before = sheetNames_(ss);
-    var form = job.monthly ? buildMonthlyAttendanceForm_(def, roster) : buildAttendanceForm_(def, roster);
+    var form = job.monthly ? buildMonthlyAttendanceForm_(def, withoutAutoAttendance_(roster, autoFullAttendanceIdSet_())) : buildAttendanceForm_(def, roster);
     form.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
     SpreadsheetApp.flush();
     var created = ss.getSheets().filter(function (s) { return before.indexOf(s.getName()) < 0; });
@@ -1813,7 +1840,7 @@ function refreshAttendanceFormRosters() {
     var id = String(getControl(def.idKey, '')).trim();
     if (!id) { res.skipped.push(k + ' (no form id)'); return; }
     var form = FormApp.openById(id);
-    if (job.monthly) { refreshMonthlyForm_(k, def, form, roster, res); return; }
+    if (job.monthly) { refreshMonthlyForm_(k, def, form, withoutAutoAttendance_(roster, autoFullAttendanceIdSet_()), res); return; }
     var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
     var seen = {};
     form.getItems(FormApp.ItemType.GRID).forEach(function (item) {
@@ -2346,6 +2373,52 @@ function registerValuesFromDerived(d, enteredBy, enteredAt) {
   return v;
 }
 
+var AUTO_ATTENDANCE_REF = 'AUTO_FULL_ATTENDANCE';
+
+/** True for the in-memory row made by autoFullAttendanceRows (never written to the sheet). */
+function isAutoAttendanceRow_(row) {
+  return !!row && String(row.SOURCE_REF == null ? '' : row.SOURCE_REF).trim() === AUTO_ATTENDANCE_REF;
+}
+
+/**
+ * Pure. One APPROVED attendance row (as if typed in the register) for each roster employee in autoIds that has NO
+ * INPUT_ATTENDANCE row for the period; HR's own row always wins. The values come from deriveMonthlyAttendance with
+ * the days of the month counted INCLUDING weekly offs: registerDays = days in month - paid holidays - approved leave
+ * (EL/CL/SL/C-Off/LWP/OD), so week-off, PH and leave are handled exactly as for a register entry and the worked days
+ * equal the days of the month. A derive that fails (e.g. invalid leave) produces no row -> MISSING_ATTENDANCE hold.
+ * @param {Object} autoIds {EMP_ID: true}
+ * @param {Array} roster engine roster entries {EMP_ID, PAYROLL_CATEGORY, SITE}
+ * @param {Array} existingRows INPUT_ATTENDANCE rows of the period
+ * @param {Object} weeklyOff {VFL: 'SUN', PUNE: 'SUN'}
+ * @param {Object} leaveMap leaveByEmp(...) result
+ */
+function autoFullAttendanceRows(period, roster, existingRows, autoIds, holidays, weeklyOff, leaveMap, enteredAt) {
+  var have = {}, out = [], seen = {};
+  (existingRows || []).forEach(function (r) { have[String(r.EMP_ID == null ? '' : r.EMP_ID).trim().toUpperCase()] = true; });
+  var dim = daysInMonth(period);
+  (roster || []).forEach(function (e) {
+    var id = String(e.EMP_ID).trim(), key = id.toUpperCase();
+    if (!autoIds || !autoIds[key] || have[key] || seen[key]) return;
+    seen[key] = true;
+    var site = e.SITE || siteForPopulation(e.PAYROLL_CATEGORY), wo = (weeklyOff || {})[site] || 'SUN';
+    var lv = (leaveMap || {})[id] || {};
+    var d0 = deriveMonthlyAttendance(0, 'Y', e.PAYROLL_CATEGORY, period, site, holidays, wo, lv);
+    if (!d0.ok) return;
+    var reg = dim - d0.PH - d0.EL_AVAILED - d0.CL_AVAILED - d0.SL_AVAILED - d0.PAID_LEAVE_OTHER - d0.ABSENT_LWP_DAYS - d0.OD_DAYS;
+    if (reg < 0) reg = 0;
+    var d = deriveMonthlyAttendance(reg, 'Y', e.PAYROLL_CATEGORY, period, site, holidays, wo, lv);
+    if (!d.ok || d.exceptions.length) return;
+    var vals = registerValuesFromDerived(d, AUTO_ATTENDANCE_REF, enteredAt || '');
+    vals.SOURCE_REF = AUTO_ATTENDANCE_REF;
+    vals.PAYROLL_MONTH = period; vals.EMP_ID = id; vals.PAYROLL_CATEGORY = e.PAYROLL_CATEGORY;
+    vals.WORKING_DAYS = '';
+    vals.APPROVAL_STATUS = 'APPROVED'; vals.APPROVED_BY = AUTO_ATTENDANCE_REF;
+    vals.REMARKS = AUTO_ATTENDANCE_REF; vals.ROW_KEY = period + '|' + id;
+    out.push(vals);
+  });
+  return out;
+}
+
 /** Pure. Latest period >= minPeriod with a population that is not LOCKED; else todayPeriod (if >= min); else minPeriod. */
 function pickDefaultRegisterPeriod(periodCatRows, minPeriod, todayPeriod) {
   var open = {};
@@ -2428,7 +2501,7 @@ function register_requireColumns_() {
 
 /** Everything the register needs for a period, read once. */
 function register_ctx_(period) {
-  var roster = buildRoster(period), rosterMap = {};
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()), rosterMap = {};
   roster.forEach(function (e) { rosterMap[e.EMP_ID] = e; });
   var leaveRows = getSheet(TABS.INPUT_LEAVE) ? readObjects(TABS.INPUT_LEAVE) : [];
   var pp = periodPopulationsOpen_(period);
@@ -2831,7 +2904,12 @@ function empValidateInput(input, ctx) {
   if (mode === 'ADD' && !doj) errors.push('Date of joining is required (a real date)');
   if (mode === 'UPDATE' && emp_str_(inp.doj) && !doj) errors.push('Date of joining is not a real date');
   var master = { EMP_ID: empId, EMPLOYEE_NAME: name, EMAIL_ID: email, PAYROLL_CATEGORY: cat ? cat.code : emp_str_(inp.category),
-    DEPARTMENT: emp_str_(inp.department), DESIGNATION: emp_str_(inp.designation), DOJ_ISO: doj };
+    DEPARTMENT: emp_str_(inp.department), DESIGNATION: emp_str_(inp.designation), DOJ_ISO: doj, GENDER: '' };
+  // optional GENDER (M / F / Male / Female, any case); blank = unknown (normal PT slabs, never guessed from the name)
+  if (emp_str_(inp.gender)) {
+    master.GENDER = normalizeGender(inp.gender);
+    if (!master.GENDER) errors.push('Gender must be M or F (or left blank)');
+  }
   var site = emp_str_(inp.site).toUpperCase();
   if (cat && site && site !== cat.site) warnings.push('Site ' + site + ' differs from the category site ' + cat.site + ' (the category site is used)');
 
@@ -3008,7 +3086,7 @@ function empSave(payload) {
     var row = { EMP_ID: empId, EMPLOYEE_NAME: v.master.EMPLOYEE_NAME, PAYROLL_CATEGORY: cat.code, STATUS_AS_SOURCE: 'Active' };
     var opt = { EMAIL_ID: v.master.EMAIL_ID, DOJ_AS_SOURCE: emp_dojText_(v.master.DOJ_ISO), DEPARTMENT: v.master.DEPARTMENT,
       DESIGNATION: v.master.DESIGNATION, PLANT_TO_VERIFY: cat.site, DUPLICATE_FLAG: 'NONE', VALIDATION_STATE: 'PENDING_HR_APPROVAL',
-      SOURCE_TAB: EMP_DIALOG_SOURCE, SOURCE_SNAPSHOT_DATE: today, REVIEW_NOTE: 'added by ' + user };
+      SOURCE_TAB: EMP_DIALOG_SOURCE, SOURCE_SNAPSHOT_DATE: today, REVIEW_NOTE: 'added by ' + user, GENDER: v.master.GENDER };
     Object.keys(opt).forEach(function (k) { if (has(k)) row[k] = opt[k]; });
     appendObjects(TABS.EMPLOYEE_MASTER, [row], { textHeaders: ['EMP_ID', 'DOJ_AS_SOURCE', 'LAST_WORKING_DAY', 'SOURCE_SNAPSHOT_DATE'] });
     res.changed = ['NEW_EMPLOYEE'];
@@ -3021,6 +3099,7 @@ function empSave(payload) {
     set('EMAIL_ID', v.master.EMAIL_ID, cur.EMAIL_ID);
     set('DEPARTMENT', v.master.DEPARTMENT, cur.DEPARTMENT);
     set('DESIGNATION', v.master.DESIGNATION, cur.DESIGNATION);
+    set('GENDER', v.master.GENDER, normalizeGender(cur.GENDER));
     set('PAYROLL_CATEGORY', cat.code, cur.PAYROLL_CATEGORY);
     if (v.master.DOJ_ISO) set('DOJ_AS_SOURCE', emp_dojText_(v.master.DOJ_ISO), cur.DOJ_AS_SOURCE);
     if (v.pay && !v.pay.unchanged && has('VALIDATION_STATE')) { vals.VALIDATION_STATE = 'PENDING_HR_APPROVAL'; res.pendingHrApproval = true; }
@@ -3173,7 +3252,7 @@ function empLookup(empId) {
   var cur = rows.filter(function (r) { return emp_str_(r.STATUS_AS_SOURCE).toLowerCase() === 'active'; })[0] || rows[0];
   var cat = categoryEntry(cur.PAYROLL_CATEGORY);
   var out = { exists: true, name: emp_str_(cur.EMPLOYEE_NAME), email: emp_str_(cur.EMAIL_ID), category: emp_str_(cur.PAYROLL_CATEGORY),
-    status: emp_str_(cur.STATUS_AS_SOURCE), department: emp_str_(cur.DEPARTMENT), designation: emp_str_(cur.DESIGNATION),
+    status: emp_str_(cur.STATUS_AS_SOURCE), department: emp_str_(cur.DEPARTMENT), designation: emp_str_(cur.DESIGNATION), gender: normalizeGender(cur.GENDER),
     doj: typeof parseDoj === 'function' ? parseDoj(cur.DOJ_AS_SOURCE) : '', lastWorkingDay: toIsoDate(masterLastWorkingDay_(cur)),
     duplicates: rows.length > 1, idsOnFile: {} };
   var payTab = cat && cat.rateSource === 'RATE_PROFILE' ? TABS.PAYROLL_RATE_PROFILE : TABS.SALARY_STRUCTURE;
@@ -3218,7 +3297,8 @@ function empPageHtml_() {
     '<label>Name</label><input id="name" class="w"><label>Email</label><input id="email" class="w"><br>',
     '<label>Date of joining</label><input id="doj" type="date"><label>Category</label><select id="category"></select> <span class="note" id="siteNote"></span><br>',
     '<label>Department</label><input id="department" class="w" list="depts"><datalist id="depts"></datalist>',
-    '<label>Designation</label><input id="designation" class="w"></fieldset>',
+    '<label>Designation</label><input id="designation" class="w">',
+    '<label>Gender (optional)</label><select id="gender"><option value="">-</option><option value="M">M</option><option value="F">F</option></select></fieldset>',
     '<fieldset id="salBox"><legend>Salary structure (per month, INR)</legend><div id="salFields"></div>',
     '<div id="workerFields"><label>Heat allowance</label><select id="heat"><option value="0">No</option><option value="150">Yes (150)</option></select>',
     '<label>VDA master</label><input id="vda" class="n" type="number" min="0" step="any">',
@@ -3252,10 +3332,10 @@ function empPageHtml_() {
     ' $("salBox").className=c&&c.rateSource==="RATE_PROFILE"?"hidden":"";$("rateBox").className=c&&c.rateSource==="RATE_PROFILE"?"":"hidden";',
     ' $("siteNote").textContent=c?("Site: "+c.site+" | calc: "+c.method):"";$("empId").readOnly=false;}',
     'function fill(d){$("loaded").textContent=d.exists?("Found: "+d.status+(d.duplicates?" (duplicate rows!)":"")):"Not found";if(!d.exists)return;',
-    ' LOADED_CAT=d.category;$("name").value=d.name;$("email").value=d.email;$("category").value=d.category;$("department").value=d.department;$("designation").value=d.designation;$("doj").value=d.doj||"";$("lwd").value=d.lastWorkingDay||"";',
+    ' LOADED_CAT=d.category;$("name").value=d.name;$("email").value=d.email;$("category").value=d.category;$("department").value=d.department;$("designation").value=d.designation;$("gender").value=d.gender||"";$("doj").value=d.doj||"";$("lwd").value=d.lastWorkingDay||"";',
     ' layout();buildSal();if(d.pay){var v=d.pay.values;for(var k in v){var e=$("s_"+k)||$(k);if(e)e.value=v[k];}sum();$("loaded").textContent+=" | latest pay row from "+d.pay.effectiveFrom+" ("+(d.pay.approved?"approved":"PENDING")+")";}',
     ' var on=[];for(var f in d.idsOnFile)if(d.idsOnFile[f])on.push(f);$("idsNote").textContent=on.length?("On file: "+on.join(", ")+" (leave blank to keep)"):"";}',
-    'function payload(){var p={mode:mode(),empId:$("empId").value,name:$("name").value,email:$("email").value,doj:$("doj").value,category:$("category").value,department:$("department").value,designation:$("designation").value,site:cat()?cat().site:"",effectiveMonth:$("effectiveMonth").value,',
+    'function payload(){var p={mode:mode(),empId:$("empId").value,name:$("name").value,email:$("email").value,doj:$("doj").value,category:$("category").value,department:$("department").value,designation:$("designation").value,gender:$("gender").value,site:cat()?cat().site:"",effectiveMonth:$("effectiveMonth").value,',
     ' ids:{uan:$("uan").value,esiNo:$("esiNo").value,pan:$("pan").value,bankName:$("bankName").value,bankAccount:$("bankAccount").value,ifsc:$("ifsc").value}};',
     ' var c=cat(),sendPay=p.mode==="ADD"||!!$("effectiveMonth").value||(LOADED_CAT!==""&&$("category").value!==LOADED_CAT);',
     ' if(sendPay){if(c&&c.rateSource==="RATE_PROFILE"){p.rate={payBasis:$("payBasis").value,rate:$("rate").value,monthlyGross:$("monthlyGross").value,otMethod:$("otMethod").value};}',
@@ -5023,17 +5103,41 @@ function calc_isRateApproved(rateRow) {
 /* PT, efficiency                                                      */
 /* ------------------------------------------------------------------ */
 
-/** PT per DESIGN 5.1: 0 if gross 0 or exempt; Feb flat; else slab on the given gross. */
-function ptAmount(grossForPt, monthName, empId, cfg, ptExemptSet) {
+/** GENDER cell (M / F / Male / Female, any case) -> 'M' | 'F' | '' (blank or unrecognised: never guessed). */
+function normalizeGender(v) {
+  var t = String(v == null ? '' : v).trim().toUpperCase();
+  if (t === 'F' || t === 'FEMALE') return 'F';
+  if (t === 'M' || t === 'MALE') return 'M';
+  return '';
+}
+
+/** True when the Maharashtra women's PT exemption applies: GENDER F, PT_WOMEN_EXEMPT_UPTO configured, basis 0 < amount <= limit. */
+function ptWomenExempt(grossForPt, gender, cfg) {
+  var g = Number(grossForPt), lim = cfg ? Number(cfg.PT_WOMEN_EXEMPT_UPTO) : NaN;
+  if (cfg == null || cfg.PT_WOMEN_EXEMPT_UPTO === undefined || cfg.PT_WOMEN_EXEMPT_UPTO === null || cfg.PT_WOMEN_EXEMPT_UPTO === '') return false;
+  return normalizeGender(gender) === 'F' && isFinite(lim) && isFinite(g) && g > 0 && g <= lim;
+}
+
+/** PT per DESIGN 5.1: 0 if gross 0, exempt (PT_EXEMPTIONS) or a woman up to PT_WOMEN_EXEMPT_UPTO; Feb flat; else slab on the given gross. */
+function ptAmount(grossForPt, monthName, empId, cfg, ptExemptSet, gender) {
   var g = Number(grossForPt);
   if (!isFinite(g) || g <= 0) return 0;
   if (calc_setHas_(ptExemptSet, empId)) return 0;
+  if (ptWomenExempt(g, gender, cfg)) return 0;
   if (calc_monthNum(monthName) === 2) return Number(cfg.PT_FEB_AMOUNT);
   var slabs = (cfg.PT_SLABS || []).slice().sort(function (a, b) { return a.min - b.min; });
   for (var i = 0; i < slabs.length; i++) {
     if (slabs[i].max === null || slabs[i].max === undefined || g <= slabs[i].max) return Number(slabs[i].pt);
   }
   return slabs.length ? Number(slabs[slabs.length - 1].pt) : 0;
+}
+
+/** INFO exception when PT is 0 only because of the women's exemption (not when a PT_EXEMPTIONS row already exempts the employee). */
+function calc_ptInfo_(ex, ctx, basis, empId, cfg) {
+  if (calc_setHas_(ctx.ptExemptSet, empId)) return;
+  if (ptWomenExempt(basis, (ctx.emp || {}).GENDER, cfg)) {
+    calc_ex_(ex, 'INFO', 'PT_WOMEN_EXEMPT', 'PT 0: female employee, PT basis ' + calc_r2_(Number(basis)) + ' <= ' + cfg.PT_WOMEN_EXEMPT_UPTO);
+  }
 }
 
 /** Slab amount for floor(pct): highest configured percent <= floor(pct); none -> 0 (<81), >85 -> the 85 slab. It is the amount PAID (no deduction, no proration). */
@@ -5303,13 +5407,15 @@ function calcStaff(ctx) {
   var inp = calc_readInputs_(ctx, 'STAFF', row, ex);
   calc_checkCfg_('STAFF', cfg, ex);
   var s = ctx.salary;
-  var fg = 0, basicPm = 0;
+  var fg = 0, basicPm = 0, zeroPay = false;
   if (!s) {
     calc_ex_(ex, 'BLOCKER', 'MISSING_SALARY_STRUCTURE', 'No SALARY_STRUCTURE row');
   } else {
     fg = calc_num(s.FIXED_GROSS_PM_AS_SOURCE_INR);
     basicPm = calc_num(s.BASIC_PM_INR);
-    if (isNaN(fg) || fg <= 0) {
+    if (!isNaN(fg) && fg === 0 && ctx.zeroPayAllowed) {
+      zeroPay = true; // ZERO_PAY_ALLOWED_EMP_IDS: zero salary is intentional, a normal all-zero row
+    } else if (isNaN(fg) || fg <= 0) {
       calc_ex_(ex, 'BLOCKER', 'ZERO_SALARY_STRUCTURE', 'Fixed gross is zero or invalid');
       fg = 0;
     }
@@ -5341,8 +5447,9 @@ function calcStaff(ctx) {
   var ot = (basicPm / wd / 8) * Number(cfg.STAFF_OT_MULTIPLIER) * inp.ot;
   var pf = calc_pf_(pfWage, cfg, Number(cfg.PF_EMPLOYEE_RATE));
   var esi = fg <= cfg.ESI_EXEMPT_ABOVE ? roundSheets(fg * cfg.ESI_EMPLOYEE_RATE / wd * w) : 0;
-  var pt = ptAmount(gross, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet);
-  var mlwf = calc_mlwf_(ctx.period, cfg);
+  var pt = ptAmount(gross, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet, (ctx.emp || {}).GENDER);
+  calc_ptInfo_(ex, ctx, gross, row.EMP_ID, cfg);
+  var mlwf = zeroPay ? 0 : calc_mlwf_(ctx.period, cfg);
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA;
   var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + inp.TDS + mlwf + otherDed;
   var extras = inp.ARREARS + inp.DISPATCH_INCENTIVE + inp.OTHER_ALLOWANCE + inp.LEAVE_ENCASHMENT +
@@ -5429,7 +5536,8 @@ function calcWorker(ctx) {
   var eligible = pctMissing ? 0 : efficiencySlab(pctNum, ctx.efficiencyConfig);
   var prod = eligible;
   var ap = basic + hra + conv + wash + edu;
-  var ot = ((m.BASIC + m.VDA) / wd / 8) * Number(cfg.WORKER_OT_MULTIPLIER) * inp.ot;
+  // OT rate uses the CURRENT VDA rate (WORKER_VDA_RATE per day) x working days, not the master's monthly VDA
+  var ot = ((m.BASIC + Number(cfg.WORKER_VDA_RATE) * wd) / wd / 8) * Number(cfg.WORKER_OT_MULTIPLIER) * inp.ot;
   var extras = inp.DISPATCH_INCENTIVE + inp.OTHER_ALLOWANCE + inp.LEAVE_ENCASHMENT + inp.ARREARS +
     inp.PRODUCTION_INCENTIVE + inp.OT_EXTRA_WORK;
   var totalEarn = roundSheets(ap + heat + vda + prod + ot + extras);
@@ -5439,7 +5547,8 @@ function calcWorker(ctx) {
   var esiApplies = fg <= cfg.ESI_EXEMPT_ABOVE;
   var esi = esiApplies ? roundSheets(fg * cfg.ESI_EMPLOYEE_RATE / wd * w) : 0;
   if (esi > 0) calc_ex_(ex, 'WARN', 'WORKER_ESI_BASIS_UNCONFIRMED', 'Worker ESI basis (fixed gross) is unconfirmed');
-  var pt = ptAmount(totalEarn, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet);
+  var pt = ptAmount(totalEarn, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet, (ctx.emp || {}).GENDER);
+  calc_ptInfo_(ex, ctx, totalEarn, row.EMP_ID, cfg);
   var mlwf = calc_mlwf_(ctx.period, cfg);
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA;
   var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + mlwf + inp.TDS + otherDed;
@@ -5749,7 +5858,7 @@ function rdy_check5_(inputs, ctx) {
       var s = (inputs.salaryByEmp || {})[id];
       if (!s) { missing.push(id); return; }
       var fg = rdy_num_(s.FIXED_GROSS_PM_AS_SOURCE_INR), basic = rdy_num_(s.BASIC_PM_INR);
-      if (!(fg > 0) && !(basic > 0)) zero.push(id);
+      if (!(fg > 0) && !(basic > 0) && !(inputs.zeroPayIds && inputs.zeroPayIds[id.toUpperCase()])) zero.push(id);
     } else {
       var r = (inputs.rateByEmp || {})[id];
       if (!r) { missing.push(id); return; }
@@ -6190,7 +6299,7 @@ function engine_rosterFromMaster(rows, period) {
     if (typeof parseDoj === 'function') { try { doj = parseDoj(r.DOJ_AS_SOURCE) || ''; } catch (e) { doj = ''; } }
     var entry = { EMP_ID: id, PAYROLL_CATEGORY: pop, SITE: siteForPopulation(pop), EMPLOYEE_NAME: String(r.EMPLOYEE_NAME || ''),
       DEPARTMENT: String(r.DEPARTMENT || '').trim(), DESIGNATION: String(r.DESIGNATION || '').trim(), DOJ: doj,
-      DOJ_WARN: dec.warn };
+      GENDER: normalizeGender(r.GENDER), DOJ_WARN: dec.warn };
     if (!active) { entry.LEAVER = true; entry.LWD = lv.lwd; entry.LWD_WARN = lv.warn; }
     all.push(entry);
   });
@@ -6218,7 +6327,8 @@ function buildEngineContexts(args) {
       population: pop,
       method: method,
       emp: { EMP_ID: id, EMPLOYEE_NAME: e.EMPLOYEE_NAME !== undefined ? e.EMPLOYEE_NAME : (e.NAME || ''),
-        DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '' },
+        DEPARTMENT: e.DEPARTMENT || '', DESIGNATION: e.DESIGNATION || '', GENDER: normalizeGender(e.GENDER) },
+      zeroPayAllowed: !!(args.zeroPayIds && args.zeroPayIds[id.toUpperCase()]),
       workingDays: args.workingDays,
       attendance: att,
       otHours: num(args.otByEmp, id),
@@ -6337,7 +6447,7 @@ function engine_derive_(src, pop) {
   if (src.dailyRows && src.dailyRows.length) {
     var missing = {};
     // employees paid from the monthly register are checked by the daily-vs-register comparison instead
-    var dailyRoster = roster.filter(function (e) { return !isRegisterRow_(attendanceByEmp[e.EMP_ID]); });
+    var dailyRoster = roster.filter(function (e) { return !isRegisterRow_(attendanceByEmp[e.EMP_ID]) && !isAutoAttendanceRow_(attendanceByEmp[e.EMP_ID]); });
     aggregateDaily(src.dailyRows, period, dailyRoster, src.holidayRows || [], '').forEach(function (rec) {
       if (rec.missingDates.length) missing[rec.EMP_ID] = rec.missingDates;
     });
@@ -6380,7 +6490,7 @@ function engine_readinessInputs_(src, pop, calcResults) {
     masterDuplicateIds: src.roster.duplicateIds, periodCategoryRow: engine_periodCatRow_(src, pop),
     attendanceRows: src.attendance, dailyMissingByEmp: d.dailyMissingByEmp, salaryByEmp: d.salaryByEmp,
     rateByEmp: d.rateByEmp, feedStatus: src.feedStatus, otExceptionRows: otEx, otHoursByEmp: d.otByEmp,
-    statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
+    zeroPayIds: src.zeroPayIds, statutoryResolved: d.statutory, efficiencyConfigRows: src.efficiencyConfig, calcResults: calcResults || null,
     pendingOtCount: engine_pendingOt_(src, pop),
     canteenExceptions: engine_callOpt_('canteenExceptions', [src.canteenRows || [], src.period], []),
     efficiencyExceptions: engine_callOpt_('efficiencyExceptions', [src.efficiencyRows || [], src.period], []),
@@ -6406,7 +6516,7 @@ function engine_calcPopulation(src, pop, runId, calcAt) {
     attendanceByEmp: d.attendanceByEmp, salaryByEmp: d.salaryByEmp, rateByEmp: d.rateByEmp, otByEmp: d.otByEmp,
     canteenByEmp: d.canteenByEmp, societyByEmp: d.societyByEmp, advanceByEmp: d.advanceByEmp,
     efficiencyByEmp: d.efficiencyByEmp, adjustmentRows: src.adjustmentRows, cfg: d.statutory.values,
-    ptExemptSet: d.ptExemptSet, efficiencyConfig: src.efficiencyConfig
+    ptExemptSet: d.ptExemptSet, efficiencyConfig: src.efficiencyConfig, zeroPayIds: src.zeroPayIds
   });
   var rows = [], exceptions = [], results = [], held = [];
   var leaverBy = {};
@@ -6531,13 +6641,23 @@ function engine_readSources_(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   var ctl = getSheet(TABS.PAYROLL_CONTROL) ? readControlMap() : {};
+  var roster = engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period);
+  var attendance = engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period);
+  var holidayRows = engine_readOpt_(TABS.HOLIDAY_CALENDAR), leaveRows = engine_readOpt_(TABS.INPUT_LEAVE);
+  // AUTO_FULL_ATTENDANCE_EMP_IDS: an APPROVED full-attendance row is added IN MEMORY for listed employees without a row
+  // (nothing is written to the sheet, so HR's later row simply replaces it); readiness, calc and lock all read this list
+  var autoIds = parseIdSet_(ctl.AUTO_FULL_ATTENDANCE_EMP_IDS);
+  if (Object.keys(autoIds).length) {
+    attendance = attendance.concat(autoFullAttendanceRows(period, roster.all, attendance, autoIds, holidayRows,
+      { VFL: getWeeklyOff(SITE_VFL), PUNE: getWeeklyOff(SITE_PUNE) }, leaveByEmp(leaveRows, period), nowIso_()));
+  }
   return {
     period: period,
-    roster: engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period),
+    roster: roster,
     periodCat: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_PERIOD_CATEGORY), 'PAYROLL_MONTH', period),
-    attendance: engine_inPeriod_(engine_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
+    attendance: attendance,
     dailyRows: daily,
-    holidayRows: engine_readOpt_(TABS.HOLIDAY_CALENDAR),
+    holidayRows: holidayRows,
     salaryRows: engine_readOpt_(TABS.SALARY_STRUCTURE),
     rateRows: engine_readOpt_(TABS.PAYROLL_RATE_PROFILE),
     feedStatus: engine_feedStatusMap(engine_readOpt_(TABS.FEED_STATUS), period),
@@ -6552,7 +6672,8 @@ function engine_readSources_(period) {
     efficiencyConfig: engine_readOpt_(TABS.EFFICIENCY_CONFIG),
     lockedPrevRows: engine_inPeriod_(engine_readOpt_(TABS.PAYROLL_LOCKED), 'PERIOD', engine_prevPeriod(period)),
     otPendingRaw: ctl['OT_PENDING_' + period] === undefined ? '' : ctl['OT_PENDING_' + period],
-    leaveRows: engine_readOpt_(TABS.INPUT_LEAVE),
+    leaveRows: leaveRows,
+    zeroPayIds: parseIdSet_(ctl.ZERO_PAY_ALLOWED_EMP_IDS),
     comparisonRows: engine_inPeriod_(engine_readOpt_(TABS.ATTENDANCE_COMPARISON), 'PERIOD', period),
     leaveSyncError: String(ctl['LEAVE_SYNC_ERROR_' + period] || ''),
     ownerEmail: String(ctl.OWNER_APPROVER_EMAIL || '').trim()
@@ -7962,7 +8083,7 @@ function payslipFileName(empId, period) { return empId + '_' + period + '_Paysli
 function escapeRegex_(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /** Pure: pending locked rows = not GENERATED in register for lockId, not already attempted in this job. */
-function payslipPending(lockedRows, registerRows, lockId, attempted) {
+function payslipPending(lockedRows, registerRows, lockId, attempted, zeroPayIds) {
   var done = {}, tried = {};
   (registerRows || []).forEach(function (r) {
     if (String(r.LOCK_ID) === lockId && String(r.STATUS) === 'GENERATED') done[String(r.EMP_ID)] = true;
@@ -7970,6 +8091,8 @@ function payslipPending(lockedRows, registerRows, lockId, attempted) {
   (attempted || []).forEach(function (id) { tried[id] = true; });
   return (lockedRows || []).filter(function (r) {
     var id = String(r.EMP_ID);
+    // ZERO_PAY_ALLOWED_EMP_IDS with gross 0 and net 0 (e.g. the owner row): no payslip is generated
+    if (zeroPayIds && zeroPayIds[id.trim().toUpperCase()] && Number(r.TOTAL_EARNINGS || 0) === 0 && Number(r.NET_PAY || 0) === 0) return false;
     return !done[id] && !tried[id];
   });
 }
@@ -8114,7 +8237,7 @@ function generatePayslips(period, population, lockId, job_) {
   }
   var attempted = (job_ && job_.attempted) || [];
   var register = readObjects(TABS.PAYSLIP_REGISTER);
-  var pending = payslipPending(pre.lockedRows, register, pre.lockId, attempted);
+  var pending = payslipPending(pre.lockedRows, register, pre.lockId, attempted, zeroPayAllowedIdSet_());
   var batch = pending.slice(0, PAYSLIP_BATCH_SIZE);
 
   var master = {};

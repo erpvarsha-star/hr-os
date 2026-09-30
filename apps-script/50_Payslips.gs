@@ -234,7 +234,7 @@ function payslipFileName(empId, period) { return empId + '_' + period + '_Paysli
 function escapeRegex_(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 /** Pure: pending locked rows = not GENERATED in register for lockId, not already attempted in this job. */
-function payslipPending(lockedRows, registerRows, lockId, attempted) {
+function payslipPending(lockedRows, registerRows, lockId, attempted, zeroPayIds) {
   var done = {}, tried = {};
   (registerRows || []).forEach(function (r) {
     if (String(r.LOCK_ID) === lockId && String(r.STATUS) === 'GENERATED') done[String(r.EMP_ID)] = true;
@@ -242,6 +242,8 @@ function payslipPending(lockedRows, registerRows, lockId, attempted) {
   (attempted || []).forEach(function (id) { tried[id] = true; });
   return (lockedRows || []).filter(function (r) {
     var id = String(r.EMP_ID);
+    // ZERO_PAY_ALLOWED_EMP_IDS with gross 0 and net 0 (e.g. the owner row): no payslip is generated
+    if (zeroPayIds && zeroPayIds[id.trim().toUpperCase()] && Number(r.TOTAL_EARNINGS || 0) === 0 && Number(r.NET_PAY || 0) === 0) return false;
     return !done[id] && !tried[id];
   });
 }
@@ -386,7 +388,7 @@ function generatePayslips(period, population, lockId, job_) {
   }
   var attempted = (job_ && job_.attempted) || [];
   var register = readObjects(TABS.PAYSLIP_REGISTER);
-  var pending = payslipPending(pre.lockedRows, register, pre.lockId, attempted);
+  var pending = payslipPending(pre.lockedRows, register, pre.lockId, attempted, zeroPayAllowedIdSet_());
   var batch = pending.slice(0, PAYSLIP_BATCH_SIZE);
 
   var master = {};

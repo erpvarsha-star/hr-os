@@ -142,7 +142,12 @@ function empValidateInput(input, ctx) {
   if (mode === 'ADD' && !doj) errors.push('Date of joining is required (a real date)');
   if (mode === 'UPDATE' && emp_str_(inp.doj) && !doj) errors.push('Date of joining is not a real date');
   var master = { EMP_ID: empId, EMPLOYEE_NAME: name, EMAIL_ID: email, PAYROLL_CATEGORY: cat ? cat.code : emp_str_(inp.category),
-    DEPARTMENT: emp_str_(inp.department), DESIGNATION: emp_str_(inp.designation), DOJ_ISO: doj };
+    DEPARTMENT: emp_str_(inp.department), DESIGNATION: emp_str_(inp.designation), DOJ_ISO: doj, GENDER: '' };
+  // optional GENDER (M / F / Male / Female, any case); blank = unknown (normal PT slabs, never guessed from the name)
+  if (emp_str_(inp.gender)) {
+    master.GENDER = normalizeGender(inp.gender);
+    if (!master.GENDER) errors.push('Gender must be M or F (or left blank)');
+  }
   var site = emp_str_(inp.site).toUpperCase();
   if (cat && site && site !== cat.site) warnings.push('Site ' + site + ' differs from the category site ' + cat.site + ' (the category site is used)');
 
@@ -319,7 +324,7 @@ function empSave(payload) {
     var row = { EMP_ID: empId, EMPLOYEE_NAME: v.master.EMPLOYEE_NAME, PAYROLL_CATEGORY: cat.code, STATUS_AS_SOURCE: 'Active' };
     var opt = { EMAIL_ID: v.master.EMAIL_ID, DOJ_AS_SOURCE: emp_dojText_(v.master.DOJ_ISO), DEPARTMENT: v.master.DEPARTMENT,
       DESIGNATION: v.master.DESIGNATION, PLANT_TO_VERIFY: cat.site, DUPLICATE_FLAG: 'NONE', VALIDATION_STATE: 'PENDING_HR_APPROVAL',
-      SOURCE_TAB: EMP_DIALOG_SOURCE, SOURCE_SNAPSHOT_DATE: today, REVIEW_NOTE: 'added by ' + user };
+      SOURCE_TAB: EMP_DIALOG_SOURCE, SOURCE_SNAPSHOT_DATE: today, REVIEW_NOTE: 'added by ' + user, GENDER: v.master.GENDER };
     Object.keys(opt).forEach(function (k) { if (has(k)) row[k] = opt[k]; });
     appendObjects(TABS.EMPLOYEE_MASTER, [row], { textHeaders: ['EMP_ID', 'DOJ_AS_SOURCE', 'LAST_WORKING_DAY', 'SOURCE_SNAPSHOT_DATE'] });
     res.changed = ['NEW_EMPLOYEE'];
@@ -332,6 +337,7 @@ function empSave(payload) {
     set('EMAIL_ID', v.master.EMAIL_ID, cur.EMAIL_ID);
     set('DEPARTMENT', v.master.DEPARTMENT, cur.DEPARTMENT);
     set('DESIGNATION', v.master.DESIGNATION, cur.DESIGNATION);
+    set('GENDER', v.master.GENDER, normalizeGender(cur.GENDER));
     set('PAYROLL_CATEGORY', cat.code, cur.PAYROLL_CATEGORY);
     if (v.master.DOJ_ISO) set('DOJ_AS_SOURCE', emp_dojText_(v.master.DOJ_ISO), cur.DOJ_AS_SOURCE);
     if (v.pay && !v.pay.unchanged && has('VALIDATION_STATE')) { vals.VALIDATION_STATE = 'PENDING_HR_APPROVAL'; res.pendingHrApproval = true; }
@@ -484,7 +490,7 @@ function empLookup(empId) {
   var cur = rows.filter(function (r) { return emp_str_(r.STATUS_AS_SOURCE).toLowerCase() === 'active'; })[0] || rows[0];
   var cat = categoryEntry(cur.PAYROLL_CATEGORY);
   var out = { exists: true, name: emp_str_(cur.EMPLOYEE_NAME), email: emp_str_(cur.EMAIL_ID), category: emp_str_(cur.PAYROLL_CATEGORY),
-    status: emp_str_(cur.STATUS_AS_SOURCE), department: emp_str_(cur.DEPARTMENT), designation: emp_str_(cur.DESIGNATION),
+    status: emp_str_(cur.STATUS_AS_SOURCE), department: emp_str_(cur.DEPARTMENT), designation: emp_str_(cur.DESIGNATION), gender: normalizeGender(cur.GENDER),
     doj: typeof parseDoj === 'function' ? parseDoj(cur.DOJ_AS_SOURCE) : '', lastWorkingDay: toIsoDate(masterLastWorkingDay_(cur)),
     duplicates: rows.length > 1, idsOnFile: {} };
   var payTab = cat && cat.rateSource === 'RATE_PROFILE' ? TABS.PAYROLL_RATE_PROFILE : TABS.SALARY_STRUCTURE;
@@ -529,7 +535,8 @@ function empPageHtml_() {
     '<label>Name</label><input id="name" class="w"><label>Email</label><input id="email" class="w"><br>',
     '<label>Date of joining</label><input id="doj" type="date"><label>Category</label><select id="category"></select> <span class="note" id="siteNote"></span><br>',
     '<label>Department</label><input id="department" class="w" list="depts"><datalist id="depts"></datalist>',
-    '<label>Designation</label><input id="designation" class="w"></fieldset>',
+    '<label>Designation</label><input id="designation" class="w">',
+    '<label>Gender (optional)</label><select id="gender"><option value="">-</option><option value="M">M</option><option value="F">F</option></select></fieldset>',
     '<fieldset id="salBox"><legend>Salary structure (per month, INR)</legend><div id="salFields"></div>',
     '<div id="workerFields"><label>Heat allowance</label><select id="heat"><option value="0">No</option><option value="150">Yes (150)</option></select>',
     '<label>VDA master</label><input id="vda" class="n" type="number" min="0" step="any">',
@@ -563,10 +570,10 @@ function empPageHtml_() {
     ' $("salBox").className=c&&c.rateSource==="RATE_PROFILE"?"hidden":"";$("rateBox").className=c&&c.rateSource==="RATE_PROFILE"?"":"hidden";',
     ' $("siteNote").textContent=c?("Site: "+c.site+" | calc: "+c.method):"";$("empId").readOnly=false;}',
     'function fill(d){$("loaded").textContent=d.exists?("Found: "+d.status+(d.duplicates?" (duplicate rows!)":"")):"Not found";if(!d.exists)return;',
-    ' LOADED_CAT=d.category;$("name").value=d.name;$("email").value=d.email;$("category").value=d.category;$("department").value=d.department;$("designation").value=d.designation;$("doj").value=d.doj||"";$("lwd").value=d.lastWorkingDay||"";',
+    ' LOADED_CAT=d.category;$("name").value=d.name;$("email").value=d.email;$("category").value=d.category;$("department").value=d.department;$("designation").value=d.designation;$("gender").value=d.gender||"";$("doj").value=d.doj||"";$("lwd").value=d.lastWorkingDay||"";',
     ' layout();buildSal();if(d.pay){var v=d.pay.values;for(var k in v){var e=$("s_"+k)||$(k);if(e)e.value=v[k];}sum();$("loaded").textContent+=" | latest pay row from "+d.pay.effectiveFrom+" ("+(d.pay.approved?"approved":"PENDING")+")";}',
     ' var on=[];for(var f in d.idsOnFile)if(d.idsOnFile[f])on.push(f);$("idsNote").textContent=on.length?("On file: "+on.join(", ")+" (leave blank to keep)"):"";}',
-    'function payload(){var p={mode:mode(),empId:$("empId").value,name:$("name").value,email:$("email").value,doj:$("doj").value,category:$("category").value,department:$("department").value,designation:$("designation").value,site:cat()?cat().site:"",effectiveMonth:$("effectiveMonth").value,',
+    'function payload(){var p={mode:mode(),empId:$("empId").value,name:$("name").value,email:$("email").value,doj:$("doj").value,category:$("category").value,department:$("department").value,designation:$("designation").value,gender:$("gender").value,site:cat()?cat().site:"",effectiveMonth:$("effectiveMonth").value,',
     ' ids:{uan:$("uan").value,esiNo:$("esiNo").value,pan:$("pan").value,bankName:$("bankName").value,bankAccount:$("bankAccount").value,ifsc:$("ifsc").value}};',
     ' var c=cat(),sendPay=p.mode==="ADD"||!!$("effectiveMonth").value||(LOADED_CAT!==""&&$("category").value!==LOADED_CAT);',
     ' if(sendPay){if(c&&c.rateSource==="RATE_PROFILE"){p.rate={payBasis:$("payBasis").value,rate:$("rate").value,monthlyGross:$("monthlyGross").value,otMethod:$("otMethod").value};}',

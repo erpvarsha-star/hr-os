@@ -446,7 +446,7 @@ function refreshAttendanceWorkingDays_(period) {
 function prepareMonthlyAttendance(period) {
   guardPeriod_(period);
   var pp = periodPopulationsOpen_(period);
-  var roster = buildRoster(period), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var rows = [], skipped = 0;
   roster.forEach(function (e) {
     if (pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID)) { skipped++; return; }
@@ -473,7 +473,7 @@ function generateMonthlyAttendance(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
-  var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_VFL));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);

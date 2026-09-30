@@ -388,6 +388,29 @@ function getWeeklyOff(site) {
   return v;
 }
 
+/** Pure. "VFL1001, VFL1002;VFL1003" -> {VFL1001: true, ...} (comma / semicolon / whitespace separated, upper-cased). */
+function parseIdSet_(v) {
+  var out = {};
+  String(v == null ? '' : v).split(/[\s,;]+/).forEach(function (x) { x = x.trim().toUpperCase(); if (x) out[x] = true; });
+  return out;
+}
+
+/** PAYROLL_CONTROL key holding a list of EMP_IDs -> {EMP_ID: true} (empty when the key is absent or blank). */
+function controlIdSet_(key) { return getSheet(TABS.PAYROLL_CONTROL) ? parseIdSet_(getControl(key, '')) : {}; }
+
+/** Employees marked present for every working day without any register / form entry (PAYROLL_CONTROL AUTO_FULL_ATTENDANCE_EMP_IDS). */
+function autoFullAttendanceIdSet_() { return controlIdSet_('AUTO_FULL_ATTENDANCE_EMP_IDS'); }
+
+/** Pure. Drops the auto-attendance employees from a roster (they need no register / monthly-form entry). */
+function withoutAutoAttendance_(roster, autoIds) {
+  var out = (roster || []).filter(function (e) { return !(autoIds && autoIds[String(e.EMP_ID).trim().toUpperCase()]); });
+  ['duplicates', 'joinersExcluded', 'dojWarnings'].forEach(function (k) { if (roster && roster[k] !== undefined) out[k] = roster[k]; });
+  return out;
+}
+
+/** Employees whose zero salary is intentional: no ZERO_SALARY_STRUCTURE hold (PAYROLL_CONTROL ZERO_PAY_ALLOWED_EMP_IDS). */
+function zeroPayAllowedIdSet_() { return controlIdSet_('ZERO_PAY_ALLOWED_EMP_IDS'); }
+
 /** Owner approver (approves attendance disputes). PAYROLL_CONTROL OWNER_APPROVER_EMAIL, seeded by setup. */
 function getOwnerApproverEmail() { return String(getControl('OWNER_APPROVER_EMAIL', '')).trim(); }
 

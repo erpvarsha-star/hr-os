@@ -166,6 +166,52 @@ function registerValuesFromDerived(d, enteredBy, enteredAt) {
   return v;
 }
 
+var AUTO_ATTENDANCE_REF = 'AUTO_FULL_ATTENDANCE';
+
+/** True for the in-memory row made by autoFullAttendanceRows (never written to the sheet). */
+function isAutoAttendanceRow_(row) {
+  return !!row && String(row.SOURCE_REF == null ? '' : row.SOURCE_REF).trim() === AUTO_ATTENDANCE_REF;
+}
+
+/**
+ * Pure. One APPROVED attendance row (as if typed in the register) for each roster employee in autoIds that has NO
+ * INPUT_ATTENDANCE row for the period; HR's own row always wins. The values come from deriveMonthlyAttendance with
+ * the days of the month counted INCLUDING weekly offs: registerDays = days in month - paid holidays - approved leave
+ * (EL/CL/SL/C-Off/LWP/OD), so week-off, PH and leave are handled exactly as for a register entry and the worked days
+ * equal the days of the month. A derive that fails (e.g. invalid leave) produces no row -> MISSING_ATTENDANCE hold.
+ * @param {Object} autoIds {EMP_ID: true}
+ * @param {Array} roster engine roster entries {EMP_ID, PAYROLL_CATEGORY, SITE}
+ * @param {Array} existingRows INPUT_ATTENDANCE rows of the period
+ * @param {Object} weeklyOff {VFL: 'SUN', PUNE: 'SUN'}
+ * @param {Object} leaveMap leaveByEmp(...) result
+ */
+function autoFullAttendanceRows(period, roster, existingRows, autoIds, holidays, weeklyOff, leaveMap, enteredAt) {
+  var have = {}, out = [], seen = {};
+  (existingRows || []).forEach(function (r) { have[String(r.EMP_ID == null ? '' : r.EMP_ID).trim().toUpperCase()] = true; });
+  var dim = daysInMonth(period);
+  (roster || []).forEach(function (e) {
+    var id = String(e.EMP_ID).trim(), key = id.toUpperCase();
+    if (!autoIds || !autoIds[key] || have[key] || seen[key]) return;
+    seen[key] = true;
+    var site = e.SITE || siteForPopulation(e.PAYROLL_CATEGORY), wo = (weeklyOff || {})[site] || 'SUN';
+    var lv = (leaveMap || {})[id] || {};
+    var d0 = deriveMonthlyAttendance(0, 'Y', e.PAYROLL_CATEGORY, period, site, holidays, wo, lv);
+    if (!d0.ok) return;
+    var reg = dim - d0.PH - d0.EL_AVAILED - d0.CL_AVAILED - d0.SL_AVAILED - d0.PAID_LEAVE_OTHER - d0.ABSENT_LWP_DAYS - d0.OD_DAYS;
+    if (reg < 0) reg = 0;
+    var d = deriveMonthlyAttendance(reg, 'Y', e.PAYROLL_CATEGORY, period, site, holidays, wo, lv);
+    if (!d.ok || d.exceptions.length) return;
+    var vals = registerValuesFromDerived(d, AUTO_ATTENDANCE_REF, enteredAt || '');
+    vals.SOURCE_REF = AUTO_ATTENDANCE_REF;
+    vals.PAYROLL_MONTH = period; vals.EMP_ID = id; vals.PAYROLL_CATEGORY = e.PAYROLL_CATEGORY;
+    vals.WORKING_DAYS = '';
+    vals.APPROVAL_STATUS = 'APPROVED'; vals.APPROVED_BY = AUTO_ATTENDANCE_REF;
+    vals.REMARKS = AUTO_ATTENDANCE_REF; vals.ROW_KEY = period + '|' + id;
+    out.push(vals);
+  });
+  return out;
+}
+
 /** Pure. Latest period >= minPeriod with a population that is not LOCKED; else todayPeriod (if >= min); else minPeriod. */
 function pickDefaultRegisterPeriod(periodCatRows, minPeriod, todayPeriod) {
   var open = {};
@@ -248,7 +294,7 @@ function register_requireColumns_() {
 
 /** Everything the register needs for a period, read once. */
 function register_ctx_(period) {
-  var roster = buildRoster(period), rosterMap = {};
+  var roster = withoutAutoAttendance_(buildRoster(period), autoFullAttendanceIdSet_()), rosterMap = {};
   roster.forEach(function (e) { rosterMap[e.EMP_ID] = e; });
   var leaveRows = getSheet(TABS.INPUT_LEAVE) ? readObjects(TABS.INPUT_LEAVE) : [];
   var pp = periodPopulationsOpen_(period);

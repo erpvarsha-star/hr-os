@@ -151,8 +151,8 @@ test('WORKER example reproduced exactly with synthetic masters', () => {
   assert.strictEqual(row.VDA, 2575);
   assert.strictEqual(row.PRODUCTION_ALLOWANCE, 0, '80% is below the 81 slab: production pay is the slab amount = 0');
   assert.strictEqual(row.GROSS_EARNINGS, 29107);
-  assert.strictEqual(roundSheets(row.OT_AMOUNT), 16660);
-  assert.strictEqual(row.TOTAL_EARNINGS, 48738);
+  assert.strictEqual(roundSheets(row.OT_AMOUNT), 16652);
+  assert.strictEqual(row.TOTAL_EARNINGS, 48730);
   assert.strictEqual(row.EFFICIENCY_ELIGIBLE_AMOUNT, 0);
   assert.strictEqual(row.EFFICIENCY_DEDUCTION, 0, 'there is no efficiency deduction any more');
   assert.strictEqual(row.PF_EMPLOYEE, 1800);
@@ -160,7 +160,7 @@ test('WORKER example reproduced exactly with synthetic masters', () => {
   assert.strictEqual(row.PT, 200);
   assert.strictEqual(row.MLWF, 0);
   assert.strictEqual(row.TOTAL_DEDUCTIONS, 8280); // PF 1,800 + PT 200 + society 4,780 + advance 1,500
-  assert.strictEqual(row.NET_PAY, 40458);
+  assert.strictEqual(row.NET_PAY, 40450);
   assert.ok(!row.FLAGS.includes('EFFICIENCY_RULE_UNCONFIRMED'), 'owner confirmed the rule: warning dropped');
   assert.ok(!row.FLAGS.includes('WORKER_ESI_BASIS_UNCONFIRMED'));
   assert.strictEqual(r.exceptions.filter((e) => e.severity === 'BLOCKER').length, 0);
@@ -188,7 +188,7 @@ test('WORKER: ESI flag, missing efficiency is a WARN (0 pay), missing pp is a BL
   assert.strictEqual(noEff.exceptions.find((e) => e.code === 'EFFICIENCY_NOT_SUBMITTED').severity, 'WARN');
   assert.strictEqual(noEff.row.PRODUCTION_ALLOWANCE, 0);
   assert.strictEqual(noEff.row.EFFICIENCY_PCT, null);
-  assert.strictEqual(noEff.row.NET_PAY, 40458, 'not a blocker: production allowance simply 0');
+  assert.strictEqual(noEff.row.NET_PAY, 40450, 'not a blocker: production allowance simply 0');
 
   const att = Object.assign({}, workerCtx().attendance); delete att.PHYSICAL_PRESENT_DAYS;
   const noPp = calcWorker(workerCtx({ attendance: att }));
@@ -197,7 +197,7 @@ test('WORKER: ESI flag, missing efficiency is a WARN (0 pay), missing pp is a BL
 
   const ex = calcWorker(workerCtx({ ptExemptSet: new Set(['W1']) }));
   assert.strictEqual(ex.row.PT, 0);
-  assert.strictEqual(ex.row.NET_PAY, 40658);
+  assert.strictEqual(ex.row.NET_PAY, 40650);
 });
 
 test('WORKER: worked days above working days is a BLOCKER', () => {
@@ -260,7 +260,7 @@ test('PUNE: prorated gross, OT on gross/wd/8, negative net BLOCKER', () => {
 
 test('calcEmployee dispatches; unknown population is a BLOCKER', () => {
   assert.strictEqual(calcEmployee(staffCtx()).row.NET_PAY, 28400);
-  assert.strictEqual(calcEmployee(workerCtx()).row.NET_PAY, 40458);
+  assert.strictEqual(calcEmployee(workerCtx()).row.NET_PAY, 40450);
   const u = calcEmployee({ period: '2026-09', population: 'X', emp: emp('Z') });
   assert.ok(codes(u).includes('UNKNOWN_POPULATION'));
   assert.strictEqual(u.row.NET_PAY, null);
@@ -340,8 +340,8 @@ test('worker efficiency pay = slab amount (paid earning, not prorated, no deduct
     assert.strictEqual(r.row.PRODUCTION_ALLOWANCE, expect[p], p + '%');
     assert.strictEqual(r.row.EFFICIENCY_ELIGIBLE_AMOUNT, expect[p], p + '%');
     assert.strictEqual(r.row.EFFICIENCY_DEDUCTION, 0, p + '%');
-    assert.strictEqual(r.row.TOTAL_EARNINGS, 48738 + expect[p], p + '%');
-    assert.strictEqual(r.row.NET_PAY, 40458 + expect[p], p + '%');
+    assert.strictEqual(r.row.TOTAL_EARNINGS, 48730 + expect[p], p + '%');
+    assert.strictEqual(r.row.NET_PAY, 40450 + expect[p], p + '%');
     assert.ok(!codes(r).includes('EFFICIENCY_RULE_UNCONFIRMED'));
   });
   // not prorated by days: fewer physical days change VDA but not the slab amount
@@ -349,7 +349,7 @@ test('worker efficiency pay = slab amount (paid earning, not prorated, no deduct
   assert.strictEqual(fewer.row.PRODUCTION_ALLOWANCE, 8500);
   assert.strictEqual(at(150).exceptions.some((e) => e.code === 'INVALID_EFFICIENCY_PCT'), true, 'out-of-range % still blocks');
   assert.strictEqual(at(85, { efficiencyConfig: [] }).exceptions.some((e) => e.code === 'MISSING_EFFICIENCY_CONFIG'), true);
-  assert.strictEqual(at(null, { efficiencyConfig: [] }).row.NET_PAY, 40458, 'no % and no config: 0 production, only the WARN');
+  assert.strictEqual(at(null, { efficiencyConfig: [] }).row.NET_PAY, 40450, 'no % and no config: 0 production, only the WARN');
 });
 
 test('worker: physical days taken from the efficiency form override carries a WARN', () => {
@@ -423,4 +423,92 @@ test('no NaN for zero working days or garbage input (BLOCKER, NET null)', () => 
   });
   assert.ok(codes(cases[0]).includes('INVALID_WORKING_DAYS'));
   assert.ok(codes(cases[7]).includes('ZERO_SALARY_STRUCTURE'));
+});
+
+// ---------------------------------------------------------------- worker OT on the CURRENT VDA rate
+
+test('WORKER OT: (BASIC + WORKER_VDA_RATE x working days) / WD / 8 x 2 x hours, not the master VDA', () => {
+  const sal = Object.assign({}, workerSalary, { BASIC_PM_INR: 15756, VDA_MASTER_INR: 2790 });
+  const r = calcWorker(workerCtx({ salary: sal, otHours: 76.5, workingDays: 27 }));
+  assert.strictEqual(r.row.OT_AMOUNT, 13130.38);            // (15756 + 103*27)/27/8*2*76.5, exact 13130.375 rounded half-up to 2 decimals like every OT amount (the owner quoted 13,130.35)
+  // a different master VDA changes nothing; a different WORKER_VDA_RATE does
+  const other = calcWorker(workerCtx({ salary: Object.assign({}, sal, { VDA_MASTER_INR: 0 }), otHours: 76.5, workingDays: 27 }));
+  assert.strictEqual(other.row.OT_AMOUNT, 13130.38);
+  const cfg93 = Object.assign({}, cfg, { WORKER_VDA_RATE: 93 });
+  const old = calcWorker(workerCtx({ salary: sal, otHours: 76.5, workingDays: 27, cfg: cfg93 }));
+  assert.strictEqual(old.row.OT_AMOUNT, roundSheets((15756 + 93 * 27) / 27 / 8 * 2 * 76.5, 2));
+  assert.strictEqual(roundSheets(r.row.OT_AMOUNT - old.row.OT_AMOUNT, 2), roundSheets(76.5 * 2.5, 2));   // (103-93) x WD / WD / 8 x 2 = 2.5 per hour
+});
+
+test('STAFF / CONSULTANT / PUNE OT are unchanged by the worker OT rule', () => {
+  assert.strictEqual(calcStaff(staffCtx({ otHours: 10 })).row.OT_AMOUNT, roundSheets(12600 / 31 / 8 * 2 * 10, 2));
+});
+
+// ---------------------------------------------------------------- Maharashtra PT: women up to PT_WOMEN_EXEMPT_UPTO
+
+const cfgW = Object.assign({}, cfg, { PT_WOMEN_EXEMPT_UPTO: 25000 });
+const staffAt = (gross, gender, over) => calcStaff(staffCtx(Object.assign({
+  emp: Object.assign(emp('S1'), gender === undefined ? {} : { GENDER: gender }), cfg: cfgW, adjustments: Object.assign({}, zeroAdj),
+  salary: Object.assign({}, staffSalary, { FIXED_GROSS_PM_AS_SOURCE_INR: gross }),
+}, over)));
+
+test('women PT exemption: F up to 25,000 pays no PT (INFO PT_WOMEN_EXEMPT), above 25,000 the normal slab / February amount', () => {
+  const f15 = staffAt(15000, 'F');
+  assert.strictEqual(f15.row.PT, 0);
+  const info = f15.exceptions.find((e) => e.code === 'PT_WOMEN_EXEMPT');
+  assert.ok(info && info.severity === 'INFO');
+  assert.ok(f15.row.FLAGS.includes('PT_WOMEN_EXEMPT'));
+  assert.strictEqual(staffAt(25000, 'F').row.PT, 0, 'the limit itself is exempt');
+  assert.strictEqual(staffAt(25000.5, 'F').row.PT, 200);
+  const f30 = staffAt(30000, 'F');
+  assert.strictEqual(f30.row.PT, 200);
+  assert.ok(!codes(f30).includes('PT_WOMEN_EXEMPT'));
+  assert.strictEqual(staffAt(30000, 'F', { period: '2026-02' }).row.PT, 300, 'February flat amount above the limit');
+  assert.strictEqual(staffAt(15000, 'F', { period: '2026-02' }).row.PT, 0, 'February too, up to the limit');
+  assert.strictEqual(staffAt(15000, 'female').row.PT, 0, 'Female / any case accepted');
+});
+
+test('women PT exemption: M, blank or unknown gender and an absent key keep the normal PT', () => {
+  assert.strictEqual(staffAt(15000, 'M').row.PT, 200);
+  assert.strictEqual(staffAt(15000, 'Male').row.PT, 200);
+  assert.strictEqual(staffAt(15000, '').row.PT, 200);
+  assert.strictEqual(staffAt(15000, undefined).row.PT, 200);
+  assert.strictEqual(staffAt(15000, 'X').row.PT, 200, 'unrecognised value is never read as F');
+  const absent = calcStaff(staffCtx({ emp: Object.assign(emp('S1'), { GENDER: 'F' }), adjustments: Object.assign({}, zeroAdj),
+    salary: Object.assign({}, staffSalary, { FIXED_GROSS_PM_AS_SOURCE_INR: 15000 }) }));
+  assert.strictEqual(absent.row.PT, 200, 'PT_WOMEN_EXEMPT_UPTO not configured: old behaviour');
+  assert.ok(!codes(absent).includes('PT_WOMEN_EXEMPT'));
+  assert.strictEqual(C('normalizeGender')('  f '), 'F');
+  assert.strictEqual(C('normalizeGender')(null), '');
+});
+
+test('women PT exemption: a PT_EXEMPTIONS employee gets no duplicate INFO; workers use the same basis as the slab lookup (total earnings)', () => {
+  const both = staffAt(15000, 'F', { ptExemptSet: new Set(['S1']) });
+  assert.strictEqual(both.row.PT, 0);
+  assert.ok(!codes(both).includes('PT_WOMEN_EXEMPT'));
+  const att = { PRESENT_DAYS: 15, PHYSICAL_PRESENT_DAYS: 15, WEEK_OFF: 0, PH: 0, EL_AVAILED: 0, CL_AVAILED: 0, SL_AVAILED: 0, PAID_LEAVE_OTHER: 0, ABSENT_LWP_DAYS: 0 };
+  const wf = calcWorker(workerCtx({ emp: Object.assign(emp('W1'), { GENDER: 'F' }), cfg: cfgW, attendance: att, otHours: 0, society: 0, advance: 0 }));
+  assert.ok(wf.row.TOTAL_EARNINGS > 10000 && wf.row.TOTAL_EARNINGS <= 25000);
+  assert.strictEqual(wf.row.PT, 0);
+  assert.ok(codes(wf).includes('PT_WOMEN_EXEMPT'));
+  const wm = calcWorker(workerCtx({ emp: emp('W1'), cfg: cfgW, attendance: att, otHours: 0, society: 0, advance: 0 }));
+  assert.strictEqual(wm.row.PT, 200);
+  const wBig = calcWorker(workerCtx({ emp: Object.assign(emp('W1'), { GENDER: 'F' }), cfg: cfgW }));
+  assert.strictEqual(wBig.row.PT, 200, 'total earnings above the limit');
+});
+
+// ---------------------------------------------------------------- zero pay allowed
+
+test('ZERO_PAY_ALLOWED: a zero fixed gross gives an all-zero row (no PT / PF / ESI / MLWF), otherwise ZERO_SALARY_STRUCTURE', () => {
+  const zero = Object.assign({}, staffSalary, { FIXED_GROSS_PM_AS_SOURCE_INR: 0, BASIC_PM_INR: 0 });
+  const june = (over) => calcStaff(staffCtx(Object.assign({ period: '2026-06', salary: zero, society: 0, adjustments: Object.assign({}, zeroAdj) }, over)));
+  const ok = june({ zeroPayAllowed: true });
+  assert.deepStrictEqual(plain(ok.exceptions.filter((e) => e.severity === 'BLOCKER')), []);
+  ['GROSS_EARNINGS', 'OT_AMOUNT', 'TOTAL_EARNINGS', 'PF_EMPLOYEE', 'ESI_EMPLOYEE', 'PT', 'MLWF', 'TOTAL_DEDUCTIONS', 'NET_PAY', 'EMPLOYER_PF', 'EMPLOYER_ESI']
+    .forEach((c) => assert.strictEqual(ok.row[c], 0, c));
+  assert.ok(!codes(ok).includes('ZERO_SALARY_STRUCTURE'));
+  const no = june({});
+  assert.ok(codes(no).includes('ZERO_SALARY_STRUCTURE'));
+  assert.strictEqual(no.row.NET_PAY, null);
+  assert.ok(codes(june({ zeroPayAllowed: true, salary: Object.assign({}, zero, { FIXED_GROSS_PM_AS_SOURCE_INR: 'x' }) })).includes('ZERO_SALARY_STRUCTURE'), 'invalid (not zero) is still a blocker');
 });

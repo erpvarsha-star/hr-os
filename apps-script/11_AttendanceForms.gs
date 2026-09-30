@@ -77,7 +77,7 @@ function createAttendanceForms() {
     var k = job.key, def = job.def;
     if (String(getControl(def.idKey, '')).trim()) { res.skipped.push(k + ' (form id already in PAYROLL_CONTROL)'); return; }
     var before = sheetNames_(ss);
-    var form = job.monthly ? buildMonthlyAttendanceForm_(def, roster) : buildAttendanceForm_(def, roster);
+    var form = job.monthly ? buildMonthlyAttendanceForm_(def, withoutAutoAttendance_(roster, autoFullAttendanceIdSet_())) : buildAttendanceForm_(def, roster);
     form.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
     SpreadsheetApp.flush();
     var created = ss.getSheets().filter(function (s) { return before.indexOf(s.getName()) < 0; });
@@ -106,7 +106,7 @@ function refreshAttendanceFormRosters() {
     var id = String(getControl(def.idKey, '')).trim();
     if (!id) { res.skipped.push(k + ' (no form id)'); return; }
     var form = FormApp.openById(id);
-    if (job.monthly) { refreshMonthlyForm_(k, def, form, roster, res); return; }
+    if (job.monthly) { refreshMonthlyForm_(k, def, form, withoutAutoAttendance_(roster, autoFullAttendanceIdSet_()), res); return; }
     var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
     var seen = {};
     form.getItems(FormApp.ItemType.GRID).forEach(function (item) {

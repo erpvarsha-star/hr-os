@@ -191,7 +191,7 @@ function rdy_check5_(inputs, ctx) {
       var s = (inputs.salaryByEmp || {})[id];
       if (!s) { missing.push(id); return; }
       var fg = rdy_num_(s.FIXED_GROSS_PM_AS_SOURCE_INR), basic = rdy_num_(s.BASIC_PM_INR);
-      if (!(fg > 0) && !(basic > 0)) zero.push(id);
+      if (!(fg > 0) && !(basic > 0) && !(inputs.zeroPayIds && inputs.zeroPayIds[id.toUpperCase()])) zero.push(id);
     } else {
       var r = (inputs.rateByEmp || {})[id];
       if (!r) { missing.push(id); return; }

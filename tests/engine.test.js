@@ -169,7 +169,7 @@ test('buildEngineContexts maps attendance, feeds, adjustments, salary/rate, effi
   const w1 = out[0];
   assert.equal(w1.period, P);
   assert.equal(w1.population, 'PERMANENT_WORKER');
-  assert.deepEqual(w1.emp, { EMP_ID: 'W1', EMPLOYEE_NAME: 'Wally', DEPARTMENT: 'FRG', DESIGNATION: 'Op' });
+  assert.deepEqual(w1.emp, { EMP_ID: 'W1', EMPLOYEE_NAME: 'Wally', DEPARTMENT: 'FRG', DESIGNATION: 'Op', GENDER: '' });
   assert.equal(w1.workingDays, 26);
   assert.deepEqual(w1.attendance, { PRESENT_DAYS: 20, PHYSICAL_PRESENT_DAYS: 19, WEEK_OFF: 4, PH: 1, EL_AVAILED: 1, CL_AVAILED: 0,
     SL_AVAILED: 0, PAID_LEAVE_OTHER: 0, ABSENT_LWP_DAYS: 2 });

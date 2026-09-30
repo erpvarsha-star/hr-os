@@ -89,6 +89,8 @@ Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / tr
 | `LEAVE_WINDOW_START_2026-09` | Setup writes `2026-08-26`: one-time catch-up because August payroll counted leave only to 25-Aug, so September counts leave from 26-Aug. From October the leave month is the calendar month. Leave it. |
 | `LEAVE_SOURCE_SPREADSHEET_ID` / `LEAVE_SOURCE_TAB` | Setup writes the VFL Leave Application 2026 spreadsheet ID and the tab `Leave_Applications`. **Share that spreadsheet (view access is enough) with the Google account that runs HR OS**, otherwise every leave sync fails and the month shows BLOCKED (`LEAVE_SOURCE_UNREACHABLE`). HR OS only reads it. |
 | `OWNER_APPROVER_EMAIL` | Setup writes `yash.munot@gmail.com` (note: confirm owner email). Only this login can approve attendance disputes. **Check it.** |
+| `AUTO_FULL_ATTENDANCE_EMP_IDS` | Default `VFL1001` (comma separated EMP_IDs). These employees are counted present for every day of the month automatically (week-offs, paid holidays and approved leave handled as in the register): they are not in the register or the monthly forms, and need no attendance row. If HR does type an INPUT_ATTENDANCE row for one of them, that row is used instead. |
+| `ZERO_PAY_ALLOWED_EMP_IDS` | Default `VFL1001`. Zero salary is intentional for these (staff) employees: no `ZERO_SALARY_STRUCTURE` hold; the row is all zeros. No payslip is generated for a zero row. |
 | `REGISTER_ENTRY_EMAILS` | Optional, comma separated: extra people allowed to submit the monthly attendance register (HR approver and owner always may). |
 | `REGISTER_ENTRY_EMAILS_VFL` | Default `hrmanager@varshaforgings.com`: may enter monthly days present for VFL employees only (comma/space/semicolon separated). |
 | `REGISTER_ENTRY_EMAILS_PUNE` | Default `ea.varshaforgings@gmail.com`: may enter monthly days present for Pune employees only. A new site works the same way with `REGISTER_ENTRY_EMAILS_<SITE>`. |
@@ -127,6 +129,8 @@ The menu asks you to type the month as `YYYY-MM` (for example `2026-09`) and, wh
 5. **Month ▸ Sync leave** (see "Leave" below) whenever leave changes: the register rows are recalculated with the new leave. You can submit the register again at any time before approval.
 6. **Month ▸ Approve attendance (population)...** once per group.
 
+Employees listed in `AUTO_FULL_ATTENDANCE_EMP_IDS` do not appear in the register (they are counted present for the whole month automatically).
+
 Employees who left during the month stay on the register if the master has a last working day (column `LAST_WORKING_DAY`) on or after the first of the month.
 
 **October onward = daily forms plus the register:**
@@ -164,6 +168,9 @@ HR fills **Monthly Attendance – VFL Waluj** / **Monthly Attendance – Pune** 
 | ATTENDANCE, HOLIDAYS | Nothing to import. Mark them complete when done. |
 
 #### Overtime (OT)
+
+- **Worker OT rate:** for permanent workers OT per hour = (BASIC + `WORKER_VDA_RATE` × WORKING_DAYS) / WORKING_DAYS / 8 × 2, i.e. it uses the current per-day VDA rate from STATUTORY_CONFIG (103 from September), not the VDA amount typed in the salary master. Staff, consultants and Pune staff are unchanged.
+- **Professional Tax for women:** set the optional `GENDER` column of EMPLOYEE_MASTER (M / F; also the Employees dialog) for every woman. A woman whose PT basis is up to `PT_WOMEN_EXEMPT_UPTO` (STATUTORY_CONFIG, 25,000) pays no PT (INFO `PT_WOMEN_EXEMPT`); above it, or with GENDER blank, the normal PT applies.
 
 - **Where it comes from:** the OT Google Form is linked into this sheet (tab `OT_FORM_RESPONSES`; name set in PAYROLL_CONTROL `OT_SOURCE_TAB`). Only manager decisions "Approved" count. Requests still waiting for a decision are counted and shown as a WARN (pending hours are not paid). The password columns are never read.
 - **Month:** OT is counted by the calendar month of the **OT date**. **September catch-up:** August salary paid OT only up to 25-Aug, so for September (and only September) the window is **26-Aug to 30-Sep** (PAYROLL_CONTROL `OT_WINDOW_START_2026-09 = 2026-08-26`). From October the window is the calendar month again.

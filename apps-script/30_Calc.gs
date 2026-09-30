@@ -216,17 +216,41 @@ function calc_isRateApproved(rateRow) {
 /* PT, efficiency                                                      */
 /* ------------------------------------------------------------------ */
 
-/** PT per DESIGN 5.1: 0 if gross 0 or exempt; Feb flat; else slab on the given gross. */
-function ptAmount(grossForPt, monthName, empId, cfg, ptExemptSet) {
+/** GENDER cell (M / F / Male / Female, any case) -> 'M' | 'F' | '' (blank or unrecognised: never guessed). */
+function normalizeGender(v) {
+  var t = String(v == null ? '' : v).trim().toUpperCase();
+  if (t === 'F' || t === 'FEMALE') return 'F';
+  if (t === 'M' || t === 'MALE') return 'M';
+  return '';
+}
+
+/** True when the Maharashtra women's PT exemption applies: GENDER F, PT_WOMEN_EXEMPT_UPTO configured, basis 0 < amount <= limit. */
+function ptWomenExempt(grossForPt, gender, cfg) {
+  var g = Number(grossForPt), lim = cfg ? Number(cfg.PT_WOMEN_EXEMPT_UPTO) : NaN;
+  if (cfg == null || cfg.PT_WOMEN_EXEMPT_UPTO === undefined || cfg.PT_WOMEN_EXEMPT_UPTO === null || cfg.PT_WOMEN_EXEMPT_UPTO === '') return false;
+  return normalizeGender(gender) === 'F' && isFinite(lim) && isFinite(g) && g > 0 && g <= lim;
+}
+
+/** PT per DESIGN 5.1: 0 if gross 0, exempt (PT_EXEMPTIONS) or a woman up to PT_WOMEN_EXEMPT_UPTO; Feb flat; else slab on the given gross. */
+function ptAmount(grossForPt, monthName, empId, cfg, ptExemptSet, gender) {
   var g = Number(grossForPt);
   if (!isFinite(g) || g <= 0) return 0;
   if (calc_setHas_(ptExemptSet, empId)) return 0;
+  if (ptWomenExempt(g, gender, cfg)) return 0;
   if (calc_monthNum(monthName) === 2) return Number(cfg.PT_FEB_AMOUNT);
   var slabs = (cfg.PT_SLABS || []).slice().sort(function (a, b) { return a.min - b.min; });
   for (var i = 0; i < slabs.length; i++) {
     if (slabs[i].max === null || slabs[i].max === undefined || g <= slabs[i].max) return Number(slabs[i].pt);
   }
   return slabs.length ? Number(slabs[slabs.length - 1].pt) : 0;
+}
+
+/** INFO exception when PT is 0 only because of the women's exemption (not when a PT_EXEMPTIONS row already exempts the employee). */
+function calc_ptInfo_(ex, ctx, basis, empId, cfg) {
+  if (calc_setHas_(ctx.ptExemptSet, empId)) return;
+  if (ptWomenExempt(basis, (ctx.emp || {}).GENDER, cfg)) {
+    calc_ex_(ex, 'INFO', 'PT_WOMEN_EXEMPT', 'PT 0: female employee, PT basis ' + calc_r2_(Number(basis)) + ' <= ' + cfg.PT_WOMEN_EXEMPT_UPTO);
+  }
 }
 
 /** Slab amount for floor(pct): highest configured percent <= floor(pct); none -> 0 (<81), >85 -> the 85 slab. It is the amount PAID (no deduction, no proration). */
@@ -496,13 +520,15 @@ function calcStaff(ctx) {
   var inp = calc_readInputs_(ctx, 'STAFF', row, ex);
   calc_checkCfg_('STAFF', cfg, ex);
   var s = ctx.salary;
-  var fg = 0, basicPm = 0;
+  var fg = 0, basicPm = 0, zeroPay = false;
   if (!s) {
     calc_ex_(ex, 'BLOCKER', 'MISSING_SALARY_STRUCTURE', 'No SALARY_STRUCTURE row');
   } else {
     fg = calc_num(s.FIXED_GROSS_PM_AS_SOURCE_INR);
     basicPm = calc_num(s.BASIC_PM_INR);
-    if (isNaN(fg) || fg <= 0) {
+    if (!isNaN(fg) && fg === 0 && ctx.zeroPayAllowed) {
+      zeroPay = true; // ZERO_PAY_ALLOWED_EMP_IDS: zero salary is intentional, a normal all-zero row
+    } else if (isNaN(fg) || fg <= 0) {
       calc_ex_(ex, 'BLOCKER', 'ZERO_SALARY_STRUCTURE', 'Fixed gross is zero or invalid');
       fg = 0;
     }
@@ -534,8 +560,9 @@ function calcStaff(ctx) {
   var ot = (basicPm / wd / 8) * Number(cfg.STAFF_OT_MULTIPLIER) * inp.ot;
   var pf = calc_pf_(pfWage, cfg, Number(cfg.PF_EMPLOYEE_RATE));
   var esi = fg <= cfg.ESI_EXEMPT_ABOVE ? roundSheets(fg * cfg.ESI_EMPLOYEE_RATE / wd * w) : 0;
-  var pt = ptAmount(gross, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet);
-  var mlwf = calc_mlwf_(ctx.period, cfg);
+  var pt = ptAmount(gross, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet, (ctx.emp || {}).GENDER);
+  calc_ptInfo_(ex, ctx, gross, row.EMP_ID, cfg);
+  var mlwf = zeroPay ? 0 : calc_mlwf_(ctx.period, cfg);
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA;
   var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + inp.TDS + mlwf + otherDed;
   var extras = inp.ARREARS + inp.DISPATCH_INCENTIVE + inp.OTHER_ALLOWANCE + inp.LEAVE_ENCASHMENT +
@@ -622,7 +649,8 @@ function calcWorker(ctx) {
   var eligible = pctMissing ? 0 : efficiencySlab(pctNum, ctx.efficiencyConfig);
   var prod = eligible;
   var ap = basic + hra + conv + wash + edu;
-  var ot = ((m.BASIC + m.VDA) / wd / 8) * Number(cfg.WORKER_OT_MULTIPLIER) * inp.ot;
+  // OT rate uses the CURRENT VDA rate (WORKER_VDA_RATE per day) x working days, not the master's monthly VDA
+  var ot = ((m.BASIC + Number(cfg.WORKER_VDA_RATE) * wd) / wd / 8) * Number(cfg.WORKER_OT_MULTIPLIER) * inp.ot;
   var extras = inp.DISPATCH_INCENTIVE + inp.OTHER_ALLOWANCE + inp.LEAVE_ENCASHMENT + inp.ARREARS +
     inp.PRODUCTION_INCENTIVE + inp.OT_EXTRA_WORK;
   var totalEarn = roundSheets(ap + heat + vda + prod + ot + extras);
@@ -632,7 +660,8 @@ function calcWorker(ctx) {
   var esiApplies = fg <= cfg.ESI_EXEMPT_ABOVE;
   var esi = esiApplies ? roundSheets(fg * cfg.ESI_EMPLOYEE_RATE / wd * w) : 0;
   if (esi > 0) calc_ex_(ex, 'WARN', 'WORKER_ESI_BASIS_UNCONFIRMED', 'Worker ESI basis (fixed gross) is unconfirmed');
-  var pt = ptAmount(totalEarn, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet);
+  var pt = ptAmount(totalEarn, calc_monthNameFromPeriod(ctx.period), row.EMP_ID, cfg, ctx.ptExemptSet, (ctx.emp || {}).GENDER);
+  calc_ptInfo_(ex, ctx, totalEarn, row.EMP_ID, cfg);
   var mlwf = calc_mlwf_(ctx.period, cfg);
   var otherDed = inp.OTHER_DEDUCTION + inp.PENALTY + inp.CANTEEN_EXTRA;
   var ded = pf + esi + pt + inp.canteen + inp.society + inp.advance + mlwf + inp.TDS + otherDed;

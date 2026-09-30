@@ -13,7 +13,7 @@ var HROS_EFFICIENCY_HEADERS = ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR',
 var HROS_EMPLOYEE_MASTER_HEADERS = ['EMP_ID', 'EMPLOYEE_NAME', 'EMAIL_ID', 'DOJ_AS_SOURCE', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE',
   'DEPARTMENT', 'DESIGNATION', 'PLANT_TO_VERIFY', 'MANAGER_EMAIL_TO_VERIFY', 'STATUTORY_PROFILE_TO_VERIFY', 'SOURCE_RECORD_KEY',
   'SOURCE_TAB', 'SOURCE_ROW', 'DUPLICATE_FLAG', 'VALIDATION_STATE', 'SOURCE_SNAPSHOT_DATE', 'HR_SIGNOFF_BY', 'HR_SIGNOFF_AT',
-  'REVIEW_NOTE', 'LAST_WORKING_DAY'];
+  'REVIEW_NOTE', 'LAST_WORKING_DAY', 'GENDER'];
 var HROS_SALARY_STRUCTURE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'SOURCE_PAYROLL_MONTH', 'EFFECTIVE_FROM', 'EFFECTIVE_TO',
   'EMPLOYMENT_STATUS_AT_SOURCE', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
   'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR',
@@ -85,7 +85,8 @@ function hrosTabSpecs_() {
     { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
     { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
       validations: [['SITE', ['VFL', 'PUNE', 'ALL']], ['PAID', yn]] },
-    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
+    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS,
+      validations: [['GENDER', ['M', 'F']]] },
     { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
     { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
     { name: TABS.EMPLOYEE_STATUTORY_IDS, group: 'Masters', headers: HROS_STATUTORY_ID_HEADERS, hidden: true,
@@ -164,11 +165,14 @@ var HROS_CONTROL_DEFAULTS = [
   ['REGISTER_ENTRY_EMAILS_VFL', 'hrmanager@varshaforgings.com', 'People (comma/space/semicolon separated) who may enter monthly days present for VFL employees only'],
   ['REGISTER_ENTRY_EMAILS_PUNE', 'ea.varshaforgings@gmail.com', 'People (comma/space/semicolon separated) who may enter monthly days present for Pune employees only'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
-  ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)']
+  ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)'],
+  ['AUTO_FULL_ATTENDANCE_EMP_IDS', 'VFL1001', 'Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)'],
+  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [
   ['PT_FEB_AMOUNT', '300', 'February PT amount'],
+  ['PT_WOMEN_EXEMPT_UPTO', '25000', 'Maharashtra PT: women (EMPLOYEE_MASTER GENDER = F) whose PT basis is up to this monthly amount pay no PT; above it the normal slabs apply'],
   ['MLWF_MONTHS', '6,12', 'Months MLWF is deducted'],
   ['STAFF_OT_MULTIPLIER', '2', ''],
   ['WORKER_OT_MULTIPLIER', '2', ''],
