@@ -1,7 +1,6 @@
 // Builds the static HR OS handbook site into dist/ (zero dependencies).
-// Pages: runbook (README.md), design spec (DESIGN.md), and every Apps Script
-// file with a copy button so the owner can paste them into Apps Script.
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "fs";
+// Pages: deploy steps (/), script (/code/, single HR_OS.gs + appsscript.json), runbook (/runbook/), design spec (/design/).
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 
 const root = process.cwd();
@@ -73,34 +72,45 @@ pre{background:var(--code);padding:14px;border-radius:8px;overflow:auto;font-siz
 .file .bar{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap}
 .file pre{margin:0;border-radius:0 0 10px 10px;max-height:420px}
 button{font:inherit;font-size:14px;padding:6px 12px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:var(--card);cursor:pointer}
-.muted{color:var(--muted)}`;
+.muted{color:var(--muted)}.warn{border:2px solid #b3261e;border-radius:8px;padding:12px 14px;background:var(--card)}details.file summary{padding:10px 14px;cursor:pointer}`;
 
 const page = (title, active, body) => `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <meta name="robots" content="noindex,nofollow"><style>${css}</style></head><body>
 <header><div class="wrap"><b>VFL HR OS</b><nav>
-<a href="/deploy/" class="${active === "deploy" ? "on" : ""}">Deploy steps</a>
-<a href="/" class="${active === "runbook" ? "on" : ""}">Runbook</a>
-<a href="/code/" class="${active === "code" ? "on" : ""}">Apps Script files</a>
+<a href="/" class="${active === "deploy" ? "on" : ""}">Deploy steps</a>
+<a href="/code/" class="${active === "code" ? "on" : ""}">Script</a>
+<a href="/runbook/" class="${active === "runbook" ? "on" : ""}">Runbook</a>
 <a href="/design/" class="${active === "design" ? "on" : ""}">Design spec</a></nav></div></header>
 <main><div class="wrap">${body}</div></main></body></html>`;
 
-writeFileSync(join(out, "index.html"), page("HR OS Runbook", "runbook", md(readFileSync(join(root, "README.md"), "utf8"))));
-mkdirSync(join(out, "deploy"));
-writeFileSync(join(out, "deploy", "index.html"), page("HR OS Deploy steps", "deploy", md(readFileSync(join(root, "DEPLOY_STEPS.md"), "utf8").replace("](README.md)", "](/)"))));
-mkdirSync(join(out, "design"));
-writeFileSync(join(out, "design", "index.html"), page("HR OS Design", "design", md(readFileSync(join(root, "DESIGN.md"), "utf8"))));
+const read = (f) => readFileSync(join(root, f), "utf8");
+const sub = (dir, title, active, body) => { mkdirSync(join(out, dir), { recursive: true }); writeFileSync(join(out, dir, "index.html"), page(title, active, body)); };
 
-const dir = join(root, "apps-script");
-const files = readdirSync(dir).filter((f) => /\.(gs|json)$/.test(f)).sort((a, b) => (a === "appsscript.json" ? -1 : b === "appsscript.json" ? 1 : a.localeCompare(b)));
-mkdirSync(join(out, "code"));
+writeFileSync(join(out, "index.html"), page("HR OS Deploy steps", "deploy", md(read("DEPLOY_STEPS.md").replace("](README.md)", "](/runbook/)"))));
+sub("runbook", "HR OS Runbook", "runbook", md(read("README.md").replace("](DEPLOY_STEPS.md)", "](/)")));
+sub("design", "HR OS Design", "design", md(read("DESIGN.md")));
+
+// Script page: one box per deployable file. The version is the first line of deploy/HR_OS.gs (written by scripts/combine.sh).
+const hros = read("deploy/HR_OS.gs");
+const ver = (/^var HROS_VERSION = '([^']*)';/.exec(hros) || [])[1];
+if (!ver) throw new Error("deploy/HR_OS.gs has no HROS_VERSION first line - run npm run combine first");
 mkdirSync(join(out, "raw"));
-let body = `<h1>Apps Script files</h1><p class="muted">In the HR OS sheet open <strong>Extensions ▸ Apps Script</strong>. For each file below, create a script file with the same name (without <code>.gs</code>), press <strong>Copy</strong>, and paste. For <code>appsscript.json</code>, enable <em>Show "appsscript.json"</em> in Project Settings first. ${files.length} files.</p>`;
-files.forEach((f, n) => {
-  const src = readFileSync(join(dir, f), "utf8");
-  writeFileSync(join(out, "raw", f + ".txt"), src);
-  body += `<section class="file"><div class="bar"><strong>${n + 1}. ${esc(f)}</strong><span><a href="/raw/${f}.txt">raw</a> &nbsp;<button data-f="c${n}">Copy</button></span></div><pre id="c${n}"><code>${esc(src)}</code></pre></section>`;
-});
+const box = (id, name, src, note, collapsed) => {
+  writeFileSync(join(out, "raw", name + ".txt"), src);
+  const head = `<div class="bar"><strong>${esc(name)}</strong><span><a href="/raw/${name}.txt">raw .txt</a> &nbsp;<button data-f="${id}">Copy</button></span></div>`;
+  const pre = `<pre id="${id}"><code>${esc(src)}</code></pre>`;
+  return collapsed
+    ? `<details class="file"><summary><strong>${esc(note)}</strong></summary>${head}${pre}</details>`
+    : `<section class="file"><div class="bar"><strong>${esc(note)}</strong></div>${head}${pre}</section>`;
+};
+let body = `<h1>Script</h1>
+<p class="warn"><strong>Delete every other file in the Apps Script project. It must contain only <code>HR_OS.gs</code> and <code>appsscript.json</code>. After pasting, run HR OS &#9656; About HR OS and check that the version shown equals the version on this page.</strong></p>
+<p>Version on this page: <code id="ver">${esc(ver)}</code></p>
+<p class="muted">Open the HR OS sheet, then <strong>Extensions &#9656; Apps Script</strong>. Press Copy, click into the file, select all, paste, save. For <code>appsscript.json</code> tick <em>Show "appsscript.json"</em> in Project Settings first. Then reload the sheet and run <strong>HR OS &#9656; Setup &#9656; Run setup</strong>.</p>`;
+body += box("c0", "HR_OS.gs", hros, "1. HR_OS.gs (the whole program)", false);
+body += box("c1", "appsscript.json", read("deploy/appsscript.json"), "2. appsscript.json (project settings)", false);
+body += box("c2", "CLEANUP_OLD_SHEET.gs", read("deploy/CLEANUP_OLD_SHEET.gs"), "One-time old-sheet cleanup (already done - only for a fresh rebuild)", true);
 body += `<script>document.querySelectorAll("button[data-f]").forEach(b=>b.onclick=async()=>{const t=document.getElementById(b.dataset.f).innerText;try{await navigator.clipboard.writeText(t);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1500)}catch(e){b.textContent="Select & copy manually"}})</script>`;
-writeFileSync(join(out, "code", "index.html"), page("HR OS Apps Script files", "code", body));
-console.log(`Built dist/ with ${files.length} script files.`);
+sub("code", "HR OS Script", "code", body);
+console.log(`Built dist/ (script version ${ver}).`);

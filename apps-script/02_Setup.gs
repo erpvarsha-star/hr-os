@@ -298,7 +298,8 @@ function hrosMigrateSiteToVfl() {
 
 function hrosSetup() {
   var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], categoriesSeeded: [], validations: [],
-    hidden: [], protectedTabs: [], notes: [], siteMigration: [] };
+    hidden: [], protectedTabs: [], notes: [], siteMigration: [],
+    version: typeof HROS_VERSION === 'undefined' ? 'dev' : HROS_VERSION };
   var ss = getSpreadsheet_();
   log.siteMigration = hrosMigrateSiteToVfl();
   var specs = hrosTabSpecs_();

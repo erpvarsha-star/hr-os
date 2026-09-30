@@ -283,3 +283,35 @@ test('dialog: the modal opens for HR only and carries no employee data; lookup r
   assert.deepEqual([row.PAN, row.UAN, row.IFSC], ['ZZZZZ9999Z', SEC.uan, SEC.ifsc]);
   assert.equal(env.rowsOf('EMPLOYEE_STATUTORY_IDS').length, 1);
 });
+
+test('bulk exit parser: formats, blanks, errors, duplicates', () => {
+  const env = world();
+  const r = plain(env.c.empParseBulkExits('S1, 31-07-2026\n\nS2\t15/08/2026\nS3 05-Sep-2026\nS4,2026-09-30\nS1, 01-01-2026\nS5, 31-02-2026\nS6\nS7, xx'));
+  assert.deepEqual(r.rows, [
+    { empId: 'S1', lastWorkingDay: '2026-07-31' }, { empId: 'S2', lastWorkingDay: '2026-08-15' },
+    { empId: 'S3', lastWorkingDay: '2026-09-05' }, { empId: 'S4', lastWorkingDay: '2026-09-30' }]);
+  assert.deepEqual(r.errors.map((e) => e.line), [6, 7, 8, 9]);
+  assert.match(r.errors[0].reason, /duplicate/);
+  assert.match(r.errors[1].reason, /real date/);
+});
+
+test('bulk exit: preview writes nothing; apply marks Non-Active; re-run skips; unknown id does not stop the rest', () => {
+  const env = world();
+  const text = 'S2, 15-09-2026\nNOPE, 15-09-2026\nS1, 20-Sep-2026';
+  const pv = plain(env.c.empBulkExit(text, false));
+  assert.equal(pv.applied, false);
+  assert.deepEqual(pv.done.map((d) => d.empId), ['S2', 'S1']);
+  assert.match(pv.errors[0].reason, /not in EMPLOYEE_MASTER/);
+  assert.equal(master(env, 'S2')[0].STATUS_AS_SOURCE, 'Active');
+  const ap = plain(env.c.empBulkExit(text, true));
+  assert.deepEqual(ap.done.map((d) => d.empId), ['S2', 'S1']);
+  assert.equal(ap.errors.length, 1);
+  const m = master(env, 'S2')[0];
+  assert.deepEqual([m.STATUS_AS_SOURCE, m.LAST_WORKING_DAY], ['Non-Active', '2026-09-15']);
+  assert.equal(master(env, 'S1')[0].LAST_WORKING_DAY, '2026-09-20');
+  const again = plain(env.c.empBulkExit(text, true));
+  assert.equal(again.done.length, 0);
+  assert.deepEqual(again.skipped.map((s) => s.reason), ['skipped (already Non-Active)', 'skipped (already Non-Active)']);
+  env.user = 'stranger@x.com';
+  assert.throws(() => env.c.empBulkExit(text, false), /Not allowed/);
+});

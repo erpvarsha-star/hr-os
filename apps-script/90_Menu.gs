@@ -9,9 +9,11 @@ function onOpen() {
       .addItem('Create attendance forms', 'menuCreateForms')
       .addItem('Refresh form rosters', 'menuRefreshRosters')
       .addItem('Install triggers', 'menuInstallTriggers'))
+    .addItem('About HR OS', 'menuAbout')
     .addSubMenu(ui.createMenu('Employees')
       .addItem('Add or update employee', 'menuEmployeeDialog')
-      .addItem('Mark employee exit', 'menuEmployeeExit'))
+      .addItem('Mark employee exit', 'menuEmployeeExit')
+      .addItem('Bulk mark exits', 'menuEmployeeBulkExit'))
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
       .addItem('Open monthly attendance register', 'menuOpenRegister')
@@ -193,6 +195,26 @@ function menuApproveCategory() {
   });
 }
 function menuEmployeeDialog() { run_('Add or update employee', function () { return empOpenDialog('ADD'); }); }
+function hrosVersion_() { return typeof HROS_VERSION === 'undefined' ? 'dev' : HROS_VERSION; }
+function menuAbout() {
+  alert_('About HR OS', 'Version: ' + hrosVersion_() + '\n\nThe Apps Script project must contain only HR_OS.gs and appsscript.json');
+}
+function bulkExitLines_(list, label) {
+  return list.map(function (x) { return '  ' + label + (x.line ? 'line ' + x.line + ': ' : '') + (x.empId ? x.empId + ' ' : '') + (x.lastWorkingDay || '') +
+    ((x.reason || x.note) ? ' - ' + (x.reason || x.note) : ''); });
+}
+function menuEmployeeBulkExit() {
+  run_('Bulk mark exits', function () {
+    var text = ask_('Bulk mark exits', 'Paste one employee per line: EMP_ID, DD-MM-YYYY (e.g. E101, 31-07-2026)');
+    if (!text) return null;
+    var pv = empBulkExit(text, false);
+    var lines = ['Will mark Non-Active: ' + pv.done.length + ' | skipped: ' + pv.skipped.length + ' | errors: ' + pv.errors.length, '']
+      .concat(bulkExitLines_(pv.done, 'OK ')).concat(bulkExitLines_(pv.skipped, 'SKIP ')).concat(bulkExitLines_(pv.errors, 'ERROR '));
+    if (!pv.done.length) return lines.join('\n') + '\n\nNothing to apply.';
+    if (!confirm_('Bulk mark exits - apply?', lines.join('\n') + '\n\nApply the ' + pv.done.length + ' exit(s) now? Lines with errors are not applied.')) return 'Cancelled - nothing was changed.';
+    return empBulkExit(text, true);
+  });
+}
 function menuEmployeeExit() { run_('Mark employee exit', function () { return empOpenDialog('EXIT'); }); }
 function menuSuppRun() { popAction_('Run top-up', 'supplementaryRun', 9); }
 function menuSuppHrApprove() { popAction_('Top-up: HR approve', 'supplementaryHrApprove', 9); }

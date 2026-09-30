@@ -389,6 +389,78 @@ function empMarkExit(empId, lastWorkingDay) {
   return res;
 }
 
+var EMP_MONTHS_ = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * Pure. Parses pasted bulk-exit lines: 'EMP_ID, DD-MM-YYYY' (also '/' separators, DD-Mon-YYYY, tab / comma / spaces between
+ * the fields). Blank lines are ignored. Returns {rows:[{empId, lastWorkingDay (ISO)}], errors:[{line, text, reason}]}.
+ */
+function empParseBulkExits(text) {
+  var rows = [], errors = [], seen = {};
+  String(text == null ? '' : text).replace(/\r/g, '').split('\n').forEach(function (raw, i) {
+    var t = raw.trim();
+    if (!t) return;
+    var err = function (reason) { errors.push({ line: i + 1, text: t, reason: reason }); };
+    var parts = t.split(/[\t,;]+|\s+/).filter(function (x) { return x !== ''; });
+    if (parts.length !== 2) return err('expected EMP_ID and a date, e.g. E101, 31-07-2026');
+    var id = parts[0], d = parts[1], iso = '';
+    var m = /^(\d{1,2})[-\/.]([A-Za-z]{3})[A-Za-z]*[-\/.](\d{4})$/.exec(d);
+    if (m) {
+      var mi = EMP_MONTHS_.indexOf(m[2].toLowerCase());
+      if (mi >= 0) iso = emp_isoDate_(m[1] + '/' + (mi + 1) + '/' + m[3]);
+    } else {
+      m = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/.exec(d);
+      if (m) iso = emp_isoDate_(m[1] + '/' + m[2] + '/' + m[3]);
+      else iso = emp_isoDate_(d);
+    }
+    if (!iso) return err('"' + d + '" is not a real date (use DD-MM-YYYY)');
+    var key = id.toLowerCase();
+    if (seen[key]) return err('duplicate EMP_ID ' + id + ' (first on line ' + seen[key] + ')');
+    seen[key] = i + 1;
+    rows.push({ empId: id, lastWorkingDay: iso });
+  });
+  return { rows: rows, errors: errors };
+}
+
+/**
+ * Bulk exit. apply=false: preview only (nothing written). apply=true: empMarkExit for every valid row under the script lock.
+ * Returns {applied, done:[], skipped:[], errors:[]}; each entry {empId, lastWorkingDay, line?, note|reason}.
+ * An employee who is already Non-Active is skipped, not an error.
+ */
+function empBulkExit(text, apply) {
+  emp_requireUser_();
+  var parsed = empParseBulkExits(text);
+  var out = { applied: !!apply, done: [], skipped: [], errors: parsed.errors.slice() };
+  var valid = [];
+  parsed.rows.forEach(function (r) {
+    var rows = emp_masterRows_(r.empId);
+    var anyActive = rows.some(function (x) { return emp_str_(x.STATUS_AS_SOURCE).toLowerCase() === 'active'; });
+    if (rows.length && !anyActive) {
+      out.skipped.push({ empId: r.empId, lastWorkingDay: r.lastWorkingDay, reason: 'skipped (already Non-Active)' });
+      return;
+    }
+    var v = empValidateExit(r.empId, r.lastWorkingDay, { master: rows });
+    if (v.errors.length) out.errors.push({ empId: r.empId, text: r.empId + ', ' + r.lastWorkingDay, reason: v.errors.join('; ') });
+    else valid.push(r);
+  });
+  if (!apply) {
+    out.done = valid.map(function (r) { return { empId: r.empId, lastWorkingDay: r.lastWorkingDay, note: 'will be marked Non-Active' }; });
+    return out;
+  }
+  emp_locked_(function () {
+    valid.forEach(function (r) {
+      try {
+        var res = empMarkExit(r.empId, r.lastWorkingDay);
+        out.done.push({ empId: r.empId, lastWorkingDay: res.lastWorkingDay, note: 'marked Non-Active' });
+      } catch (e) {
+        out.errors.push({ empId: r.empId, text: r.empId + ', ' + r.lastWorkingDay, reason: e && e.message ? e.message : String(e) });
+      }
+    });
+    return null;
+  });
+  return out;
+}
+
 /** Page data: active categories, departments already in use, the runner. No employee data. */
 function empLoad() {
   var user = emp_requireUser_();

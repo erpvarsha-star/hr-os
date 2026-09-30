@@ -10,7 +10,7 @@ The live sheet is rebuilt clean: only the Google-Form response tabs are kept, ev
 2. Generate the import workbook (it contains statutory IDs: never commit or share it; `*.xlsx` is git-ignored):
    `python3 scripts/make-import-workbook.py <old VFL_HR_OS workbook.xlsx> HR_OS_IMPORT.xlsx` (prints counts only).
 3. **File ▸ Import ▸ Upload** the workbook ▸ **Insert new sheet(s)**. Tabs: PAYROLL_CONTROL, PAYROLL_CATEGORY_CONFIG, PAYROLL_PERIOD_CATEGORY, STATUTORY_CONFIG, EFFICIENCY_CONFIG, PT_EXEMPTIONS, HOLIDAY_CALENDAR, EMPLOYEE_MASTER, SALARY_STRUCTURE, PAYROLL_RATE_PROFILE, EMPLOYEE_STATUTORY_IDS and the empty INPUT_* tabs.
-4. **Extensions ▸ Apps Script**: delete every old script file and every old trigger (Triggers ▸ delete). Paste [`deploy/HR_OS.gs`](deploy/HR_OS.gs) as the only file and replace `appsscript.json` (Project Settings ▸ show manifest) with [`deploy/appsscript.json`](deploy/appsscript.json).
+4. **Extensions ▸ Apps Script**: delete every old script file and every old trigger (Triggers ▸ delete). Paste [`deploy/HR_OS.gs`](deploy/HR_OS.gs) (copy box on the site's Script page) as the only file and replace `appsscript.json` (Project Settings ▸ show manifest) with [`deploy/appsscript.json`](deploy/appsscript.json).
 5. Reload the sheet ▸ **HR OS ▸ Setup ▸ Run setup** (authorize). It creates every missing tab with exact headers and validations, hides + protects `EMPLOYEE_STATUTORY_IDS` and `PAYROLL_LOCKED`, and puts the tabs in order (Control, Config, Masters, Monthly inputs, Attendance, Payroll, Payslips, Audit). Then **Install triggers**.
 6. **PAYROLL_CONTROL**: set `PAYSLIP_FOLDER_ID`; make sure the OT form is linked into this sheet as tab `OT_FORM_RESPONSES`; give the account that runs HR OS **view access** to the leave spreadsheet.
 7. **One-time sign-offs** (each by the named login): HR approves the salary structure **per category** (Payroll ▸ Approve salary structure, period 2026-09, once for each category), Accounts approves the statutory config, the **owner approves the category config** (Payroll ▸ Approve category config).
@@ -44,7 +44,7 @@ Rules it never breaks:
 
 ## 2. Files in the `apps-script/` folder
 
-Every file below must be created in the Apps Script project with the **same name** (Apps Script adds `.gs` itself).
+These are the source files. **You do not paste them one by one**: `npm run combine` joins them into `deploy/HR_OS.gs`, and that single file (plus `appsscript.json`) is the only thing the Apps Script project may contain.
 
 | File | What it does |
 |---|---|
@@ -71,7 +71,7 @@ Every file below must be created in the Apps Script project with the **same name
 
 ## 3. How to deploy (one time)
 
-Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / triggers, import the workbook, paste the two files, run setup). Maintainers may use `clasp` instead of pasting: `npm i -g @google/clasp`, `clasp login`, `clasp clone <SCRIPT_ID>`, copy `apps-script/` in, `clasp push`; the same authorization step applies.
+Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / triggers, import the workbook, paste the two files, run setup). To update later: replace the contents of `HR_OS.gs`, save, reload the sheet, run **HR OS ▸ Setup ▸ Run setup**, then check **HR OS ▸ About HR OS** shows the version printed on the site's Script page. Maintainers may use `clasp` instead of pasting: `npm i -g @google/clasp`, `clasp login`, `clasp clone <SCRIPT_ID>`, copy `apps-script/` in, `clasp push`; the same authorization step applies.
 
 ## 4. Before the very first run (pre-flight)
 
@@ -97,7 +97,7 @@ Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / tr
 ## 5. First run
 
 1. **HR OS ▸ Setup ▸ Run setup (idempotent)**. It creates the missing tabs and columns and fills default settings. Safe to run again: the second run changes nothing.
-2. **HR OS ▸ Setup ▸ Create attendance forms** - needed from **October** (daily forms). Not needed for September. It creates *Daily Attendance - VFL Waluj* and *Daily Attendance - Pune* and stores their IDs in PAYROLL_CONTROL.
+2. **HR OS ▸ Setup ▸ Create attendance forms** - needed from **October** (daily forms). Not needed for September. It creates *Daily Attendance – VFL Waluj* (Staff, Permanent Workers and Consultants, grouped by department; the Waluj plant) and *Daily Attendance – Pune* (Pune staff) and stores their IDs in PAYROLL_CONTROL. The two sites are VFL and PUNE. After adding or exiting people run **HR OS ▸ Setup ▸ Refresh form rosters**.
 3. **HR OS ▸ Setup ▸ Install triggers** - installs **one** trigger for the whole sheet. From then on every answer that lands in `ATT_FORM_VFL_RAW`, `ATT_FORM_PUNE_RAW`, the OT tab (`OT_FORM_RESPONSES`), `CANTEEN_FORM_RESPONSES` or `EFFICIENCY_FORM_RESPONSES` is processed automatically (any other tab is ignored). No form IDs are needed. It can be run again safely (it never adds a second one and never touches other triggers; a project can hold at most 5).
 4. Do the PAYROLL_CONTROL entries from section 4.
 5. **Approve the master data once** (needed before any payroll can be approved): **Approve salary structure (HR)...** for every category (it lists the pending rows), **Approve statutory config (Accounts)...** and, by the owner, **Approve category config...**. Until this is done, readiness shows BLOCKED (`PAY_STRUCTURE_APPROVED` when no row of the population is approved yet, `STATUTORY_CONFIG`, `CATEGORY_CONFIG`). Later additions (new joiners, salary revisions) only put that employee on HOLD `SALARY_NOT_APPROVED` until HR approves the new row.
@@ -200,7 +200,7 @@ CONSULTANT and PUNE_STAFF get **no payslips** (the program refuses); use PAYROLL
 
 - **Categories:** `PAYROLL_CATEGORY_CONFIG` (CATEGORY_CODE, DISPLAY_NAME, CALC_METHOD STAFF / PERMANENT_WORKER / CONSULTANT / PUNE_STAFF, SITE, PAYSLIP Y/N, PAYSLIP_TEMPLATE_KEY STAFF / WORKER, RATE_SOURCE SALARY_STRUCTURE / RATE_PROFILE, ACTIVE, APPROVED_BY / APPROVED_AT). A new category = a new row (then Setup, Prepare month, owner approval). An EMPLOYEE_MASTER category that is not in the tab puts that employee on HOLD `UNKNOWN_CATEGORY`.
 - **HR OS ▸ Employees ▸ Add or update employee** (HR or owner login only): a dialog, not a form, so statutory IDs (UAN, ESI no, PAN, bank) never reach a response tab; they are written only to the hidden `EMPLOYEE_STATUTORY_IDS` tab. Add writes EMPLOYEE_MASTER (Active, PENDING_HR_APPROVAL) and a PENDING salary / rate row effective the first of the joining month; a salary revision is a new row with the chosen effective month (older rows stay). HR then runs **Approve salary structure**; until then only that employee is on HOLD.
-- **Mark employee exit** sets LAST_WORKING_DAY and Non-Active; the employee stays on the roster for periods up to that month and HR enters the days worked in the register (no automatic proration).
+- **Bulk mark exits** (Employees menu): paste one `EMP_ID, DD-MM-YYYY` per line (also `/` separators or `31-Jul-2026`), check the preview, press Yes. Already Non-Active people are skipped; bad lines are listed and not applied. **Mark employee exit** sets LAST_WORKING_DAY and Non-Active; the employee stays on the roster for periods up to that month and HR enters the days worked in the register (no automatic proration).
 - **Top-up run** (Payroll menu): after a population is LOCKED, fix the held employees (register, attendance approval, feeds, salary approval), then **Run top-up for released employees**, **Top-up: HR approve**, **Top-up: Accounts approve**, **Top-up: lock**. Only EMP_IDs held in the locked run and now free of HOLD are included; the set has its own hash and gets a new LOCK_ID (`...-SUPP`). Generate payslips / queue / send emails with that LOCK_ID (the menu asks for it; blank = the main lock).
 
 ## 7. Corrections after lock
@@ -254,6 +254,14 @@ Feed status: OPEN (still being entered) or COMPLETE. Email status: QUEUED, SENT,
 
 If something looks wrong and you are unsure, stop and check **AUDIT_LOG**: every action, who did it and when, is recorded there.
 
+### Script problems
+
+| Symptom | Fix |
+|---|---|
+| Setup output mentions NASHIK or has no `version` | Stale script: other `.gs` files are still in the Apps Script project. Delete them, keep only `HR_OS.gs` and `appsscript.json`, paste again, run Setup, check About HR OS. |
+| `Unknown population "X"` | Run **HR OS ▸ Setup ▸ Run setup**; it migrates old site values. |
+| Bulk mark exits reports errors | Fix the listed lines (format `E101, 31-07-2026`) and run again; already-exited people are skipped. |
+
 ## 9. Known limitations and open items (please read)
 
 - **Worker ESI basis is unconfirmed.** For permanent workers the ESI is worked out on the fixed monthly gross. Each worker with ESI above zero carries the flag `WORKER_ESI_BASIS_UNCONFIRMED` in the draft. Accounts should confirm the basis before September is paid.
@@ -286,6 +294,6 @@ If something looks wrong and you are unsure, stop and check **AUDIT_LOG**: every
 
 ## Handbook site
 
-`npm run build` generates a static handbook in `dist/` (this runbook, the design spec, and every Apps Script file with a Copy button). It is deployed to the Netlify project `vfl-hr-os`, which is restricted to Netlify team login and marked `noindex`.
+`npm run build` generates a static handbook in `dist/` (pages: Deploy steps, Script with one copy box for `HR_OS.gs` and one for `appsscript.json` and the version, Runbook, Design spec). It is deployed to the Netlify project `vfl-hr-os`, which is restricted to Netlify team login and marked `noindex`.
 
 Deployment is automatic: every push to `main` runs the tests, builds `dist/` and deploys it with GitHub Actions (`.github/workflows/deploy.yml`). This needs one repository secret, `NETLIFY_AUTH_TOKEN` (Netlify ▸ User settings ▸ Applications ▸ Personal access tokens). Do not link this repo in Netlify's Git settings; Actions deploys directly and avoids the contributor-verification block.
