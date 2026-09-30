@@ -162,6 +162,40 @@ function toIsoDate(v) {
   return m ? m[1] + '-' + m[2] + '-' + m[3] : '';
 }
 
+var DOJ_MONTHS_ = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * 'd-Mon-yy' / 'd-Mon-yyyy' / 'd Mon yyyy' text (e.g. 5-Jun-05, 05-Jun-2005) -> ISO date, or '' when not that shape / not a
+ * real date. Unambiguous (the month is a name). 2-digit years: > the current 2-digit year -> 19yy, else 20yy.
+ */
+function parseDojMonthText_(v) {
+  var m = /^(\d{1,2})[\s\-\/.]+([A-Za-z]{3,9})\.?[\s\-\/.,]+(\d{2}|\d{4})$/.exec(String(v == null ? '' : v).trim());
+  if (!m) return '';
+  var mo = DOJ_MONTHS_.indexOf(m[2].slice(0, 3).toLowerCase()) + 1;
+  if (mo < 1) return '';
+  var d = +m[1], y = +m[3];
+  if (m[3].length === 2) y = y > (new Date().getFullYear() % 100) ? 1900 + y : 2000 + y;
+  if (d < 1 || d > 31) return '';
+  var dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCMonth() === mo - 1 ? y + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+}
+
+/** DOJ cell -> ISO, DAY-FIRST for numeric text (dd/mm/yyyy); Date, ISO and d-Mon-yy(yy) exact. Unparseable -> ''. */
+function parseDojDayFirst_(v) {
+  if (v == null || v === '') return '';
+  var iso = toIsoDate(v);
+  if (iso) return iso;
+  var s = String(v).trim();
+  var mon = parseDojMonthText_(s);
+  if (mon) return mon;
+  var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(s);
+  if (!m) return '';
+  var d = +m[1], mo = +m[2], y = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  var dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCMonth() === mo - 1 ? y + '-' + pad2_(mo) + '-' + pad2_(d) : '';
+}
+
 /** Throws if period is malformed or earlier than the minimum. Pure when minPeriod is passed/defaulted. */
 function assertPeriodAllowed(period, minPeriod) {
   parsePeriod(period);
@@ -748,6 +782,7 @@ var HROS_CONTROL_DEFAULTS = [
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],
   ['OT_SOURCE_TAB', 'OT_FORM_RESPONSES', 'OT form-response tab (local; falls back to Overtime_Form if absent). With an external ID: the tab there (default Form Responses 1)'],
   ['OT_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug salary paid OT to 25-Aug'],
+  ['LEAVE_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug payroll counted leave to 25-Aug; default leave window = calendar month'],
   ['OWNER_APPROVER_EMAIL', 'yash.munot@gmail.com', 'confirm owner email (owner approval of attendance disputes)'],
   ['REGISTER_ENTRY_EMAILS', '', 'Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
@@ -975,12 +1010,14 @@ function attEntryTime_(v) {
   return isNaN(t) ? 0 : t;
 }
 
-/** Parse DOJ. Date/ISO exact. dd/mm/yyyy: if ambiguous (both parts <= 12) take the EARLIER reading
+/** Parse DOJ. Date/ISO and d-Mon-yy / d-Mon-yyyy exact. dd/mm/yyyy: if ambiguous (both parts <= 12) take the EARLIER reading
  * (excludes fewer days -> more missing-date flags -> fail closed). Unparseable -> ''. */
 function parseDoj(v) {
   if (v == null || v === '') return '';
   var iso = toIsoDate(v);
   if (iso) return iso;
+  var mon = parseDojMonthText_(v);
+  if (mon) return mon;
   var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
   if (!m) return '';
   var a = +m[1], b = +m[2], y = +m[3];
@@ -1003,6 +1040,8 @@ function dojRosterDecision(v, endIso) {
   if (v == null || v === '') return { include: true, warn: '' };
   var iso = toIsoDate(v);
   if (iso) return { include: iso <= endIso, warn: '' };
+  var mon = parseDojMonthText_(v);
+  if (mon) return { include: mon <= endIso, warn: '' };
   var m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(v).trim());
   if (!m) return { include: true, warn: 'UNPARSEABLE' };
   var a = +m[1], b = +m[2], y = +m[3];
@@ -3742,8 +3781,9 @@ function syncEfficiencyFromForm(period) {
  *
  * Source layout (Leave_Applications): an event log. Employees add "Apply ..." rows; the approver later adds separate
  * "Approval (for admin use only)" rows (a new row, not an update) that repeat the employee / dates / type and carry the
- * decision. Most approvals have no Apply row in the log, so an approval is self-contained; an Apply row only links.
- * Pure: mapLeaveRows, leave_normalizeType, leave_planResync, leaveByEmp, leaveExceptions, leave_balancesFromRows.
+ * decision. Most approvals have no Apply row in the log, so an approval is self-contained; an Apply row only links, by
+ * EMP_ID + start + end + type (never by Case No, which is shared by different leaves).
+ * Pure: mapLeaveRows, leave_window, leave_normalizeType, leave_planResync, leaveByEmp, leaveExceptions, leave_balanceColumns_.
  * Sheet-touching: syncLeaveFromSource, leaveAutoSync_, leave_readBalances_.
  */
 var LEAVE_NORMALIZER_VERSION = 'LEAVE-1.0';
@@ -3791,8 +3831,14 @@ function leave_normalizeType(raw) {
   return hits.length === 1 ? hits[0] : null;
 }
 
-/** Half-day flag cell -> 'FULL' | 'HALF' | 'UNKNOWN'. Blank = full day. */
-function leave_halfFlag_(v) {
+/**
+ * Half-day flag cell -> 'FULL' | 'HALF' | 'UNKNOWN'. Blank = full day. SIDE-AWARE (side = 'START' | 'END'): the leave form's
+ * flags are "First Half" / "Second Half" on both sides, meaning "leave begins at the start of the day (full first day)" /
+ * "begins after lunch (half first day)" for the start date, and "runs to the end of the day (full last day)" / "ends at
+ * lunch (half last day)" for the end date. So START "Second Half" = half, START "First Half" = full,
+ * END "First Half" = half, END "Second Half" = full. Generic words (Half, Half Day, Yes, 0.5) mean half on either side.
+ */
+function leave_halfFlag_(v, side) {
   if (v == null || v === '') return 'FULL';
   if (v === true) return 'HALF';
   if (v === false) return 'FULL';
@@ -3800,8 +3846,30 @@ function leave_halfFlag_(v) {
   var s = String(v).toLowerCase().replace(/\s+/g, ' ').trim();
   if (!s) return 'FULL';
   if (/\bno\b|\bnot\b|^n$|^false$|^0$|^none$|^-$|full/.test(s)) return 'FULL';
+  if (/^(second|2nd)\b/.test(s)) return side === 'END' ? 'FULL' : 'HALF';
+  if (/^(first|1st)\b/.test(s)) return side === 'END' ? 'HALF' : 'FULL';
   if (/half|^yes$|^y$|^true$|^1$|^0\.5$/.test(s)) return 'HALF';
   return 'UNKNOWN';
+}
+
+/**
+ * Leave window of a period (pure). Default = the CALENDAR month of the period (the leave sheet's own 26th-25th "Month" column
+ * is never used). PAYROLL_CONTROL key LEAVE_WINDOW_START_<YYYY-MM> (ISO date) moves the start for that period only, e.g. the
+ * one-time catch-up LEAVE_WINDOW_START_2026-09 = 2026-08-26 (August payroll counted leave only up to 25-Aug).
+ * @returns {{start:string, end:string, overridden:boolean}}
+ */
+function leave_window(period, controlMap) {
+  parsePeriod(period);
+  var start = periodStart(period), end = periodEnd(period), overridden = false;
+  var key = 'LEAVE_WINDOW_START_' + period;
+  var raw = controlMap ? controlMap[key] : '';
+  if (raw !== '' && raw != null) {
+    var iso = feeds_parseDate_(raw);
+    if (!iso) throw new Error(key + ' must be a date (YYYY-MM-DD), got "' + raw + '"');
+    if (iso > end) throw new Error(key + ' (' + iso + ') is after the end of the period ' + end);
+    if (iso !== start) { start = iso; overridden = true; }
+  }
+  return { start: start, end: end, overridden: overridden };
 }
 
 function leave_addDays_(iso, n) {
@@ -3827,19 +3895,23 @@ function leave_tsPeriod_(v) {
 
 /**
  * Pure. Leave source rows -> INPUT_LEAVE rows for ONE period.
- *  - Groups: an Approval row joins an Apply row by Case No (with the same EMP_ID) when both have one; otherwise by
- *    EMP_ID + start date + end date + normalized leave type. The LATEST decisive approval (Approved / Rejected, by
- *    timestamp then row) of a group wins; only Approved counts; a later Rejected revokes (counted, no exception).
- *  - Days: 'Approved Number of days' when present, otherwise computed from the dates with the half-day flags. Only
- *    dates that are not the site's weekly off / a paid holiday carry leave (the register adds WEEK_OFF and PH itself).
- *    Multi-month leave is split per date; only dates inside the period are counted (when the approved figure differs
- *    from the computed one it is spread proportionally over the working dates and a NOTE is kept).
- *  - Exceptions (never counted): unknown employee, unknown leave type, unparseable / implausible dates, end before
- *    start, invalid approved days, unrecognised half-day flag or decision, an Approved decision on a non-approval row,
- *    duplicates and overlaps with another approved leave. Only groups that touch the period can raise exceptions.
+ *  - Window: the calendar month of the period unless opts.window {start, end} moves it (LEAVE_WINDOW_START_<period>, see
+ *    leave_window). The sheet's 26th-25th cycle / Month column is not used.
+ *  - Groups: an approval is linked to an application ONLY by EMP_ID + start date + end date + normalized leave type. Case No is
+ *    informational (kept in CASE_NO); it is shared by different leaves of one employee and is never a grouping key. The
+ *    LATEST decisive row (Approved / Rejected, by timestamp then row) of a group wins; only Approved counts; a later Rejected
+ *    revokes (counted, no exception). An Apply row that itself carries Approval Decision = Approved counts as approved.
+ *  - Days: 'Approved Number of days' when present (it wins; the half-day flags are then ignored), otherwise computed from the
+ *    dates with the side-aware half-day flags. Approved days are CALENDAR days including weekly offs (as the leave sheet
+ *    deducts them); they are never rescaled and spread evenly over ALL dates of the range (no weekly-off / holiday exclusion);
+ *    only the dates inside the window are counted. Multi-month leave is therefore split per date.
+ *  - Exceptions (never counted): unknown employee, unknown leave type, unparseable / implausible dates, end before start,
+ *    invalid or over-range approved days, unrecognised half-day flag (only when the days are computed from flags) or
+ *    decision, and a date claimed by two DIFFERENT approved leaves of one employee for more than one day. Only groups that
+ *    touch the window can raise exceptions.
  * @param {Array} headers selected header cells; @param {Array<Array>} rows zipped rows; @param {string} period
  * @param {Array} roster [{EMP_ID, PAYROLL_CATEGORY, SITE}]
- * @param {Object} [opts] {firstRow, enteredAt, sourceLabel, holidays (HOLIDAY_CALENDAR rows), weeklyOffBySite {NASHIK:'SUN'}}
+ * @param {Object} [opts] {firstRow, enteredAt, sourceLabel, window {start, end}}
  * @returns {{valid:Array, exceptions:Array, pendingCount:number, revokedCount:number, missingColumns:Array}}
  */
 function mapLeaveRows(headers, rows, period, roster, opts) {
@@ -3853,7 +3925,7 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
   LEAVE_DEFS.forEach(function (d) { if (d.required && c[d.key] < 0) out.missingColumns.push(d.key); });
   if (out.missingColumns.length) return out; // fail closed: nothing counted without the required headers
 
-  var pStart = periodStart(period), pEnd = periodEnd(period);
+  var pStart = opts.window ? opts.window.start : periodStart(period), pEnd = opts.window ? opts.window.end : periodEnd(period);
   var rosterMap = feeds_rosterMap_(roster);
   var cell = function (row, key) { return feeds_cell_(row, c[key]); };
 
@@ -3869,7 +3941,7 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
       ltRaw: feeds_str_(cell(row, 'Leave Type')),
       start: feeds_parseDate_(cell(row, 'Leave Start Date')), end: feeds_parseDate_(cell(row, 'Leave End Date')),
       startRaw: feeds_str_(cell(row, 'Leave Start Date')), endRaw: feeds_str_(cell(row, 'Leave End Date')),
-      startHalf: leave_halfFlag_(cell(row, 'Leave Start Date Half')), endHalf: leave_halfFlag_(cell(row, 'Leave End Date Half')),
+      startHalf: leave_halfFlag_(cell(row, 'Leave Start Date Half'), 'START'), endHalf: leave_halfFlag_(cell(row, 'Leave End Date Half'), 'END'),
       dec: feeds_str_(cell(row, 'Approval Decision')).toLowerCase(),
       decRaw: feeds_str_(cell(row, 'Approval Decision')),
       appDaysRaw: cell(row, 'Approved Number of days'),
@@ -3892,34 +3964,20 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
   var problems = [];  // {p, reason, detail}
   function problem(p, reason, detail) { problems.push({ p: p, reason: reason, detail: detail || '' }); }
 
-  // Approved on a non-approval row is ambiguous; unrecognised decision text is never guessed.
-  var members = [];
+  // groups: ONLY EMP_ID + start + end + type (Case No never groups)
+  var groups = {}, groupOrder = [];
   parsed.forEach(function (p) {
-    if (p.kind !== 'APPROVAL') {
-      if (p.dec === 'approved' && relevant(p)) problem(p, 'APPROVED_ON_NON_APPROVAL_ROW');
-      if (p.kind === 'OTHER') return;
-    }
-    members.push(p);
-  });
-
-  // groups: case groups first, then rows without a case join a case group with the same fallback key
-  var groups = {}, groupOrder = [], fbToGroup = {};
-  function addTo(gid, p) { if (!groups[gid]) { groups[gid] = []; groupOrder.push(gid); } groups[gid].push(p); }
-  members.forEach(function (p) {
-    if (!p.kase) return;
-    var gid = 'C|' + p.emp + '|' + p.kase.toUpperCase();
-    addTo(gid, p);
-    if (!(p.fb in fbToGroup)) fbToGroup[p.fb] = gid;
-  });
-  members.forEach(function (p) {
-    if (p.kase) return;
-    addTo(p.fb in fbToGroup ? fbToGroup[p.fb] : 'F|' + p.fb, p);
+    if (p.kind === 'OTHER') return;
+    var gid = p.fb;
+    if (!groups[gid]) { groups[gid] = []; groupOrder.push(gid); }
+    groups[gid].push(p);
   });
 
   var winners = [];
   groupOrder.forEach(function (gid) {
     var g = groups[gid].slice().sort(order);
-    var decisive = g.filter(function (p) { return p.kind === 'APPROVAL' && (p.dec === 'approved' || p.dec === 'rejected'); });
+    // a decisive row: Approved / Rejected on an approval row, or Approved / Rejected written on the application row itself
+    var decisive = g.filter(function (p) { return p.dec === 'approved' || p.dec === 'rejected'; });
     var odd = g.filter(function (p) { return p.kind === 'APPROVAL' && p.dec && p.dec !== 'approved' && p.dec !== 'rejected'; });
     var lastD = decisive.length ? decisive[decisive.length - 1] : null;
     var lastOdd = odd.length ? odd[odd.length - 1] : null;
@@ -3937,8 +3995,7 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
     return a.emp < b.emp ? -1 : (a.emp > b.emp ? 1 : ((a.start < b.start ? -1 : (a.start > b.start ? 1 : 0)) || order(a, b)));
   });
 
-  var used = {}, seenKey = {};
-  function siteOf(emp) { var r = rosterMap[emp]; return r ? (r.SITE || siteForPopulation(r.PAYROLL_CATEGORY)) : ''; }
+  var used = {};
   winners.forEach(function (w) {
     var fail = function (reason, detail) { problem(w, reason, detail); };
     if (!w.emp) return fail('MISSING_EMP_ID');
@@ -3951,38 +4008,26 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
     var spanCap = leave_addDays_(w.start, LEAVE_MAX_SPAN_DAYS + 1); // never enumerate a runaway range
     var dates = leave_range_(w.start, w.end < spanCap ? w.end : spanCap);
     if (dates.length > LEAVE_MAX_SPAN_DAYS) return fail('LEAVE_SPAN_TOO_LONG', dates.length + ' day(s) from ' + w.start);
-    if (w.startHalf === 'UNKNOWN' || w.endHalf === 'UNKNOWN') return fail('HALF_DAY_FLAG_UNRECOGNISED');
     var approved = null;
     if (w.appDaysRaw !== '' && w.appDaysRaw != null) {
       approved = feeds_num_(w.appDaysRaw);
       if (isNaN(approved) || approved <= 0) return fail('APPROVED_DAYS_INVALID', '"' + w.appDaysRaw + '"');
       if (approved > dates.length) return fail('APPROVED_DAYS_EXCEED_RANGE', approved + ' > ' + dates.length + ' date(s)');
+    } else if (w.startHalf === 'UNKNOWN' || w.endHalf === 'UNKNOWN') {
+      return fail('HALF_DAY_FLAG_UNRECOGNISED');
     }
-    var site = siteOf(w.emp);
-    var off = function (d) {
-      var wo = opts.weeklyOffBySite && opts.weeklyOffBySite[site];
-      if (wo && weekdayOf(d) === wo) return true;
-      return opts.holidays ? isPaidHoliday_(opts.holidays, d, site) : false;
-    };
-    var weights = dates.map(function (d) {
+    // per-date share: approved days spread evenly over ALL calendar dates of the range; otherwise the flag weights
+    var share = dates.map(function (d) {
+      if (approved !== null) return approved / dates.length;
       var x = 1;
       if (d === w.start && w.startHalf === 'HALF') x = 0.5;
       if (d === w.end && w.endHalf === 'HALF') x = 0.5;
-      return off(d) ? 0 : x;
+      return x;
     });
-    var total = weights.reduce(function (a, b) { return a + b; }, 0);
-    if (total <= 0) return fail('NO_WORKING_DAYS_IN_LEAVE', 'all dates are weekly off / paid holidays');
-    var scale = approved === null ? 1 : approved / total;
-    var note = '';
-    if (approved !== null && Math.abs(approved - total) > 1e-9) {
-      note = 'NOTE: approved days ' + approved + ' differ from computed ' + leave_r2_(total) + '; spread proportionally';
-    }
-    var fromTo = w.emp + '|' + w.type + '|' + w.start + '|' + w.end;
-    if (seenKey[fromTo]) return fail('DUPLICATE_APPROVED_LEAVE', fromTo);
     var days = 0, clash = '';
     dates.forEach(function (d, k) {
       if (d < pStart || d > pEnd) return;
-      var a = weights[k] * scale;
+      var a = share[k];
       if (a <= 0) return;
       var u = used[w.emp + '|' + d] || 0;
       if (u + a > 1 + 1e-9 && !clash) clash = d;
@@ -3990,14 +4035,13 @@ function mapLeaveRows(headers, rows, period, roster, opts) {
     });
     if (clash) return fail('OVERLAPS_OTHER_LEAVE', 'on ' + clash);
     days = leave_r2_(days);
-    if (days <= 0) return; // every in-period date is a weekly off / holiday
-    seenKey[fromTo] = true;
+    if (days <= 0) return;
     dates.forEach(function (d, k) {
-      if (d >= pStart && d <= pEnd) used[w.emp + '|' + d] = (used[w.emp + '|' + d] || 0) + weights[k] * scale;
+      if (d >= pStart && d <= pEnd) used[w.emp + '|' + d] = (used[w.emp + '|' + d] || 0) + share[k];
     });
     out.valid.push({ PAYROLL_MONTH: period, EMP_ID: w.emp, LEAVE_TYPE: w.type, DAYS: days, FROM_DATE: w.start, TO_DATE: w.end,
-      SOURCE_REF: label + '!' + w.srcRow, CASE_NO: w.kase, KEY: fromTo, STATUS: 'VALID', EXCEPTION_REASON: note,
-      NORMALIZER_VERSION: LEAVE_NORMALIZER_VERSION, ENTERED_AT: enteredAt });
+      SOURCE_REF: label + '!' + w.srcRow, CASE_NO: w.kase, KEY: w.emp + '|' + w.type + '|' + w.start + '|' + w.end, STATUS: 'VALID',
+      EXCEPTION_REASON: '', NORMALIZER_VERSION: LEAVE_NORMALIZER_VERSION, ENTERED_AT: enteredAt });
   });
 
   problems.forEach(function (x) {
@@ -4082,33 +4126,50 @@ function leave_supersedeValues(row, stamp) {
 // ================================================================ leave balances for the payslip (pure part)
 
 /**
- * Pure. Locates the employee column and the EL / CL / SL "available" columns in ONE header row. Each balance column
- * must be identified exactly once (alias match on the normalized header); anything else = not confident -> null entry.
- * @returns {{emp:number, EL:number, CL:number, SL:number, ok:boolean, notes:Array}}
+ * Pure. Locates the employee-code column and each EL / CL / SL "available" column INDEPENDENTLY across the header rows
+ * (the real tabs keep "EMP CODE" in row 1 and "EL/CL/SL Available" in row 3). Each must match exactly once over all the
+ * scanned rows (alias match on the normalized header; password headers are never eligible); anything else = not found
+ * (-1) with a note. A column that is not found leaves only its own token blank.
+ * @param {Array<Array>} headerRows the first rows of the tab (a plain 1-D header row is accepted too)
+ * @returns {{emp:number, EL:number, CL:number, SL:number, headerRow:number, firstDataOffset:number, ok:boolean, notes:Array}}
+ *   headerRow = 1-based number of the last header row that held a found column; first data row is searched below it.
  */
-function leave_balanceColumns_(headerRow) {
-  var counts = {}, at = {};
-  (headerRow || []).forEach(function (h, i) {
-    var k = feeds_norm_(h);
-    if (!k || feeds_isPasswordHeader_(h)) return;
-    counts[k] = (counts[k] || 0) + 1;
-    if (!(k in at)) at[k] = i;
+function leave_balanceColumns_(headerRows) {
+  var rows = headerRows || [];
+  if (rows.length && !Array.isArray(rows[0])) rows = [rows];
+  var hits = {};   // normalized header -> [{c, r}]
+  rows.forEach(function (row, r) {
+    (row || []).forEach(function (h, i) {
+      var k = feeds_norm_(h);
+      if (!k || feeds_isPasswordHeader_(h)) return;
+      (hits[k] || (hits[k] = [])).push({ c: i, r: r + 1 });
+    });
   });
-  var pick = function (aliases) {
-    var hits = aliases.filter(function (a) { return counts[a]; });
-    if (hits.length !== 1 || counts[hits[0]] !== 1) return -1;
-    return at[hits[0]];
+  var notes = [], lastRow = 0;
+  var pick = function (label, aliases) {
+    var found = [];
+    aliases.forEach(function (a) { (hits[a] || []).forEach(function (x) { found.push(x); }); });
+    if (found.length !== 1) { notes.push(label + (found.length ? ' matches ' + found.length + ' columns' : ' column not found')); return -1; }
+    lastRow = Math.max(lastRow, found[0].r);
+    return found[0].c;
   };
-  var cols = { emp: pick(LEAVE_BALANCE_EMP_ALIASES), EL: pick(LEAVE_BALANCE_ALIASES.EL), CL: pick(LEAVE_BALANCE_ALIASES.CL),
-    SL: pick(LEAVE_BALANCE_ALIASES.SL), notes: [] };
-  cols.ok = cols.emp >= 0 && cols.EL >= 0 && cols.CL >= 0 && cols.SL >= 0;
+  var cols = { emp: pick('EMP CODE', LEAVE_BALANCE_EMP_ALIASES), EL: pick('EL Available', LEAVE_BALANCE_ALIASES.EL),
+    CL: pick('CL Available', LEAVE_BALANCE_ALIASES.CL), SL: pick('SL Available', LEAVE_BALANCE_ALIASES.SL), notes: notes };
+  cols.headerRow = lastRow;
+  cols.ok = cols.emp >= 0 && (cols.EL >= 0 || cols.CL >= 0 || cols.SL >= 0);
   return cols;
+}
+
+/** Employee-code shaped cell (VFL1234, CON01, S1 ...): letters then digits. Header words such as "EMP CODE" do not match. */
+function leave_isEmpCode_(v) {
+  var s = feeds_str_(v);
+  return /^[A-Za-z][A-Za-z\-]*\d+$/.test(s);
 }
 
 /**
  * Pure. Rows below the identified header -> {byEmp:{EMP_ID:{EL,CL,SL}}, ambiguous:[ids]}. An employee that appears in more
- * than one row (blocks per payroll cycle) is AMBIGUOUS and gets no balance (never guessed). Non-numeric cell -> that
- * balance is left out.
+ * than one row is AMBIGUOUS and gets no balance (never guessed). Non-numeric cell or a column that was not found (-1) ->
+ * that balance is left out.
  */
 function leave_balancesFromRows(cols, rows) {
   var byEmp = {}, count = {};
@@ -4119,6 +4180,7 @@ function leave_balancesFromRows(cols, rows) {
     if (count[id] > 1) return;
     var b = {};
     ['EL', 'CL', 'SL'].forEach(function (t) {
+      if (cols[t] < 0) return;
       var n = feeds_num_(feeds_cell_(r, cols[t]));
       if (!isNaN(n)) b[t] = n;
     });
@@ -4172,9 +4234,9 @@ function syncLeaveFromSource(period) {
   var roster = buildRoster(period);
   var popOf = {};
   roster.forEach(function (r) { popOf[r.EMP_ID.toUpperCase()] = r.PAYROLL_CATEGORY; });
-  var holidays = getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [];
+  var win = leave_window(period, readControlMap());
   var res = mapLeaveRows(block.header, block.rows, period, roster, { firstRow: 2, enteredAt: nowIso_(), sourceLabel: src.label,
-    holidays: holidays, weeklyOffBySite: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) } });
+    window: { start: win.start, end: win.end } });
   if (res.missingColumns.length) throw new Error('Leave source is missing required column(s): ' + res.missingColumns.join(', '));
   var isLockedEmp = feeds_lockedFn_(period), lockedSkipped = 0;
   var open = function (o) {
@@ -4196,7 +4258,7 @@ function syncLeaveFromSource(period) {
   var newValid = plan.append.filter(function (o) { return o.STATUS === 'VALID'; });
   var refresh = null, refreshNote = '';
   try { refresh = refreshRegisterAttendance_(period); } catch (e) { refreshNote = String(e && e.message ? e.message : e); }
-  var summary = { period: period, source: src.label, validWritten: newValid.length,
+  var summary = { period: period, window: win.start + '..' + win.end, source: src.label, validWritten: newValid.length,
     validDays: leave_r2_(newValid.reduce(function (t, o) { return t + o.DAYS; }, 0)),
     exceptionsWritten: plan.append.length - newValid.length, superseded: plan.supersede.length, unchanged: plan.unchanged,
     pending: res.pendingCount, revokedByRejection: res.revokedCount, lockedSkipped: lockedSkipped,
@@ -4239,20 +4301,27 @@ function leave_readBalances_(population, empIds) {
   try { src = leave_openSource_(tab); } catch (e) { out.note = String(e && e.message ? e.message : e); return out; }
   var sheet = src.sheet, lc = sheet.getLastColumn(), lr = sheet.getLastRow();
   if (lc < 1 || lr < 2) { out.note = 'balance tab ' + tab + ' is empty'; return out; }
-  var headerRowNo = 0, cols = null;
-  for (var r = 1; r <= Math.min(LEAVE_BALANCE_HEADER_SCAN_ROWS, lr); r++) {
-    var hdr = sheet.getRange(r, 1, 1, lc).getValues()[0];
-    var found = leave_balanceColumns_(hdr);
-    if (found.ok) { headerRowNo = r; cols = found; feeds_assertNoPassword_(hdr, [found.emp, found.EL, found.CL, found.SL]); break; }
-  }
-  if (!cols) { out.note = 'could not identify the employee and EL/CL/SL available columns in ' + tab + ' - balances left blank'; return out; }
-  var n = lr - headerRowNo;
-  var colVals = {};
-  ['emp', 'EL', 'CL', 'SL'].forEach(function (k) { colVals[k] = sheet.getRange(headerRowNo + 1, cols[k] + 1, n, 1).getValues(); });
+  var hdrRows = sheet.getRange(1, 1, Math.min(LEAVE_BALANCE_HEADER_SCAN_ROWS, lr), lc).getValues();
+  var cols = leave_balanceColumns_(hdrRows);
+  if (!cols.ok) { out.note = 'could not identify the employee and EL/CL/SL available columns in ' + tab + ' (' + cols.notes.join('; ') + ') - balances left blank'; return out; }
+  var used = [cols.emp, cols.EL, cols.CL, cols.SL].filter(function (k) { return k >= 0; });
+  hdrRows.forEach(function (h) { feeds_assertNoPassword_(h, used); });
+  var missing = ['EL', 'CL', 'SL'].filter(function (t) { return cols[t] < 0; });
+  // data starts at the first row below the header rows whose employee cell looks like an employee code
+  var from = cols.headerRow + 1, n = lr - cols.headerRow;
+  if (n < 1) { out.note = 'balance tab ' + tab + ' has no data rows'; return out; }
+  var empVals = sheet.getRange(from, cols.emp + 1, n, 1).getValues();
+  var first = -1;
+  for (var i = 0; i < n; i++) { if (leave_isEmpCode_(empVals[i][0])) { first = i; break; } }
+  if (first < 0) { out.note = 'no employee-code rows found in ' + tab + ' - balances left blank'; return out; }
+  var m = n - first, base = from + first;
+  var colVals = { emp: sheet.getRange(base, cols.emp + 1, m, 1).getValues() };
+  ['EL', 'CL', 'SL'].forEach(function (t) { if (cols[t] >= 0) colVals[t] = sheet.getRange(base, cols[t] + 1, m, 1).getValues(); });
   var rows = [];
-  for (var i = 0; i < n; i++) {
+  for (var j = 0; j < m; j++) {
     var row = [];
-    row[cols.emp] = colVals.emp[i][0]; row[cols.EL] = colVals.EL[i][0]; row[cols.CL] = colVals.CL[i][0]; row[cols.SL] = colVals.SL[i][0];
+    row[cols.emp] = colVals.emp[j][0];
+    ['EL', 'CL', 'SL'].forEach(function (t) { if (cols[t] >= 0) row[cols[t]] = colVals[t][j][0]; });
     rows.push(row);
   }
   var parsedBal = leave_balancesFromRows(cols, rows);
@@ -4261,8 +4330,11 @@ function leave_readBalances_(population, empIds) {
   Object.keys(parsedBal.byEmp).forEach(function (id) {
     if (want[id]) { out.byEmp[id] = parsedBal.byEmp[id]; out.matched++; }
   });
+  var notes = [];
+  if (missing.length) notes.push(missing.join('/') + ' available column not found in ' + tab + ' (token left blank)');
   var amb = parsedBal.ambiguous.filter(function (id) { return want[id]; });
-  if (amb.length) out.note = amb.length + ' employee(s) appear in several rows of ' + tab + ' (balances left blank, not guessed)';
+  if (amb.length) notes.push(amb.length + ' employee(s) appear in several rows of ' + tab + ' (balances left blank, not guessed)');
+  out.note = notes.join('; ');
   return out;
 }
 
@@ -7203,27 +7275,45 @@ var PAYSLIP_CONTINUE_FN = 'continuePayslips_';
 
 // ---------------------------------------------------------------- pure formatting
 
-/** 1234567 -> '12,34,567' (Indian grouping, 0 decimals, half away from zero). Blank -> '0'. Non-numeric throws. */
+/** 1234567.5 -> '12,34,567.50' (Indian grouping, always 2 decimals, half away from zero). Blank -> '0.00'. Non-numeric throws. */
 function payslipMoney(v) {
-  if (v === '' || v == null) return '0';
+  if (v === '' || v == null) return '0.00';
   var n = Number(v);
   if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric money value "' + v + '"');
-  var neg = n < 0;
-  var s = String(Math.floor(Math.abs(n) + 0.5));
+  var cents = Math.floor(Math.abs(n) * 100 + 0.5 + 1e-9);
+  var s = String(Math.floor(cents / 100)), p = cents % 100;
   if (s.length > 3) {
     var last3 = s.slice(-3), rest = s.slice(0, -3);
     s = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
   }
-  return (neg && s !== '0' ? '-' : '') + s;
+  return (n < 0 && cents !== 0 ? '-' : '') + s + '.' + pad2_(p);
 }
 
-/** Days / hours: up to 1 decimal, no trailing zero. Blank -> '0'. */
+/** Earning / deduction LINE: payslipMoney, but BLANK when the value is zero (or blank). Totals use payslipMoney (always shown). */
+function payslipMoneyLine(v) {
+  var t = payslipMoney(v);
+  return t === '0.00' ? '' : t;
+}
+
+/** Days / hours: always 1 decimal ('31.0', '0.5', '-12.0'). Blank -> '0.0'. */
 function payslipDays(v) {
-  if (v === '' || v == null) return '0';
+  if (v === '' || v == null) return '0.0';
   var n = Number(v);
   if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric days value "' + v + '"');
   var r = Math.round(Math.abs(n) * 10) / 10;
-  return (n < 0 && r !== 0 ? '-' : '') + String(r);
+  return (n < 0 && r !== 0 ? '-' : '') + r.toFixed(1);
+}
+
+/**
+ * DOJ -> 'DD-MMM-YYYY' (05-Jun-2005). Date and ISO exact; numeric text is read DAY-FIRST (dd/mm/yyyy); d-Mon-yy and
+ * d-Mon-yyyy accepted. Unparseable -> '' (never garbage).
+ */
+function payslipDoj(v) {
+  var iso = parseDojDayFirst_(v);
+  if (!iso) return '';
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  var mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[2] - 1];
+  return m[3] + '-' + mon + '-' + m[1];
 }
 
 /** '2026-09' -> 'September 2026'. */
@@ -7233,7 +7323,18 @@ function payslipPeriodLabel(period) {
 
 // ---------------------------------------------------------------- token maps
 
+/** Always-shown money (totals, gross, net). */
 function pslM_(col) { return function (row) { return payslipMoney(row[col]); }; }
+/** Earning / deduction line: blank when zero. */
+function pslL_(col) { return function (row) { return payslipMoneyLine(row[col]); }; }
+/** Sum of several locked-row columns as a line (blank when zero). */
+function pslSumL_(cols) {
+  return function (row) {
+    var t = 0;
+    cols.forEach(function (c) { var n = Number(row[c] === '' || row[c] == null ? 0 : row[c]); if (!isFinite(n)) throw new Error('Non-numeric money value in ' + c); t += n; });
+    return payslipMoneyLine(t);
+  };
+}
 function pslD_(col) { return function (row) { return payslipDays(row[col]); }; }
 function pslBlank_() { return ''; }
 function pslEmp_(empCol, rowCol) {
@@ -7264,7 +7365,6 @@ function pslBal_(type) {
 var PAYSLIP_IDENTITY_TOKENS = { UAN: 'UAN', ESI_NO: 'ESI_NO', PAN: 'PAN', BANK_NAME: 'BANK_NAME', BANK_ACCOUNT: 'BANK_ACCOUNT',
   ACCOUNT_NO: 'BANK_ACCOUNT', IFSC: 'IFSC' };
 function pslIdent_(field) { return function (row, emp, sal, ident) { return ident && ident[field] ? String(ident[field]) : ''; }; }
-function pslZero_() { return '0'; }
 
 /**
  * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
@@ -7281,9 +7381,12 @@ var PAYSLIP_RATE_COLUMNS = {
 function pslRate_(col) {
   return function (row, emp, sal) {
     if (!sal) throw new Error('No SALARY_STRUCTURE row effective for ' + row.PERIOD + ' (' + col + ')');
-    return payslipMoney(sal[col]);
+    return payslipMoneyLine(sal[col]);
   };
 }
+
+/** Locked-row columns folded into the OTHER_ALLOWANCE token (earnings with no template line of their own). */
+var PAYSLIP_OTHER_ALLOWANCE_COLS = ['OTHER_ALLOWANCE', 'PRODUCTION_INCENTIVE', 'OT_EXTRA_WORK'];
 
 function pslCommonMap_() {
   var m = {
@@ -7292,20 +7395,22 @@ function pslCommonMap_() {
     EMP_ID: function (row, emp) { return String((emp && emp.EMP_ID) || row.EMP_ID || ''); },
     DEPARTMENT: pslEmp_('DEPARTMENT', 'DEPARTMENT'),
     DESIGNATION: pslEmp_('DESIGNATION', 'DESIGNATION'),
-    DOJ: pslEmp_('DOJ_AS_SOURCE'),
+    DOJ: function (row, emp) { return payslipDoj(emp && emp.DOJ_AS_SOURCE); },
     PRESENT_DAYS: pslD_('PRESENT_DAYS'), EL_DAYS: pslD_('EL'), CL_DAYS: pslD_('CL'), SL_DAYS: pslD_('SL'),
     PH_DAYS: pslD_('PH_DAYS'), DAYS_PAYABLE: pslD_('WORKED_PAYABLE_DAYS'),
     BASIC_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.BASIC_RATE), HRA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HRA_RATE),
     CONVEYANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.CONVEYANCE_RATE),
     EDUCATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.EDUCATION_RATE), WASHING_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.WASHING_RATE),
-    BASIC: pslM_('BASIC'), HRA: pslM_('HRA'), CONVEYANCE: pslM_('CONVEYANCE'), EDUCATION: pslM_('EDUCATION'),
-    WASHING: pslM_('WASHING'), ARREARS: pslM_('ARREARS'),
-    OT_HOURS: pslD_('OT_HOURS'), OT_AMOUNT: pslM_('OT_AMOUNT'),
-    DISPATCH_INCENTIVE: pslM_('DISPATCH_INCENTIVE'), OTHER_ALLOWANCE: pslM_('OTHER_ALLOWANCE'),
+    BASIC: pslL_('BASIC'), HRA: pslL_('HRA'), CONVEYANCE: pslL_('CONVEYANCE'), EDUCATION: pslL_('EDUCATION'),
+    WASHING: pslL_('WASHING'), ARREARS: pslL_('ARREARS'),
+    OT_HOURS: pslD_('OT_HOURS'), OT_AMOUNT: pslL_('OT_AMOUNT'),
+    DISPATCH_INCENTIVE: pslL_('DISPATCH_INCENTIVE'),
+    // earnings that have no line of their own on the slip are folded in so the printed lines add up to the gross (item below)
+    OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS),
     GROSS_EARNINGS: pslM_('TOTAL_EARNINGS'),
-    PF_EMPLOYEE: pslM_('PF_EMPLOYEE'), ESI_EMPLOYEE: pslM_('ESI_EMPLOYEE'), PROF_TAX: pslM_('PT'),
-    MLWF: pslM_('MLWF'), SALARY_ADVANCE: pslM_('ADVANCE'), SOCIETY: pslM_('SOCIETY'), CANTEEN: pslM_('CANTEEN'),
-    OTHER_DEDUCTION: pslM_('OTHER_DEDUCTION'), TOTAL_DEDUCTIONS: pslM_('TOTAL_DEDUCTIONS'),
+    PF_EMPLOYEE: pslL_('PF_EMPLOYEE'), ESI_EMPLOYEE: pslL_('ESI_EMPLOYEE'), PROF_TAX: pslL_('PT'),
+    MLWF: pslL_('MLWF'), SALARY_ADVANCE: pslL_('ADVANCE'), SOCIETY: pslL_('SOCIETY'), CANTEEN: pslL_('CANTEEN'),
+    OTHER_DEDUCTION: pslL_('OTHER_DEDUCTION'), TOTAL_DEDUCTIONS: pslM_('TOTAL_DEDUCTIONS'),
     NET_PAY: pslM_('NET_PAY'),
     NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
   };
@@ -7321,8 +7426,10 @@ var PAYSLIP_TOKEN_MAP_STAFF = pslExtend_(pslCommonMap_(), {
   MEDICAL_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.MEDICAL_RATE), PRO_DEV_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRO_DEV_RATE),
   COMMUNICATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.COMMUNICATION_RATE),
   UNIFORM_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.UNIFORM_RATE),
-  MEDICAL: pslM_('MEDICAL'), PRO_DEV: pslM_('PRO_DEV'), COMMUNICATION: pslM_('COMMUNICATION'),
-  UNIFORM: pslM_('UNIFORM'), TDS: pslM_('TDS')
+  MEDICAL: pslL_('MEDICAL'), PRO_DEV: pslL_('PRO_DEV'), COMMUNICATION: pslL_('COMMUNICATION'),
+  UNIFORM: pslL_('UNIFORM'), TDS: pslL_('TDS'),
+  // the STAFF template has no LEAVE_ENCASHMENT line: it is printed inside OTHER_ALLOWANCE
+  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS.concat(['LEAVE_ENCASHMENT']))
 });
 
 var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
@@ -7330,8 +7437,9 @@ var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
   HEAT_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HEAT_ALLOWANCE_RATE),
   VDA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.VDA_RATE),
   PRODUCTION_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRODUCTION_ALLOWANCE_RATE),
-  HEAT_ALLOWANCE: pslM_('HEAT'), VDA: pslM_('VDA'), PRODUCTION_ALLOWANCE: pslM_('PRODUCTION_ALLOWANCE'),
-  PRODUCTION_ALLOWANCE_OFFSET: pslZero_, LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
+  HEAT_ALLOWANCE: pslL_('HEAT'), VDA: pslL_('VDA'), PRODUCTION_ALLOWANCE: pslL_('PRODUCTION_ALLOWANCE'),
+  PRODUCTION_ALLOWANCE_OFFSET: pslL_('EFFICIENCY_DEDUCTION'), LEAVE_ENCASHMENT: pslL_('LEAVE_ENCASHMENT'),
+  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS)
 });
 
 /** Template key (STAFF | WORKER) of a category: PAYROLL_CATEGORY_CONFIG.PAYSLIP_TEMPLATE_KEY, else the built-in default. */
