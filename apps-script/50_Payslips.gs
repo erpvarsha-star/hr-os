@@ -177,7 +177,9 @@ var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
   PRODUCTION_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRODUCTION_ALLOWANCE_RATE),
   HEAT_ALLOWANCE: pslL_('HEAT'), VDA: pslL_('VDA'), PRODUCTION_ALLOWANCE: pslL_('PRODUCTION_ALLOWANCE'),
   PRODUCTION_ALLOWANCE_OFFSET: pslL_('EFFICIENCY_DEDUCTION'), LEAVE_ENCASHMENT: pslL_('LEAVE_ENCASHMENT'),
-  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS)
+  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS),
+  // worker TOTAL_EARNINGS is a whole rupee (ROUND of the sum): print OT to whole rupees so the slip foots exactly (stored value unchanged)
+  OT_AMOUNT: function (row) { return payslipMoneyLine(roundSheets(Number(row.OT_AMOUNT || 0))); }
 });
 
 /** Template key (STAFF | WORKER) of a category: PAYROLL_CATEGORY_CONFIG.PAYSLIP_TEMPLATE_KEY, else the built-in default. */

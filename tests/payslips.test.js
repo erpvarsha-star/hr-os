@@ -548,8 +548,8 @@ test('printed earnings lines sum to TOTAL_EARNINGS (gross) for BOTH templates, w
     const r = plain(c.buildReplacements(pop, row, { EMP_ID: 'X' }, sal));
     const printed = lines[pop].reduce((t, k) => t + cents(r[k]), 0);
     assert.ok(cents(r.GROSS_EARNINGS) > 0);
-    // STAFF total is stored to 2dp (exact). The WORKER total is a whole rupee (roundSheets) while OT_AMOUNT is 2dp: paise-level difference only.
-    const tol = pop === 'STAFF' ? 0 : 50;
+    // exact footing: STAFF total is stored to 2dp; on the WORKER slip OT_AMOUNT prints in whole rupees to match its whole-rupee total
+    const tol = 0;
     assert.ok(Math.abs(printed - cents(r.GROSS_EARNINGS)) <= tol, `${pop}: printed earnings ${printed} vs TOTAL_EARNINGS ${r.GROSS_EARNINGS}`);
     const noExtras = lines[pop].filter((k) => k !== 'OTHER_ALLOWANCE' && k !== 'LEAVE_ENCASHMENT' && k !== 'OT_AMOUNT').reduce((t, k) => t + cents(r[k]), 0);
     assert.ok(printed > noExtras, 'extras are printed');
@@ -559,4 +559,12 @@ test('printed earnings lines sum to TOTAL_EARNINGS (gross) for BOTH templates, w
     const ded = ['PF_EMPLOYEE', 'ESI_EMPLOYEE', 'PROF_TAX', 'MLWF', 'SALARY_ADVANCE', 'SOCIETY', 'CANTEEN', 'OTHER_DEDUCTION', 'TDS', 'PRODUCTION_ALLOWANCE_OFFSET'].reduce((t, k) => t + cents(r[k] === undefined ? '' : r[k]), 0);
     assert.equal(ded, cents(r.TOTAL_DEDUCTIONS), pop + ' deductions');
   });
+});
+
+test('worker slip prints OT_AMOUNT in whole rupees; stored value and staff slip unchanged', () => {
+  const c = load(null);
+  const w = plain(c.buildReplacements('PERMANENT_WORKER', Object.assign({}, workerRow, { OT_AMOUNT: 1234.56 }), { EMP_ID: 'VFL2' }, salWorker));
+  assert.equal(w.OT_AMOUNT, '1,235.00');
+  assert.equal(plain(c.buildReplacements('PERMANENT_WORKER', Object.assign({}, workerRow, { OT_AMOUNT: 0.2 }), { EMP_ID: 'VFL2' }, salWorker)).OT_AMOUNT, '');
+  assert.equal(plain(c.buildReplacements('STAFF', Object.assign({}, staffRow, { OT_AMOUNT: 1234.56 }), emp1, salStaff)).OT_AMOUNT, '1,234.56');
 });
