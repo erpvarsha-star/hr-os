@@ -13,8 +13,11 @@ function formatDate(d, tz, fmt) {
 const blank = (v) => v === '' || v == null;
 
 function makeSheet(name) {
-  const s = { name, data: [], calls: [] };
+  const s = { name, data: [], calls: [], validations: {}, clearedValidations: [] };
   s.getName = () => name;
+  s.getMaxRows = () => Math.max(s.data.length, 1000);
+  /** The validation rule ({list, allowInvalid}) on a cell, or undefined. */
+  s.validationAt = (row, col) => s.validations[row + ',' + col];
   s.getLastRow = () => { for (let r = s.data.length; r >= 1; r--) if ((s.data[r - 1] || []).some((v) => !blank(v))) return r; return 0; };
   s.getLastColumn = () => { let m = 0; s.data.forEach((row) => row.forEach((v, i) => { if (!blank(v)) m = Math.max(m, i + 1); })); return m; };
   s.getRange = (r, c, nr = 1, nc = 1) => ({
@@ -24,9 +27,19 @@ function makeSheet(name) {
       for (let i = 0; i < nr; i++) { const row = []; for (let j = 0; j < nc; j++) { const v = (s.data[r - 1 + i] || [])[c - 1 + j]; row.push(v === undefined ? '' : v); } out.push(row); }
       return out;
     },
-    setValues: (vals) => { assert.equal(vals.length, nr); vals.forEach((row, i) => { assert.equal(row.length, nc); while (s.data.length < r + i) s.data.push([]); row.forEach((v, j) => { s.data[r - 1 + i][c - 1 + j] = v; }); }); },
+    setValues: (vals) => {
+      assert.equal(vals.length, nr);
+      // like the real API: a cell whose validation rejects invalid input throws before anything is written
+      vals.forEach((row, i) => row.forEach((v, j) => {
+        const rule = s.validations[(r + i) + ',' + (c + j)];
+        if (rule && !rule.allowInvalid && !blank(v) && !rule.list.includes(v)) throw new Error('The data you entered in cell ' + (r + i) + ',' + (c + j) + ' violates the data validation rules set on this cell.');
+      }));
+      vals.forEach((row, i) => { assert.equal(row.length, nc); while (s.data.length < r + i) s.data.push([]); row.forEach((v, j) => { s.data[r - 1 + i][c - 1 + j] = v; }); });
+    },
+    setValue(v) { this.setValues([[v]]); },
     setNumberFormat() {},
-    setDataValidation() {},
+    setDataValidation(rule) { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) s.validations[(r + i) + ',' + (c + j)] = rule; },
+    clearDataValidations() { s.clearedValidations.push({ r, c, nr, nc }); for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) delete s.validations[(r + i) + ',' + (c + j)]; return this; },
     clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (s.data[r - 1 + i]) s.data[r - 1 + i][c - 1 + j] = ''; },
   });
   s.deleteRow = (n) => { s.data.splice(n - 1, 1); };
@@ -107,7 +120,7 @@ function makeEnv(opts = {}) {
     DigestAlgorithm: { SHA_256: 'SHA_256' }, Charset: { UTF_8: 'UTF_8' },
   };
   const me = () => ({ getEmail: () => env.user });
-  const dv = () => { const b = { requireValueInList() { return b; }, setAllowInvalid() { return b; }, build() { return {}; } }; return b; };
+  const dv = () => { const rule = { list: [], allowInvalid: true }; const b = { requireValueInList(l) { rule.list = l.slice(); return b; }, setAllowInvalid(a) { rule.allowInvalid = a; return b; }, build() { return { ...rule }; } }; return b; };
   env.dialogs = [];
   const HtmlService = { createHtmlOutput: (html) => { const o = { html, title: '' }; o.setWidth = (w) => { o.width = w; return o; }; o.setHeight = (h) => { o.height = h; return o; }; o.setTitle = (t) => { o.title = t; return o; }; o.getContent = () => html; return o; } };
   const ui = { showModalDialog: (out, title) => { env.dialogs.push({ out, title }); } };

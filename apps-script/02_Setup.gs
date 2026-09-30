@@ -240,6 +240,9 @@ function hrosMigrateSiteToVfl() {
       if (String(r.SITE == null ? '' : r.SITE).trim().toUpperCase() === OLD_SITE) ups.push({ row: r._row, values: { SITE: SITE_VFL } });
     });
     if (ups.length) {
+      // the live SITE column still carries the old reject-invalid list (no VFL); clear it, hrosSetup re-applies the new one
+      var siteCol = getHeaders(sh).indexOf('SITE');
+      if (siteCol >= 0) sh.getRange(2, siteCol + 1, Math.max(sh.getMaxRows() - 1, 1), 1).clearDataValidations();
       updateRows(sh, ups);
       changes.push(tab + ': SITE ' + OLD_SITE + ' -> ' + SITE_VFL + ' on ' + ups.length + ' row(s)');
     }

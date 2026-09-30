@@ -240,12 +240,19 @@ function categoryConfigReset_() { HROS_CATEGORY_CACHE_ = null; }
 function cat_yn_(v) { return String(v == null ? '' : v).trim().toUpperCase() === 'Y'; }
 
 /** Pure: one PAYROLL_CATEGORY_CONFIG row object -> normalized entry (or null when the code is blank). */
+/** Normalised SITE cell; the pre-rename code of the VFL Waluj plant is still accepted until the sheet is migrated. */
+function legacySite_(v) {
+  var s = String(v == null ? '' : v).trim().toUpperCase();
+  return s === 'NASHIK' ? SITE_VFL : s; // legacy-alias
+}
+
 function categoryEntryFromRow(r) {
   var code = String(r.CATEGORY_CODE == null ? '' : r.CATEGORY_CODE).trim();
   if (!code) return null;
+  var site = legacySite_(r.SITE);
   return { code: code, displayName: String(r.DISPLAY_NAME == null ? '' : r.DISPLAY_NAME).trim() || code,
     method: String(r.CALC_METHOD == null ? '' : r.CALC_METHOD).trim().toUpperCase(),
-    site: String(r.SITE == null ? '' : r.SITE).trim().toUpperCase(),
+    site: site,
     payslip: cat_yn_(r.PAYSLIP), templateKey: String(r.PAYSLIP_TEMPLATE_KEY == null ? '' : r.PAYSLIP_TEMPLATE_KEY).trim().toUpperCase(),
     rateSource: String(r.RATE_SOURCE == null ? '' : r.RATE_SOURCE).trim().toUpperCase() || 'SALARY_STRUCTURE',
     active: cat_yn_(r.ACTIVE), approvedBy: String(r.APPROVED_BY == null ? '' : r.APPROVED_BY).trim(), fromSheet: true };
@@ -864,6 +871,9 @@ function hrosMigrateSiteToVfl() {
       if (String(r.SITE == null ? '' : r.SITE).trim().toUpperCase() === OLD_SITE) ups.push({ row: r._row, values: { SITE: SITE_VFL } });
     });
     if (ups.length) {
+      // the live SITE column still carries the old reject-invalid list (no VFL); clear it, hrosSetup re-applies the new one
+      var siteCol = getHeaders(sh).indexOf('SITE');
+      if (siteCol >= 0) sh.getRange(2, siteCol + 1, Math.max(sh.getMaxRows() - 1, 1), 1).clearDataValidations();
       updateRows(sh, ups);
       changes.push(tab + ': SITE ' + OLD_SITE + ' -> ' + SITE_VFL + ' on ' + ups.length + ' row(s)');
     }
@@ -1314,14 +1324,14 @@ function mergeGeneratedWithExisting(existing, generated) {
 /** Is there a paid holiday for the date at site? */
 function isPaidHoliday_(holidays, date, site) {
   return (holidays || []).some(function (h) {
-    var s = String(h.SITE || 'ALL').trim().toUpperCase();
+    var s = legacySite_(h.SITE || 'ALL');
     return toIsoDate(h.DATE) === date && (s === site || s === 'ALL') && String(h.PAID).trim().toUpperCase() === 'Y';
   });
 }
 
 function isUnpaidHoliday_(holidays, date, site) {
   return (holidays || []).some(function (h) {
-    var s = String(h.SITE || 'ALL').trim().toUpperCase();
+    var s = legacySite_(h.SITE || 'ALL');
     return toIsoDate(h.DATE) === date && (s === site || s === 'ALL') && String(h.PAID).trim().toUpperCase() !== 'Y';
   });
 }

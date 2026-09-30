@@ -242,14 +242,14 @@ function mergeGeneratedWithExisting(existing, generated) {
 /** Is there a paid holiday for the date at site? */
 function isPaidHoliday_(holidays, date, site) {
   return (holidays || []).some(function (h) {
-    var s = String(h.SITE || 'ALL').trim().toUpperCase();
+    var s = legacySite_(h.SITE || 'ALL');
     return toIsoDate(h.DATE) === date && (s === site || s === 'ALL') && String(h.PAID).trim().toUpperCase() === 'Y';
   });
 }
 
 function isUnpaidHoliday_(holidays, date, site) {
   return (holidays || []).some(function (h) {
-    var s = String(h.SITE || 'ALL').trim().toUpperCase();
+    var s = legacySite_(h.SITE || 'ALL');
     return toIsoDate(h.DATE) === date && (s === site || s === 'ALL') && String(h.PAID).trim().toUpperCase() !== 'Y';
   });
 }

@@ -157,14 +157,53 @@ test('hrosMigrateSiteToVfl: category approval survives the relabel (APPROVED_BY 
   assert.equal(staff.approvedBy, 'owner@varshaforgings.com');
 });
 
-test('no NASHIK left in apps-script/ except inside hrosMigrateSiteToVfl', () => {
+// the live sheet still has the OLD SITE list (no VFL) built with setAllowInvalid(false)
+function oldSiteValidation(env) {
+  [['PAYROLL_CATEGORY_CONFIG', ['NASHIK', 'PUNE']], ['HOLIDAY_CALENDAR', ['NASHIK', 'PUNE', 'ALL']]].forEach(([tab, list]) => {
+    const sh = env.sheets[tab], col = sh.data[0].indexOf('SITE') + 1;
+    for (let r = 2; r <= 1000; r++) sh.validations[r + ',' + col] = { list, allowInvalid: false };
+  });
+}
+
+test('hrosSetup on a sheet with the old reject-invalid SITE validation migrates NASHIK -> VFL and re-validates with VFL', () => {
+  const { env } = oldWorld();
+  oldSiteValidation(env);
+  const sh = env.sheets.PAYROLL_CATEGORY_CONFIG, col = sh.data[0].indexOf('SITE') + 1;
+  assert.throws(() => sh.getRange(2, col).setValues([['VFL']]), /data validation/, 'the fake enforces the old list');
+  env.c.hrosSetup();
+  assert.ok(env.rowsOf('PAYROLL_CATEGORY_CONFIG').filter((r) => r.CATEGORY_CODE !== 'PUNE_STAFF').every((r) => r.SITE === 'VFL'));
+  assert.deepEqual(env.rowsOf('HOLIDAY_CALENDAR').map((r) => r.SITE), ['VFL', 'PUNE']);
+  assert.ok(sh.clearedValidations.some((c) => c.c === col && c.r === 2), 'SITE validation cleared before the write');
+  assert.deepEqual(plain(sh.validationAt(2, col).list), ['VFL', 'PUNE']);
+  const hol = env.sheets.HOLIDAY_CALENDAR;
+  assert.deepEqual(plain(hol.validationAt(2, hol.data[0].indexOf('SITE') + 1).list), ['VFL', 'PUNE', 'ALL']);
+});
+
+test('legacy NASHIK rows work before the migration has run', () => {
+  const { env } = oldWorld();
+  env.c.categoryConfigReset_();
+  assert.equal(env.rowsOf('PAYROLL_CATEGORY_CONFIG').find((r) => r.CATEGORY_CODE === 'STAFF').SITE.trim().toLowerCase(), 'nashik');
+  assert.equal(env.c.categoryEntry('STAFF').site, 'VFL');
+  assert.equal(env.c.siteForPopulation('STAFF'), 'VFL');
+  assert.equal(env.c.siteForPopulation('PUNE_STAFF'), 'PUNE');
+});
+
+test('a NASHIK holiday row still applies to VFL (and not to PUNE)', () => {
+  const hol = [{ DATE: '2026-10-02', SITE: 'NASHIK', PAID: 'Y' }];
+  const { env } = oldWorld();
+  assert.equal(env.c.isPaidHoliday_(hol, '2026-10-02', 'VFL'), true);
+  assert.equal(env.c.isPaidHoliday_(hol, '2026-10-02', 'PUNE'), false);
+  assert.deepEqual(plain(env.c.paidHolidayDatesInMonth('2026-10', hol, 'VFL')), ['2026-10-02']);
+});
+
+test('no NASHIK left in apps-script/ except inside hrosMigrateSiteToVfl and lines tagged legacy-alias', () => {
   const dir = path.join(__dirname, '..', 'apps-script');
   const bad = [];
   fs.readdirSync(dir).filter((f) => f.endsWith('.gs')).forEach((f) => {
     let inMig = false;
     fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => {
       if (/^function hrosMigrateSiteToVfl\b/.test(line)) inMig = true;
-      if (/nashik/i.test(line) && !inMig) bad.push(f + ':' + (i + 1));
+      if (/nashik/i.test(line) && !inMig && !/\/\/ legacy-alias\s*$/.test(line)) bad.push(f + ':' + (i + 1));
       if (inMig && /^}/.test(line)) inMig = false;
     });
   });
