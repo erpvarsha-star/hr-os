@@ -66,6 +66,9 @@ These are the source files. **You do not paste them one by one**: `npm run combi
 | `41_Lock.gs` | Lock: copies the approved draft into PAYROLL_LOCKED. |
 | `50_Payslips.gs` | Builds payslip PDFs from the two template Google Docs. |
 | `51_Email.gs` | Queues and sends payslip emails (only when released). |
+| `60_Status.gs` | Payroll status: which inputs (holidays, working days, attendance, OT, canteen, society, advance) are still missing per population. Read-only. |
+| `61_Notify.gs` | Telegram / email alerts and the messages after calculate, approve and lock. |
+| `62_Reminders.gs` | The daily attendance reminder (11:00), escalation (14:00) and the month-end input digest (11:05). |
 | `90_Menu.gs` | The HR OS menu. |
 | `99_Audit.gs` | Writes every action to AUDIT_LOG. |
 
@@ -287,6 +290,19 @@ If something looks wrong and you are unsure, stop and check **AUDIT_LOG**: every
 - The employee master has no HR sign-off yet (`HR_SIGNOFF_BY` blank): the code does not gate on it; only SALARY_STRUCTURE and STATUTORY_CONFIG approvals are enforced.
 - Old Days-Worked tabs (`PAYROLL_DAYS_FORM_RESPONSES`, `DAYS_WORKED_FORM_RAW`, `INPUT_DAYS_WORKED`, `PAYROLL_DAYS_EXCEPTIONS`) are ignored; the monthly attendance register replaces them.
 - **Please confirm:** `OWNER_APPROVER_EMAIL`; that week-off days are added for every group except workers (also daily-rate consultants); the exact wording of the half-day options in the leave form (start "Second Half" and end "First Half" count as half days, "First Half" at the start / "Second Half" at the end, blank and "full" as full days, anything else becomes a leave exception; the flags are ignored whenever Approved Number of days is filled).
+
+## Telegram alerts
+
+HR OS can message people on Telegram (and falls back to email when someone is not linked yet or Telegram is down). Nothing is sent to anyone who has not been linked by the owner, and no individual's salary is ever in a message (only totals per population).
+
+1. **Create the bot** (owner, once): in Telegram open **@BotFather**, send `/newbot`, pick a name, and copy the token it gives you.
+2. **HR OS ▸ Alerts ▸ Telegram: set bot token** and paste the token. It is kept in Script Properties, never in the sheet.
+3. **Each person** (HR, Accounts, the attendance entry people, you) opens the bot in Telegram and presses **Start**. The bot answers "Registered. Ask the payroll owner to link you."
+4. **HR OS ▸ Alerts ▸ Telegram: refresh chats** (owner). New people appear in the tab `TELEGRAM_CHATS`. Type each person's email (the same one used in PAYROLL_CONTROL) in the **EMAIL** column. Set ACTIVE to N to switch a person off. Do this soon after they press Start: Telegram keeps an unread Start for about a day.
+5. **HR OS ▸ Alerts ▸ Telegram: send test message to me**: it says whether it went by Telegram or email.
+6. **HR OS ▸ Alerts ▸ Install reminder triggers** (owner). This creates three daily timers and nothing else: daily attendance reminder about 11:00, escalation to the owner about 14:00, and the month-end input digest about 11:05 (days 1 to 10 of the month after the payroll month). Times are in India time and can drift by a few minutes. **Remove reminder triggers** deletes only these three.
+
+Reminders start on the date in PAYROLL_CONTROL `DAILY_REMINDER_FROM` (2026-10-01). They skip each site's weekly off and its paid holidays. **HR OS ▸ Alerts ▸ Payroll status...** shows the same digest on screen for any month. After Calculate, HR approve, Accounts approve and Lock, the next person is told automatically; set PAYROLL_CONTROL `STAGE_NOTIFICATIONS` to N to switch that off. The first time after this update you will be asked to allow the script to connect to external services: click Allow once.
 
 ## 10. Monthly checklist (first live month: period 2026-09)
 

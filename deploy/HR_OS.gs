@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 a97918f';
+var HROS_VERSION = '2026-09-30 e69ae6e';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -50,7 +50,8 @@ var TABS = {
   PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
   EMPLOYEE_STATUTORY_IDS: 'EMPLOYEE_STATUTORY_IDS',
   SALARY_STRUCTURE: 'SALARY_STRUCTURE',
-  PAYROLL_RATE_PROFILE: 'PAYROLL_RATE_PROFILE'
+  PAYROLL_RATE_PROFILE: 'PAYROLL_RATE_PROFILE',
+  TELEGRAM_CHATS: 'TELEGRAM_CHATS'
 };
 
 var POP = {
@@ -717,6 +718,8 @@ var HROS_SUPP_STATUSES = ['DRAFT', 'HR_APPROVED', 'ACCOUNTS_APPROVED', 'LOCKED',
 var HROS_PAYSLIP_REGISTER_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'];
 var HROS_EMAIL_LOG_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'];
 var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
+/** Telegram chats that pressed Start; the owner types EMAIL to link a chat to a person (61_Notify.gs). */
+var TELEGRAM_CHAT_HEADERS = ['CHAT_ID', 'NAME', 'USERNAME', 'FIRST_SEEN', 'EMAIL', 'ACTIVE'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
@@ -782,6 +785,9 @@ function hrosTabSpecs_() {
   specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS });
   specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS });
   specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS });
+  // Telegram chat registry (chat ids mapped to people by the owner): only the owner edits it
+  specs.push({ name: TABS.TELEGRAM_CHATS, group: 'Audit', headers: TELEGRAM_CHAT_HEADERS, protect: ['OWNER_APPROVER_EMAIL'],
+    validations: [['ACTIVE', yn]] });
   return specs;
 }
 
@@ -824,7 +830,9 @@ var HROS_CONTROL_DEFAULTS = [
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
   ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)'],
   ['AUTO_FULL_ATTENDANCE_EMP_IDS', 'VFL1001', 'Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)'],
-  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)']
+  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)'],
+  ['DAILY_REMINDER_FROM', '2026-10-01', 'Daily attendance reminders (11:00) and escalation (14:00) are active from this date (YYYY-MM-DD)'],
+  ['STAGE_NOTIFICATIONS', 'Y', 'Y = tell HR / Accounts / owner after calculate, approve and lock; N = off']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [
@@ -1948,12 +1956,15 @@ function planFormSubmitTrigger(existing, maxTriggers) {
 
 /** Idempotent. Creates the single spreadsheet onFormSubmit trigger if missing; never deletes or edits other triggers. */
 function installTriggers() {
-  var existing = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  var all = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  // the optional alert triggers (62_Reminders.gs) are checked against the platform limit of 20, not this cap of 5
+  var alertNames = typeof REMINDER_HANDLERS === 'undefined' ? [] : Object.keys(REMINDER_HANDLERS);
+  var existing = all.filter(function (t) { return alertNames.indexOf(t.handler) < 0; });
   var plan = planFormSubmitTrigger(existing, ATT_MAX_TRIGGERS);
   if (plan.create) {
     ScriptApp.newTrigger(HROS_SUBMIT_HANDLER).forSpreadsheet(getSpreadsheet_()).onFormSubmit().create();
   }
-  var res = { created: plan.create ? 1 : 0, alreadyPresent: plan.present, totalTriggers: plan.total,
+  var res = { created: plan.create ? 1 : 0, alreadyPresent: plan.present, totalTriggers: all.length + (plan.create ? 1 : 0),
     note: plan.present > 1 ? 'more than one ' + HROS_SUBMIT_HANDLER + ' trigger exists - ask the owner to remove the extra ones' : '' };
   audit('TRIGGERS_INSTALL', '', '', res);
   return res;
@@ -6836,9 +6847,12 @@ function calculateDraft(period, population) {
   });
 
   var readiness = checkReadiness(period, population, { sources: src, calcResultsByPop: calcByPop });
-  return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
+  var result = { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
     unknownCategory: population ? [] : unknownCat.map(function (u) { return u.EMP_ID; }),
     readiness: { blocked: readiness.blocked, hold: readiness.hold, warn: readiness.warn, ready: readiness.ready } };
+  // alert HR (61_Notify.gs). Everything is written already; a failing notification must never affect the run
+  try { stageNotifySafe_('CALC', { period: period, populations: summaries }); } catch (eNotify) { /* never fails the calculation */ }
+  return result;
 }
 
 // ===== 33_Comparison.gs =====
@@ -7244,6 +7258,8 @@ function approval_run_(action, period, population) {
     approval_writePc_(pc, vals);
     var held = re.calc.held.map(function (h) { return h.EMP_ID; });
     audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash, held: held });
+    // alert the next approver (61_Notify.gs); never allowed to fail or undo the approval
+    try { stageNotifySafe_(isHr ? 'HR_APPROVED' : 'ACCOUNTS_APPROVED', { period: period, population: population, calc: re.calc }); } catch (eNotify) { /* ignore */ }
     return { ok: true, status: d.newStatus, reason: d.reason, held: held };
   }
   if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
@@ -7575,6 +7591,8 @@ function lockPeriod(period, population) {
   var held = heldRows.map(function (r) { return { EMP_ID: String(r.EMP_ID).trim(), flags: String(r.FLAGS || '') }; });
   audit('LOCK', period, population, { result: 'LOCKED', lockId: lockId, rows: rows.length, user: user, hash: re.hash,
     heldNotLocked: held.map(function (h) { return h.EMP_ID; }) });
+  // alert HR (61_Notify.gs); never allowed to fail the lock
+  try { stageNotifySafe_('LOCKED', { period: period, population: population, rows: rows, held: held }); } catch (eNotify) { /* ignore */ }
   return { ok: true, status: PERIOD_STATUS.LOCKED, reason: 'OK', lockId: lockId, rows: rows.length, held: held };
 }
 
@@ -8449,6 +8467,712 @@ function emailEachPopulation_(fn, period, population, lockId) {
 function queuePayslipEmails(period, population, lockId) { return emailEachPopulation_(queuePayslipEmailsOne_, period, population, lockId); }
 function sendQueuedEmails(period, population, lockId) { return emailEachPopulation_(sendQueuedEmailsOne_, period, population, lockId); }
 
+// ===== 60_Status.gs =====
+/**
+ * 60_Status.gs - payroll status engine (read-only). Answers "is every input for this period in?" per population.
+ *
+ * payrollStatusCompute(inp) is PURE (all sheet data passed in); payrollStatus(period) is the thin sheet reader.
+ * The result is what the month-end digest (61_Notify.gs / 62_Reminders.gs) shows today, and what an October autopilot
+ * (auto calculate / lock) can reuse: {period, ready, overall, populations:[{population, site, ready, items:[{key, ok, detail,
+ * missing:[EMP_IDs]}]}]}. Nothing here writes to a sheet or changes calculation / readiness / approval / lock behaviour.
+ *
+ * Item keys use the FEED_STATUS feed names (FEED_LIST in 00_Config.gs): HOLIDAYS, CANTEEN, SOCIETY, ADVANCE, OT; the
+ * other two are WORKING_DAYS (PAYROLL_PERIOD_CATEGORY) and ATTENDANCE (INPUT_ATTENDANCE).
+ */
+var STATUS_ITEM_KEYS = ['HOLIDAYS', 'WORKING_DAYS', 'ATTENDANCE', 'OT', 'CANTEEN', 'SOCIETY', 'ADVANCE'];
+var STATUS_FIRST_MONTH_NOTE = 'no previous month to compare - HR confirms via Mark feed complete';
+var STATUS_MAX_IDS = 10;
+
+// ---------------------------------------------------------------- pure helpers
+
+function status_id_(v) { return String(v == null ? '' : v).trim().toUpperCase(); }
+function status_str_(v) { return String(v == null ? '' : v).trim(); }
+
+/** blank / non-numeric -> NaN. */
+function status_num_(v) {
+  if (v === '' || v == null) return NaN;
+  if (typeof v === 'number') return isFinite(v) ? v : NaN;
+  var s = String(v).replace(/,/g, '').trim();
+  return s === '' || isNaN(Number(s)) ? NaN : Number(s);
+}
+
+function status_inPeriod_(rows, col, period) {
+  return (rows || []).filter(function (r) { return normalizePeriod(r[col]) === period; });
+}
+
+/** Up to STATUS_MAX_IDS ids, then ", +N more". */
+function statusIdList(ids) {
+  var a = ids || [];
+  var head = a.slice(0, STATUS_MAX_IDS).join(', ');
+  return a.length > STATUS_MAX_IDS ? head + ', +' + (a.length - STATUS_MAX_IDS) + ' more' : head;
+}
+
+function status_item_(key, ok, detail, missing) {
+  return { key: key, ok: !!ok, detail: detail, missing: missing || [] };
+}
+
+function status_feedComplete_(feedStatus, feed) {
+  var v = (feedStatus || {})[feed];
+  if (v && typeof v === 'object') v = v.STATUS;
+  return status_id_(v) === 'COMPLETE';
+}
+
+// ---------------------------------------------------------------- the items (pure)
+
+function status_holidays_(inp) {
+  var done = status_feedComplete_(inp.feedStatus, 'HOLIDAYS');
+  return status_item_('HOLIDAYS', done, done ? 'HOLIDAYS feed COMPLETE' : 'HOLIDAYS feed not marked COMPLETE (HR OS > Month > Mark feed complete)');
+}
+
+function status_workingDays_(inp, pop) {
+  var row = null;
+  status_inPeriod_(inp.periodCat, 'PAYROLL_MONTH', inp.period).forEach(function (r) { if (!row && status_str_(r.PAYROLL_CATEGORY) === pop) row = r; });
+  if (!row) return status_item_('WORKING_DAYS', false, 'no PAYROLL_PERIOD_CATEGORY row for ' + inp.period + ' (run Prepare month)');
+  var wd = status_num_(row.WORKING_DAYS);
+  if (!(wd > 0)) return status_item_('WORKING_DAYS', false, 'WORKING_DAYS not filled');
+  if (wd > daysInMonth(inp.period)) return status_item_('WORKING_DAYS', false, 'WORKING_DAYS ' + wd + ' exceeds days in month');
+  return status_item_('WORKING_DAYS', true, 'WORKING_DAYS=' + wd);
+}
+
+function status_attendance_(inp, popRoster) {
+  var auto = inp.autoIds || {};
+  var need = popRoster.filter(function (e) { return !auto[status_id_(e.EMP_ID)]; });
+  var byEmp = {};
+  status_inPeriod_(inp.attendance, 'PAYROLL_MONTH', inp.period).forEach(function (r) {
+    var id = status_id_(r.EMP_ID);
+    var numeric = !isNaN(status_num_(r.PRESENT_DAYS)) && status_num_(r.PRESENT_DAYS) >= 0;
+    // a numeric row wins over a blank duplicate
+    if (!byEmp[id] || (numeric && !byEmp[id].numeric)) byEmp[id] = { row: r, numeric: numeric };
+  });
+  var missing = [], approved = 0, pending = 0;
+  need.forEach(function (e) {
+    var hit = byEmp[status_id_(e.EMP_ID)];
+    if (!hit || !hit.numeric) { missing.push(String(e.EMP_ID).trim()); return; }
+    if (status_id_(hit.row.APPROVAL_STATUS) === 'APPROVED') approved++; else pending++;
+  });
+  var have = need.length - missing.length;
+  var detail = have + '/' + need.length + ' attendance entered (' + approved + ' APPROVED, ' + pending + ' PENDING)';
+  if (Object.keys(auto).length && popRoster.length !== need.length) detail += '; ' + (popRoster.length - need.length) + ' automatic';
+  if (missing.length) detail += '; missing ' + missing.length;
+  return status_item_('ATTENDANCE', missing.length === 0, detail, missing);
+}
+
+/**
+ * OT: synced for the period (OT_PENDING_<period> written by Sync OT - it is written even when the source is empty - or
+ * INPUT_OT holds normalizer / HR_MANUAL rows of the period) and no pending (undecided) OT events in the OT window for the
+ * population. The pending count is the one Sync OT stored (nothing external is re-read here). Events of unknown EMP_IDs
+ * (stored under UNKNOWN) count against every population, exactly as readiness does. All populations are checked: every
+ * category's calculation reads OT hours.
+ */
+function status_ot_(inp, pop) {
+  var raw = inp.otPendingRaw, parsed = null, stored = raw !== undefined && raw !== null && String(raw).trim() !== '';
+  if (stored) { try { parsed = JSON.parse(String(raw)); } catch (e) { parsed = null; } }
+  var hasRows = (inp.otRows || []).some(function (r) {
+    if (normalizePeriod(r.PAYROLL_MONTH) !== inp.period) return false;
+    return status_str_(r.NORMALIZER_VERSION) !== '' || status_id_(r.SOURCE_REF) === 'HR_MANUAL';
+  });
+  if (!stored && !hasRows) return status_item_('OT', false, 'OT not synced for ' + inp.period + ' (HR OS > Month > Sync OT)');
+  if (stored && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) {
+    return status_item_('OT', false, 'OT pending record unreadable - run Sync OT again');
+  }
+  var pend = stored ? Number(parsed[pop] || 0) + Number(parsed.UNKNOWN || 0) : 0;
+  if (!isFinite(pend)) pend = 0;
+  if (pend > 0) return status_item_('OT', false, pend + ' OT request(s) still waiting for a manager decision');
+  return status_item_('OT', true, stored ? 'OT synced, none pending' : 'OT rows present; Sync OT not run since (pending unknown)');
+}
+
+/**
+ * Feed specs for the "same people as last month" rule. counted(row) = the row counts in the calculation; present(row) = the
+ * row is an entry for the employee (a 0 amount counts). CANTEEN counts VALID (or blank status) rows, SOCIETY / ADVANCE
+ * APPROVED rows; a not-yet-approved SOCIETY / ADVANCE row still proves the entry exists (it is listed as PENDING).
+ */
+var STATUS_PREV_FEEDS = [
+  { key: 'CANTEEN', rows: 'canteenRows', counted: function (r) { var s = status_id_(r.STATUS); return s === '' || s === 'VALID'; },
+    present: function (r) { return status_id_(r.STATUS) !== 'EXCEPTION'; } },
+  { key: 'SOCIETY', rows: 'societyRows', counted: function (r) { return status_id_(r.APPROVAL_STATUS) === 'APPROVED'; },
+    present: function () { return true; } },
+  { key: 'ADVANCE', rows: 'advanceRows', counted: function (r) { return status_id_(r.APPROVAL_STATUS) === 'APPROVED'; },
+    present: function () { return true; }, balanceCol: 'CLOSING_BALANCE_INR' }
+];
+
+function status_prevFeed_(inp, spec, popRoster) {
+  var prev = engine_prevPeriod(inp.period);
+  var all = inp[spec.rows] || [];
+  var prevCounted = status_inPeriod_(all, 'PAYROLL_MONTH', prev).filter(spec.counted);
+  var marked = status_feedComplete_(inp.feedStatus, spec.key);
+  if (!prevCounted.length) {
+    return { key: spec.key, ok: marked, detail: STATUS_FIRST_MONTH_NOTE + (marked ? ' (marked COMPLETE)' : ' (not yet marked COMPLETE)'), missing: [],
+      firstMonth: true };
+  }
+  var expected = {};
+  prevCounted.forEach(function (r) { expected[status_id_(r.EMP_ID)] = true; });
+  if (spec.balanceCol) {
+    // anyone whose latest earlier APPROVED entry still shows money outstanding is expected to have a row again
+    var latest = {};
+    all.forEach(function (r) {
+      var p = normalizePeriod(r.PAYROLL_MONTH);
+      if (!p || p >= inp.period || !spec.counted(r)) return;
+      var id = status_id_(r.EMP_ID);
+      if (!latest[id] || p >= latest[id].p) latest[id] = { p: p, r: r };
+    });
+    Object.keys(latest).forEach(function (id) { if (status_num_(latest[id].r[spec.balanceCol]) > 0) expected[id] = true; });
+  }
+  var have = {}, pendingCount = 0;
+  status_inPeriod_(all, 'PAYROLL_MONTH', inp.period).forEach(function (r) {
+    if (!spec.present(r)) return;
+    var id = status_id_(r.EMP_ID);
+    if (!have[id]) { have[id] = true; if (!spec.counted(r)) pendingCount++; }
+  });
+  var exp = 0, missing = [];
+  popRoster.forEach(function (e) {
+    var id = status_id_(e.EMP_ID);
+    if (!expected[id]) return;
+    exp++;
+    if (!have[id]) missing.push(String(e.EMP_ID).trim());
+  });
+  var detail = (exp - missing.length) + '/' + exp + ' expected entries in (same people as ' + prev + ')';
+  if (pendingCount) detail += '; ' + pendingCount + ' not yet approved';
+  if (missing.length) detail += '; missing ' + missing.length;
+  return { key: spec.key, ok: missing.length === 0, detail: detail, missing: missing, firstMonth: false };
+}
+
+/**
+ * PURE core. inp = {period, populations:[{code, site}], roster:[{EMP_ID, PAYROLL_CATEGORY}] (period roster), autoIds:{ID:true},
+ * feedStatus:{FEED:'COMPLETE'|'OPEN'}, periodCat, attendance, otPendingRaw, otRows, canteenRows, societyRows, advanceRows}
+ * (row arrays are whole tabs; they are filtered by period here).
+ */
+function payrollStatusCompute(inp) {
+  parsePeriod(inp.period);
+  var pops = (inp.populations || []).map(function (p) {
+    var popRoster = (inp.roster || []).filter(function (e) { return status_str_(e.PAYROLL_CATEGORY) === p.code; });
+    var items = [status_holidays_(inp), status_workingDays_(inp, p.code), status_attendance_(inp, popRoster), status_ot_(inp, p.code)];
+    STATUS_PREV_FEEDS.forEach(function (spec) { items.push(status_prevFeed_(inp, spec, popRoster)); });
+    items.forEach(function (it) { delete it.firstMonth; });
+    var ready = items.every(function (it) { return it.ok; });
+    return { population: p.code, site: p.site || '', employees: popRoster.length, ready: ready, items: items };
+  });
+  var notReady = pops.filter(function (p) { return !p.ready; }).map(function (p) { return p.population; });
+  var ready = pops.length > 0 && notReady.length === 0;
+  return { period: inp.period, ready: ready, overall: { ready: ready, populations: pops.length, notReady: notReady }, populations: pops };
+}
+
+// ---------------------------------------------------------------- digest text (pure)
+
+var STATUS_TICK = '✅', STATUS_WAIT = '⏳';
+
+/**
+ * Plain-text digest of a payrollStatusCompute result. opts.onlyKeys = ['ATTENDANCE'] limits the items, opts.sites = ['VFL']
+ * limits the populations, opts.onlyOpen drops populations that are already ok for the shown items.
+ */
+function statusDigestText(st, opts) {
+  opts = opts || {};
+  var lines = ['Payroll inputs for ' + st.period + (st.ready ? ' - all received' : '')];
+  var shown = 0;
+  st.populations.forEach(function (p) {
+    if (opts.sites && opts.sites.indexOf(p.site) < 0) return;
+    var items = p.items.filter(function (it) { return !opts.onlyKeys || opts.onlyKeys.indexOf(it.key) >= 0; });
+    if (opts.onlyOpen && items.every(function (it) { return it.ok; })) return;
+    shown++;
+    lines.push('');
+    lines.push(p.population + ' (' + p.employees + ' employees)');
+    items.forEach(function (it) {
+      if (it.ok) { lines.push(STATUS_TICK + ' ' + it.key + ' - ' + it.detail); return; }
+      lines.push(STATUS_WAIT + ' ' + it.key + ' - ' + it.detail + (it.missing.length ? ' [' + statusIdList(it.missing) + ']' : ''));
+    });
+  });
+  return { text: lines.join('\n'), populationsShown: shown };
+}
+
+/** Pure. The payroll period the month-end digest is about on an ISO date = the PREVIOUS calendar month; day 1..10 only, else ''. */
+function statusDigestPeriod(todayIso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(todayIso || ''));
+  if (!m) return '';
+  var day = +m[3];
+  if (day < 1 || day > 10) return '';
+  return engine_prevPeriod(m[1] + '-' + m[2]);
+}
+
+/** Pure. The period "Payroll status" offers by default (previous calendar month of the ISO date), clamped to the minimum. */
+function statusDefaultPeriod(todayIso, minPeriod) {
+  var m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(todayIso || ''));
+  var p = m ? engine_prevPeriod(m[1] + '-' + m[2]) : (minPeriod || HROS_MIN_PERIOD_FLOOR);
+  return minPeriod && p < minPeriod ? minPeriod : p;
+}
+
+// ---------------------------------------------------------------- sheet reader
+
+function status_readOpt_(name) { return getSheet(name) ? readObjects(name) : []; }
+
+/** ISO date of today in the script time zone. */
+function status_todayIso_() { return Utilities.formatDate(new Date(), HROS_TZ, 'yyyy-MM-dd'); }
+
+/** Reads the sheets and returns payrollStatusCompute(...) for the period (no writes). */
+function payrollStatus(period) {
+  guardPeriod_(period);
+  var ctl = getSheet(TABS.PAYROLL_CONTROL) ? readControlMap() : {};
+  var fs = {};
+  status_inPeriod_(status_readOpt_(TABS.FEED_STATUS), 'PERIOD', period).forEach(function (r) {
+    var f = status_id_(r.FEED);
+    if (f) fs[f] = status_id_(r.STATUS);
+  });
+  var prev = engine_prevPeriod(period);
+  function twoPeriods(tab) {
+    return status_readOpt_(tab).filter(function (r) { var p = normalizePeriod(r.PAYROLL_MONTH); return p && p <= period; });
+  }
+  return payrollStatusCompute({
+    period: period,
+    populations: categoryList().map(function (e) { return { code: e.code, site: e.site }; }),
+    roster: buildRoster(period),
+    autoIds: parseIdSet_(ctl.AUTO_FULL_ATTENDANCE_EMP_IDS),
+    feedStatus: fs,
+    periodCat: status_inPeriod_(status_readOpt_(TABS.PAYROLL_PERIOD_CATEGORY), 'PAYROLL_MONTH', period),
+    attendance: status_inPeriod_(status_readOpt_(TABS.INPUT_ATTENDANCE), 'PAYROLL_MONTH', period),
+    otPendingRaw: ctl['OT_PENDING_' + period],
+    otRows: status_inPeriod_(status_readOpt_(TABS.INPUT_OT), 'PAYROLL_MONTH', period),
+    canteenRows: twoPeriods(TABS.INPUT_CANTEEN),
+    societyRows: twoPeriods(TABS.INPUT_SOCIETY),
+    advanceRows: twoPeriods(TABS.INPUT_ADVANCE),
+    prevPeriod: prev
+  });
+}
+
+// ===== 61_Notify.gs =====
+/**
+ * 61_Notify.gs - alerts: Telegram first, email (MailApp) as the fallback; stage notifications for the payroll flow.
+ *
+ * Secrets: the bot token lives ONLY in Script Properties (TELEGRAM_BOT_TOKEN), never in a sheet and never in a log / error text.
+ * People: TELEGRAM_CHATS (CHAT_ID, NAME, USERNAME, FIRST_SEEN, EMAIL, ACTIVE). Anyone who presses Start in the bot is recorded
+ * with a blank EMAIL; only the owner typing an email against a chat links it to a person. An unmapped chat never gets payroll data.
+ * No webhook is used: telegramPollUpdates_() pulls getUpdates on demand (menu "Telegram: refresh chats").
+ *
+ * Message rule: short, totals per population are fine, never a figure of an individual. AUDIT_LOG gets subject + channel + ok only.
+ */
+var TELEGRAM_TOKEN_PROP = 'TELEGRAM_BOT_TOKEN';
+var TELEGRAM_OFFSET_PROP = 'TELEGRAM_UPDATE_OFFSET';
+var TELEGRAM_API_ = 'https://api.telegram.org/bot';
+var TELEGRAM_MAX_TEXT = 3800;
+var TELEGRAM_START_REPLY = 'Registered. Ask the payroll owner to link you.';
+
+// ---------------------------------------------------------------- pure helpers
+
+/** Pure. "a@x.com, B@y.com; c@z" -> ['a@x.com','b@y.com'] (lower-cased, deduplicated, must contain @). */
+function notifyEmailList(v) {
+  var seen = {}, out = [];
+  (Array.isArray(v) ? v : String(v == null ? '' : v).split(/[\s,;]+/)).forEach(function (x) {
+    x = String(x == null ? '' : x).trim().toLowerCase();
+    if (x && x.indexOf('@') > 0 && !seen[x]) { seen[x] = true; out.push(x); }
+  });
+  return out;
+}
+
+/** Pure. TELEGRAM_CHATS rows -> {email: [chatId,...]} for ACTIVE rows with an EMAIL (ACTIVE blank counts as Y; only N switches off). */
+function notifyChatMap(rows) {
+  var map = {};
+  (rows || []).forEach(function (r) {
+    var email = String(r.EMAIL == null ? '' : r.EMAIL).trim().toLowerCase();
+    var chat = String(r.CHAT_ID == null ? '' : r.CHAT_ID).trim();
+    if (!email || !chat) return;
+    if (String(r.ACTIVE == null ? '' : r.ACTIVE).trim().toUpperCase() === 'N') return;
+    (map[email] = map[email] || []);
+    if (map[email].indexOf(chat) < 0) map[email].push(chat);
+  });
+  return map;
+}
+
+/**
+ * Pure. getUpdates result array + known chat ids -> {offset, newChats:[{chatId,name,username}], replyTo:[chatId]}.
+ * Only a private chat that sent /start (or /start@bot ...) is recorded; every update advances the offset.
+ */
+function telegramPlanUpdates(updates, knownChatIds, prevOffset) {
+  var known = {};
+  (knownChatIds || []).forEach(function (id) { known[String(id)] = true; });
+  var offset = prevOffset || 0, newChats = [];
+  (updates || []).forEach(function (u) {
+    if (u && typeof u.update_id === 'number' && u.update_id + 1 > offset) offset = u.update_id + 1;
+    var m = u && u.message;
+    if (!m || !m.chat || m.chat.type !== 'private') return;
+    if (!/^\/start(@\w+)?(\s|$)/i.test(String(m.text || '').trim())) return;
+    var id = String(m.chat.id);
+    if (known[id]) return;
+    known[id] = true;
+    var name = [m.chat.first_name, m.chat.last_name].filter(function (x) { return x; }).join(' ');
+    newChats.push({ chatId: id, name: name, username: m.chat.username ? '@' + m.chat.username : '' });
+  });
+  return { offset: offset, newChats: newChats, replyTo: newChats.map(function (c) { return c.chatId; }) };
+}
+
+// ---------------------------------------------------------------- token / Telegram API
+
+function notify_props_() { return PropertiesService.getScriptProperties(); }
+
+function notify_token_() {
+  try { return String(notify_props_().getProperty(TELEGRAM_TOKEN_PROP) || '').trim(); } catch (e) { return ''; }
+}
+
+/** Calls a Bot API method. Never throws, never returns the token / URL: {ok, status, result, error}. */
+function telegramApi_(token, method, payload) {
+  try {
+    var resp = UrlFetchApp.fetch(TELEGRAM_API_ + token + '/' + method, { method: 'post', contentType: 'application/json',
+      payload: JSON.stringify(payload || {}), muteHttpExceptions: true });
+    var status = resp.getResponseCode(), body = null;
+    try { body = JSON.parse(resp.getContentText()); } catch (e1) { body = null; }
+    var ok = status >= 200 && status < 300 && !!body && body.ok === true;
+    return { ok: ok, status: status, result: body ? body.result : null, error: ok ? '' : ('HTTP ' + status + (body && body.description ? ' ' + body.description : '')) };
+  } catch (e) {
+    return { ok: false, status: 0, result: null, error: 'fetch failed' };
+  }
+}
+
+// ---------------------------------------------------------------- chats registry
+
+function notify_chatRows_() { return getSheet(TABS.TELEGRAM_CHATS) ? readObjects(TABS.TELEGRAM_CHATS) : []; }
+
+/**
+ * Pulls pending bot updates (getUpdates, stored offset, no webhook), records every new /start chat in TELEGRAM_CHATS
+ * (EMAIL blank, ACTIVE Y) and replies once. Returns {updates, newChats, names}.
+ */
+function telegramPollUpdates_() {
+  var token = notify_token_();
+  if (!token) throw new Error('No Telegram bot token yet (HR OS > Alerts > Telegram: set bot token)');
+  var props = notify_props_();
+  var prevOffset = parseInt(props.getProperty(TELEGRAM_OFFSET_PROP) || '0', 10) || 0;
+  var req = { timeout: 0, allowed_updates: ['message'] };
+  if (prevOffset > 0) req.offset = prevOffset;
+  var res = telegramApi_(token, 'getUpdates', req);
+  if (!res.ok) throw new Error('Telegram getUpdates failed: ' + res.error);
+  var updates = Array.isArray(res.result) ? res.result : [];
+  var sheet = ensureSheet(TABS.TELEGRAM_CHATS);
+  ensureHeaders(sheet, TELEGRAM_CHAT_HEADERS);
+  var known = notify_chatRows_().map(function (r) { return String(r.CHAT_ID).trim(); });
+  var plan = telegramPlanUpdates(updates, known, prevOffset);
+  if (plan.newChats.length) {
+    appendObjects(sheet, plan.newChats.map(function (c) {
+      return { CHAT_ID: c.chatId, NAME: c.name, USERNAME: c.username, FIRST_SEEN: nowIso_(), EMAIL: '', ACTIVE: 'Y' };
+    }), { textHeaders: ['CHAT_ID'] });
+  }
+  // the offset is stored after the rows are written: a failed write re-reads the same updates next time (no chat is lost)
+  if (plan.offset > prevOffset) props.setProperty(TELEGRAM_OFFSET_PROP, String(plan.offset));
+  plan.replyTo.forEach(function (chatId) { telegramApi_(token, 'sendMessage', { chat_id: chatId, text: TELEGRAM_START_REPLY }); });
+  var out = { updates: updates.length, newChats: plan.newChats.length, names: plan.newChats.map(function (c) { return c.name || c.username || c.chatId; }) };
+  audit('TELEGRAM_REFRESH', '', '', { updates: out.updates, newChats: out.newChats });
+  return out;
+}
+
+// ---------------------------------------------------------------- notify_
+
+function notify_audit_(subject, channel, ok, to) {
+  try { audit('NOTIFY', '', '', { subject: String(subject).slice(0, 120), channel: channel, ok: !!ok, to: to }); } catch (e) { /* the log never blocks an alert */ }
+}
+
+function notify_email_(email, subject, text) {
+  if (typeof MailApp === 'undefined') return false; // not running inside Apps Script
+  try { MailApp.sendEmail({ to: email, subject: subject, body: text }); return true; } catch (e) { return false; }
+}
+
+/**
+ * Sends subject + text to each email: Telegram to its mapped ACTIVE chat(s) when a token exists, otherwise (no token, no
+ * mapped chat, or every Telegram send failed) an email via MailApp. Never throws. Returns [{to, channel:'TELEGRAM'|'EMAIL'|'NONE', ok}].
+ */
+function notify_(emails, subject, text) {
+  var out = [];
+  try {
+    var list = notifyEmailList(emails);
+    if (!list.length) return out;
+    var token = notify_token_(), chats = {};
+    if (token) { try { chats = notifyChatMap(notify_chatRows_()); } catch (e0) { chats = {}; } }
+    var body = String(text == null ? '' : text);
+    var tgText = (subject ? subject + '\n' : '') + body;
+    if (tgText.length > TELEGRAM_MAX_TEXT) tgText = tgText.slice(0, TELEGRAM_MAX_TEXT) + '...';
+    list.forEach(function (email) {
+      var done = false, tried = false;
+      (token && chats[email] ? chats[email] : []).forEach(function (chatId) {
+        tried = true;
+        var r = telegramApi_(token, 'sendMessage', { chat_id: chatId, text: tgText });
+        if (r.ok) done = true;
+      });
+      if (tried) notify_audit_(subject, 'TELEGRAM', done, email);
+      if (done) { out.push({ to: email, channel: 'TELEGRAM', ok: true }); return; }
+      if (typeof MailApp === 'undefined') { out.push({ to: email, channel: 'NONE', ok: false }); return; }
+      var ok = notify_email_(email, subject, body);
+      notify_audit_(subject, 'EMAIL', ok, email);
+      out.push({ to: email, channel: 'EMAIL', ok: ok });
+    });
+  } catch (e) { /* notify_ never throws */ }
+  return out;
+}
+
+// ---------------------------------------------------------------- owner-only menu actions
+
+function notify_requireOwner_() {
+  var owner = getOwnerApproverEmail().toLowerCase(), user = auditUser_().toLowerCase();
+  if (!owner) throw new Error('OWNER_APPROVER_EMAIL is not set in PAYROLL_CONTROL');
+  if (user !== owner) throw new Error('Owner only: log in as OWNER_APPROVER_EMAIL (' + owner + ')');
+  return user;
+}
+
+/** Validates the token with getMe, then stores it in Script Properties. The token is never logged or echoed. */
+function telegramSetToken(token) {
+  notify_requireOwner_();
+  token = String(token == null ? '' : token).trim();
+  if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token)) throw new Error('That does not look like a bot token (from @BotFather: 123456:ABC...)');
+  var me = telegramApi_(token, 'getMe', {});
+  if (!me.ok) throw new Error('Telegram did not accept the token (' + me.error + '). Nothing was saved.');
+  notify_props_().setProperty(TELEGRAM_TOKEN_PROP, token);
+  audit('TELEGRAM_TOKEN_SET', '', '', { bot: me.result && me.result.username ? '@' + me.result.username : '' });
+  return 'Bot token saved' + (me.result && me.result.username ? ' (bot @' + me.result.username + ')' : '') + '. Now ask each person to open the bot and press Start.';
+}
+
+function telegramRefreshChats() {
+  notify_requireOwner_();
+  var r = telegramPollUpdates_();
+  return r.newChats + ' new chat(s) registered' + (r.names.length ? ': ' + r.names.join(', ') : '') + '. ' + r.updates +
+    ' update(s) read.\nType each person\'s email in the EMAIL column of TELEGRAM_CHATS to link them.';
+}
+
+/** Sends a test message to the logged-in user (Telegram when linked, else email) and says which channel was used. */
+function telegramSendTestToMe() {
+  var me = auditUser_();
+  if (!me || me === 'unknown') throw new Error('Cannot determine your email');
+  var res = notify_([me], 'HR OS test message', 'HR OS alerts work. This is a test.');
+  var r = res[0];
+  if (!r) return 'Nothing was sent.';
+  var why = r.channel === 'EMAIL' && notify_token_() ? ' (your chat is not linked yet: type your email in TELEGRAM_CHATS)' : '';
+  return (r.ok ? 'Sent via ' : 'FAILED via ') + r.channel + ' to ' + r.to + why;
+}
+
+// ---------------------------------------------------------------- stage notifications
+
+function stage_fmt_(n) {
+  var x = Number(n);
+  return isFinite(x) ? x.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : '0.00';
+}
+
+/** Kill switch: PAYROLL_CONTROL STAGE_NOTIFICATIONS = N turns the stage messages off (anything else = on). */
+function stage_enabled_() {
+  return String(getControl('STAGE_NOTIFICATIONS', 'Y')).trim().toUpperCase() !== 'N';
+}
+
+/** Pure. One stage message: {subject, text, to:[roles]} for kind CALC | HR_APPROVED | ACCOUNTS_APPROVED | LOCKED. */
+function stageMessage(kind, d) {
+  var pop = d.population || '', per = d.period;
+  if (kind === 'CALC') {
+    var lines = (d.populations || []).map(function (s) {
+      return s.population + ': ' + s.payable + ' employees, ' + (s.held || []).length + ' on hold, total net ' + stage_fmt_(s.totalNet);
+    });
+    return { subject: 'Payroll draft ready - ' + per, text: 'Draft calculated for ' + per + '.\n' + lines.join('\n') + '\nNext: review and HR approve.', to: ['HR'] };
+  }
+  var head = pop + ' ' + per + ': ' + d.employees + ' employees, ' + (d.held || 0) + ' on hold, total net ' + stage_fmt_(d.net) + '.';
+  if (kind === 'HR_APPROVED') return { subject: 'HR approved - ' + pop + ' ' + per, text: 'HR approved. ' + head + '\nNext: Accounts approve.', to: ['ACCOUNTS'] };
+  if (kind === 'ACCOUNTS_APPROVED') return { subject: 'Accounts approved - ' + pop + ' ' + per, text: 'Accounts approved. ' + head + '\nNext: lock the period.', to: ['HR', 'OWNER'] };
+  if (kind === 'LOCKED') return { subject: 'Locked - ' + pop + ' ' + per, text: 'Locked. ' + head + '\nNext: generate payslips.', to: ['HR'] };
+  return null;
+}
+
+function stage_recipients_(roles) {
+  var out = [];
+  roles.forEach(function (r) {
+    if (r === 'HR') out.push(getControl('HR_APPROVER_EMAIL', ''));
+    else if (r === 'ACCOUNTS') out.push(getControl('ACCOUNTS_APPROVER_EMAIL', ''));
+    else if (r === 'OWNER') out.push(getOwnerApproverEmail());
+  });
+  return notifyEmailList(out);
+}
+
+/** Payable rows -> {employees, net}. Uses the engine's payable-row filter (held rows are not payable). */
+function stage_totals_(rows) {
+  var pay = engine_payableRows_(rows || []);
+  return { employees: pay.length, net: engine_sum_(pay, 'NET_PAY') };
+}
+
+/**
+ * The hook the payroll actions call AFTER their work is done. Wraps EVERYTHING in try/catch: a failing notification can
+ * never fail, slow down by more than a send, or roll back the payroll action. d carries what the action already computed:
+ * CALC {period, populations: calculateDraft summaries}; HR_APPROVED / ACCOUNTS_APPROVED {period, population, calc} (engine result);
+ * LOCKED {period, population, rows (the PAYROLL_LOCKED rows), held}.
+ */
+function stageNotifySafe_(kind, d) {
+  try {
+    if (!stage_enabled_()) return null;
+    var data = { period: d.period, population: d.population };
+    if (kind === 'CALC') data.populations = d.populations;
+    else if (kind === 'LOCKED') { var t = stage_totals_(d.rows); data.employees = t.employees; data.net = t.net; data.held = (d.held || []).length; }
+    else { var t2 = stage_totals_(d.calc && d.calc.rows); data.employees = t2.employees; data.net = t2.net; data.held = d.calc && d.calc.held ? d.calc.held.length : 0; }
+    var msg = stageMessage(kind, data);
+    if (!msg) return null;
+    return notify_(stage_recipients_(msg.to), msg.subject, msg.text);
+  } catch (e) {
+    return null;
+  }
+}
+
+// ===== 62_Reminders.gs =====
+/**
+ * 62_Reminders.gs - time-driven alerts: daily attendance reminder (11:00) + escalation (14:00), month-end input digest
+ * (11:05, day 1-10). Nothing here runs until the owner installs the triggers (HR OS > Alerts > Install reminder triggers).
+ * Apps Script time triggers fire inside the hour asked for (atHour) within about +-15 minutes of nearMinute, not to the second.
+ */
+var REMINDER_HANDLERS = {
+  dailyAttendanceReminder: { hour: 11, minute: 0 },
+  dailyAttendanceEscalation: { hour: 14, minute: 0 },
+  inputDigest: { hour: 11, minute: 5 }
+};
+/**
+ * Apps Script allows 20 triggers per user per script. The HR OS form-submit trigger keeps its own conservative cap
+ * (ATT_MAX_TRIGGERS, which does not count these three); the reminder triggers are checked against the platform limit.
+ */
+var HROS_PLATFORM_MAX_TRIGGERS = 20;
+var REMINDER_FROM_DEFAULT = '2026-10-01';
+var DIGEST_DONE_PROP_PREFIX = 'DIGEST_ALL_READY_SENT_';
+
+function reminderHandlerNames_() { return Object.keys(REMINDER_HANDLERS); }
+
+// ---------------------------------------------------------------- pure
+
+/**
+ * Pure. What to do for one site on one date. args: {site, date, from (ISO, PAYROLL_CONTROL DAILY_REMINDER_FROM), weeklyOff
+ * (SUN..SAT), holidays (HOLIDAY_CALENDAR rows), dailyRows (ATTENDANCE_DAILY rows), hasPopulations}.
+ * Returns {site, action:'SEND'|'SKIP', reason}. A daily response counts when ATTENDANCE_DAILY has any row for the site and date.
+ */
+function reminderDecision(a) {
+  if (!a.hasPopulations) return { site: a.site, action: 'SKIP', reason: 'no active population at this site' };
+  if (!a.from || a.date < a.from) return { site: a.site, action: 'SKIP', reason: 'before DAILY_REMINDER_FROM ' + (a.from || '(blank)') };
+  if (weekdayOf(a.date) === a.weeklyOff) return { site: a.site, action: 'SKIP', reason: 'weekly off' };
+  if (isPaidHoliday_(a.holidays, a.date, a.site)) return { site: a.site, action: 'SKIP', reason: 'paid holiday' };
+  var got = (a.dailyRows || []).some(function (r) {
+    return toIsoDate(r.DATE) === a.date && legacySite_(r.SITE) === a.site;
+  });
+  return got ? { site: a.site, action: 'SKIP', reason: 'daily attendance received' } : { site: a.site, action: 'SEND', reason: 'not received' };
+}
+
+/**
+ * Pure. Existing triggers [{handler}] -> {create:[handlers missing], present:[handlers already there], total}. Throws when
+ * creating them would pass maxTriggers. Foreign triggers are only counted, never touched.
+ */
+function planReminderTriggers(existing, maxTriggers) {
+  var max = maxTriggers || HROS_PLATFORM_MAX_TRIGGERS;
+  var have = {};
+  (existing || []).forEach(function (t) { have[t.handler] = true; });
+  var names = reminderHandlerNames_();
+  var create = names.filter(function (n) { return !have[n]; }), present = names.filter(function (n) { return have[n]; });
+  if ((existing || []).length + create.length > max) {
+    throw new Error('Trigger limit: ' + existing.length + ' existing + ' + create.length + ' new exceeds ' + max + ' (Apps Script allows 20 per script)');
+  }
+  return { create: create, present: present, total: (existing || []).length + create.length };
+}
+
+// ---------------------------------------------------------------- daily attendance reminder
+
+function reminder_liveUrl_(site) {
+  var def = ATT_FORM_DEFS[site];
+  try {
+    var id = def ? String(getControl(def.idKey, '')).trim() : '';
+    if (id) return String(FormApp.openById(id).getPublishedUrl());
+  } catch (e) { /* fall through */ }
+  return '(form link unavailable - ask HR)';
+}
+
+/**
+ * mode 'REMINDER' -> REGISTER_ENTRY_EMAILS_<SITE>; 'ESCALATION' -> the same people plus the owner, only for sites still missing. dateIso defaults to today.
+ * Returns [{site, action, reason, sent}].
+ */
+function attendanceReminderRun_(mode, dateIso) {
+  var date = dateIso || status_todayIso_();
+  var from = toIsoDate(getControl('DAILY_REMINDER_FROM', REMINDER_FROM_DEFAULT));
+  var holidays = status_readOpt_(TABS.HOLIDAY_CALENDAR), daily = status_readOpt_(TABS.ATTENDANCE_DAILY).filter(function (r) { return toIsoDate(r.DATE) === date; });
+  var owner = getOwnerApproverEmail(), out = [];
+  [SITE_VFL, SITE_PUNE].forEach(function (site) {
+    var d = reminderDecision({ site: site, date: date, from: from, weeklyOff: getWeeklyOff(site), holidays: holidays, dailyRows: daily,
+      hasPopulations: populationsOfSite(site).length > 0 });
+    var sent = [];
+    if (d.action === 'SEND') {
+      var subject = 'Daily attendance for ' + site + ' not received for ' + date;
+      var text = subject + '. Form: ' + reminder_liveUrl_(site);
+      var to = notifyEmailList(getControl('REGISTER_ENTRY_EMAILS_' + site, ''));
+      if (mode === 'ESCALATION') to = notifyEmailList(to.concat([owner]));
+      if (mode === 'ESCALATION') text = 'Still missing after the 11:00 reminder. ' + text;
+      sent = notify_(to, subject, text);
+    }
+    out.push({ site: site, action: d.action, reason: d.reason, sent: sent });
+  });
+  return out;
+}
+
+/** 11:00 time trigger. No-op before DAILY_REMINDER_FROM, on the site's weekly off and on its paid holidays. */
+function dailyAttendanceReminder() { return attendanceReminderRun_('REMINDER'); }
+
+/** 14:00 time trigger: if a site is still missing, the owner is told too. */
+function dailyAttendanceEscalation() { return attendanceReminderRun_('ESCALATION'); }
+
+// ---------------------------------------------------------------- month-end input digest
+
+function digest_periodLocked_(period) {
+  var st = getPeriodStatusMap(period), pops = populationList();
+  return pops.length > 0 && pops.every(function (p) { return st[p] === PERIOD_STATUS.LOCKED; });
+}
+
+/**
+ * 11:05 time trigger, day 1-10 of the month after the payroll period (period = previous calendar month). HR gets the full
+ * digest, the site's REGISTER_ENTRY_EMAILS_<SITE> get their site's attendance lines. Once every population is ready one
+ * "all inputs received" message goes to HR and the owner and the digest stops for that period.
+ */
+function inputDigest() { return inputDigestRun_(status_todayIso_()); }
+
+function inputDigestRun_(todayIso) {
+  var period = statusDigestPeriod(todayIso);
+  if (!period) return { skipped: 'outside day 1-10' };
+  if (period < getMinPeriod()) return { skipped: 'period ' + period + ' is before MIN_PERIOD' };
+  if (digest_periodLocked_(period)) return { skipped: period + ' is already locked', period: period };
+  var props = notify_props_(), doneKey = DIGEST_DONE_PROP_PREFIX + period;
+  if (props.getProperty(doneKey)) return { skipped: 'all inputs already reported for ' + period, period: period };
+  var st = payrollStatus(period);
+  var hr = notifyEmailList(getControl('HR_APPROVER_EMAIL', '')), owner = notifyEmailList(getOwnerApproverEmail());
+  if (st.ready) {
+    var msg = 'All inputs received for ' + period + ' - ready to calculate.';
+    var sent = notify_(notifyEmailList(hr.concat(owner)), 'Payroll ' + period + ': all inputs received', msg);
+    props.setProperty(doneKey, todayIso);
+    audit('INPUT_DIGEST', period, '', { allReady: true });
+    return { period: period, ready: true, sent: sent };
+  }
+  var full = statusDigestText(st, {});
+  var sentHr = notify_(hr, 'Payroll inputs ' + period + ': still waiting', full.text);
+  var sentSites = [];
+  [SITE_VFL, SITE_PUNE].forEach(function (site) {
+    var part = statusDigestText(st, { sites: [site], onlyKeys: ['ATTENDANCE'], onlyOpen: true });
+    if (!part.populationsShown) return;
+    sentSites = sentSites.concat(notify_(notifyEmailList(getControl('REGISTER_ENTRY_EMAILS_' + site, '')).filter(function (e) { return hr.indexOf(e) < 0; }),
+      'Attendance for ' + period + ' still missing (' + site + ')', part.text));
+  });
+  audit('INPUT_DIGEST', period, '', { allReady: false, notReady: st.overall.notReady });
+  return { period: period, ready: false, sent: sentHr.concat(sentSites) };
+}
+
+// ---------------------------------------------------------------- install / remove (owner only, explicit menu actions)
+
+function installReminderTriggers() {
+  notify_requireOwner_();
+  var existing = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  var plan = planReminderTriggers(existing, HROS_PLATFORM_MAX_TRIGGERS);
+  plan.create.forEach(function (name) {
+    var h = REMINDER_HANDLERS[name];
+    ScriptApp.newTrigger(name).timeBased().everyDays(1).atHour(h.hour).nearMinute(h.minute).inTimezone(HROS_TZ).create();
+  });
+  var res = { created: plan.create, alreadyPresent: plan.present, totalTriggers: plan.total };
+  audit('REMINDER_TRIGGERS_INSTALL', '', '', res);
+  return res;
+}
+
+function removeReminderTriggers() {
+  notify_requireOwner_();
+  var names = reminderHandlerNames_(), removed = [];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (names.indexOf(t.getHandlerFunction()) < 0) return; // never touch any other trigger
+    ScriptApp.deleteTrigger(t);
+    removed.push(t.getHandlerFunction());
+  });
+  audit('REMINDER_TRIGGERS_REMOVE', '', '', { removed: removed });
+  return { removed: removed };
+}
+
 // ===== 90_Menu.gs =====
 /**
  * 90_Menu.gs - "HR OS" menu (DESIGN section 4). Later-stage items go through callStage_ so the menu works now.
@@ -8502,6 +9226,15 @@ function onOpen() {
       .addItem('Generate payslips (locked only)', 'menuGeneratePayslips')
       .addItem('Queue emails', 'menuQueueEmails')
       .addItem('Send queued emails', 'menuSendEmails'))
+    .addSubMenu(ui.createMenu('Alerts')
+      .addItem('Payroll status...', 'menuPayrollStatus')
+      .addSeparator()
+      .addItem('Telegram: set bot token', 'menuTelegramSetToken')
+      .addItem('Telegram: refresh chats', 'menuTelegramRefreshChats')
+      .addItem('Telegram: send test message to me', 'menuTelegramTest')
+      .addSeparator()
+      .addItem('Install reminder triggers', 'menuInstallReminderTriggers')
+      .addItem('Remove reminder triggers', 'menuRemoveReminderTriggers'))
     .addToUi();
 }
 
@@ -8685,6 +9418,30 @@ function lockAction_(title, fn) {
 function menuGeneratePayslips() { lockAction_('Generate payslips', 'generatePayslips'); }
 function menuQueueEmails() { lockAction_('Queue emails', 'queuePayslipEmails'); }
 function menuSendEmails() { lockAction_('Send queued emails', 'sendQueuedEmails'); }
+
+// ---- Alerts: status, Telegram, reminder triggers (61_Notify.gs, 62_Reminders.gs)
+/** Blank period = the previous calendar month (the month being paid). Shows the same digest the month-end e-mail carries. */
+function menuPayrollStatus() {
+  run_('Payroll status', function () {
+    var def = statusDefaultPeriod(status_todayIso_(), getMinPeriod());
+    var p = ask_('Payroll status', 'PERIOD (YYYY-MM); blank = ' + def);
+    if (p === null) return null;
+    p = p || def;
+    guardPeriod_(p);
+    return statusDigestText(payrollStatus(p), {}).text;
+  });
+}
+function menuTelegramSetToken() {
+  run_('Telegram: set bot token', function () {
+    notify_requireOwner_();
+    var t = ask_('Telegram: set bot token', 'Paste the bot token from @BotFather (it is stored in Script Properties, not in the sheet)');
+    return t ? telegramSetToken(t) : null;
+  });
+}
+function menuTelegramRefreshChats() { run_('Telegram: refresh chats', telegramRefreshChats); }
+function menuTelegramTest() { run_('Telegram: send test message', telegramSendTestToMe); }
+function menuInstallReminderTriggers() { run_('Install reminder triggers', installReminderTriggers); }
+function menuRemoveReminderTriggers() { run_('Remove reminder triggers', removeReminderTriggers); }
 
 // ===== 99_Audit.gs =====
 /**

@@ -545,6 +545,14 @@ SCHEMA = json.loads(r"""{
    "Status",
    "User",
    "Message"
+  ],
+  "TELEGRAM_CHATS": [
+   "CHAT_ID",
+   "NAME",
+   "USERNAME",
+   "FIRST_SEEN",
+   "EMAIL",
+   "ACTIVE"
   ]
  },
  "control": [
@@ -652,6 +660,16 @@ SCHEMA = json.loads(r"""{
    "ZERO_PAY_ALLOWED_EMP_IDS",
    "VFL1001",
    "Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)"
+  ],
+  [
+   "DAILY_REMINDER_FROM",
+   "2026-10-01",
+   "Daily attendance reminders (11:00) and escalation (14:00) are active from this date (YYYY-MM-DD)"
+  ],
+  [
+   "STAGE_NOTIFICATIONS",
+   "Y",
+   "Y = tell HR / Accounts / owner after calculate, approve and lock; N = off"
   ]
  ],
  "statutoryDefaults": [

@@ -140,13 +140,24 @@ Tabs it does not recognise (for example an old `ATT_FORM_NASHIK_OLD`) are put at
 
 HR fills the form once per month (it can be submitted in parts: only filled boxes are saved). The result arrives by email. Allowed emails: HR approver, owner, `REGISTER_ENTRY_EMAILS` (all sites); `REGISTER_ENTRY_EMAILS_VFL` (default hrmanager@varshaforgings.com) may enter VFL employees only and `REGISTER_ENTRY_EMAILS_PUNE` (default ea.varshaforgings@gmail.com) Pune employees only (the in-sheet register shows them only their site); anyone else is rejected and nothing is written. HR then approves attendance per group as before. The in-sheet register still works and writes the same rows.
 
+## E6. Telegram alerts (optional)
+
+1. In Telegram open **@BotFather**, send `/newbot`, choose a name, copy the token.
+2. **HR OS ▸ Alerts ▸ Telegram: set bot token**, paste it.
+3. Each person (HR, Accounts, attendance entry people) opens the bot and presses **Start**.
+4. **HR OS ▸ Alerts ▸ Telegram: refresh chats**, then type each person's email in the **EMAIL** column of the new tab `TELEGRAM_CHATS`.
+5. **HR OS ▸ Alerts ▸ Telegram: send test message to me** (it tells you if it went by Telegram or email).
+6. **HR OS ▸ Alerts ▸ Install reminder triggers** (daily attendance reminder ~11:00, escalation ~14:00, month-end input digest ~11:05). Remove them any time with **Remove reminder triggers**.
+
+The first run after updating the script asks for one extra permission (connect to external services). Click Allow once, as the owner. Until Telegram is set up, alerts go by email.
+
 ## F. Quick self-check
 
 - The **HR OS** menu is visible.
 - Extensions ▸ Apps Script ▸ Triggers shows **one** trigger (hrosOnFormSubmit, "From spreadsheet - On form submit").
 - These tabs exist (after setup, in this order; hidden tabs are marked). The tab `_TEMP` is gone.
 
-  PAYROLL_CONTROL, PAYROLL_PERIOD_CATEGORY, FEED_STATUS, PAYROLL_CATEGORY_CONFIG, STATUTORY_CONFIG, EFFICIENCY_CONFIG, PT_EXEMPTIONS, HOLIDAY_CALENDAR, EMPLOYEE_MASTER, SALARY_STRUCTURE, PAYROLL_RATE_PROFILE, EMPLOYEE_STATUTORY_IDS (hidden), INPUT_OT, INPUT_CANTEEN, INPUT_EFFICIENCY, INPUT_ADVANCE, INPUT_SOCIETY, INPUT_ADJUSTMENTS, INPUT_LEAVE, ATTENDANCE_DAILY, OT_FORM_RESPONSES, CANTEEN_FORM_RESPONSES, EFFICIENCY_FORM_RESPONSES, INPUT_ATTENDANCE, ATTENDANCE_COMPARISON, PAYROLL_READINESS, PAYROLL_DRAFT, PAYROLL_STAFF, PAYROLL_WORKER, PAYROLL_CONSULTANT, PAYROLL_PUNE_STAFF, PAYROLL_EXCEPTIONS, PAYROLL_RECON, PAYROLL_SUPPLEMENTARY, PAYROLL_LOCKED (hidden), PAYSLIP_REGISTER, PAYSLIP_EMAIL_LOG, AUDIT_LOG.
+  PAYROLL_CONTROL, PAYROLL_PERIOD_CATEGORY, FEED_STATUS, PAYROLL_CATEGORY_CONFIG, STATUTORY_CONFIG, EFFICIENCY_CONFIG, PT_EXEMPTIONS, HOLIDAY_CALENDAR, EMPLOYEE_MASTER, SALARY_STRUCTURE, PAYROLL_RATE_PROFILE, EMPLOYEE_STATUTORY_IDS (hidden), INPUT_OT, INPUT_CANTEEN, INPUT_EFFICIENCY, INPUT_ADVANCE, INPUT_SOCIETY, INPUT_ADJUSTMENTS, INPUT_LEAVE, ATTENDANCE_DAILY, OT_FORM_RESPONSES, CANTEEN_FORM_RESPONSES, EFFICIENCY_FORM_RESPONSES, INPUT_ATTENDANCE, ATTENDANCE_COMPARISON, PAYROLL_READINESS, PAYROLL_DRAFT, PAYROLL_STAFF, PAYROLL_WORKER, PAYROLL_CONSULTANT, PAYROLL_PUNE_STAFF, PAYROLL_EXCEPTIONS, PAYROLL_RECON, PAYROLL_SUPPLEMENTARY, PAYROLL_LOCKED (hidden), PAYSLIP_REGISTER, PAYSLIP_EMAIL_LOG, AUDIT_LOG, TELEGRAM_CHATS.
 
 - The daily attendance form tabs (ATT_FORM_VFL_RAW, ATT_FORM_PUNE_RAW) appear only when you run **Setup ▸ Create attendance forms**. That is needed from October, not for September.
 

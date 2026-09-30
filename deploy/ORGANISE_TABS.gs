@@ -34,7 +34,7 @@ var ORGTABS_GROUPS = [
   { key: 'PAYSLIPS', label: 'Payslips', color: '#EC407A',
     tabs: ['PAYSLIP_REGISTER', 'PAYSLIP_EMAIL_LOG'] },
   { key: 'AUDIT', label: 'Locked & audit', color: '#C62828',
-    tabs: ['PAYROLL_LOCKED', 'AUDIT_LOG'] }
+    tabs: ['PAYROLL_LOCKED', 'AUDIT_LOG', 'TELEGRAM_CHATS'] }
 ];
 var ORGTABS_UNKNOWN_LABEL = 'Not recognised - review/delete by hand';
 var ORGTABS_EXTRA_MARK = '@EXTRA_CATEGORY_TABS';

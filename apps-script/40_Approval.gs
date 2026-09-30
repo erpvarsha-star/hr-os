@@ -124,6 +124,8 @@ function approval_run_(action, period, population) {
     approval_writePc_(pc, vals);
     var held = re.calc.held.map(function (h) { return h.EMP_ID; });
     audit(auditName, period, population, { result: 'APPROVED', user: user, status: d.newStatus, hash: re.hash, held: held });
+    // alert the next approver (61_Notify.gs); never allowed to fail or undo the approval
+    try { stageNotifySafe_(isHr ? 'HR_APPROVED' : 'ACCOUNTS_APPROVED', { period: period, population: population, calc: re.calc }); } catch (eNotify) { /* ignore */ }
     return { ok: true, status: d.newStatus, reason: d.reason, held: held };
   }
   if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {

@@ -60,6 +60,8 @@ var HROS_SUPP_STATUSES = ['DRAFT', 'HR_APPROVED', 'ACCOUNTS_APPROVED', 'LOCKED',
 var HROS_PAYSLIP_REGISTER_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'];
 var HROS_EMAIL_LOG_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'];
 var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
+/** Telegram chats that pressed Start; the owner types EMAIL to link a chat to a person (61_Notify.gs). */
+var TELEGRAM_CHAT_HEADERS = ['CHAT_ID', 'NAME', 'USERNAME', 'FIRST_SEEN', 'EMAIL', 'ACTIVE'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
@@ -125,6 +127,9 @@ function hrosTabSpecs_() {
   specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS });
   specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS });
   specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS });
+  // Telegram chat registry (chat ids mapped to people by the owner): only the owner edits it
+  specs.push({ name: TABS.TELEGRAM_CHATS, group: 'Audit', headers: TELEGRAM_CHAT_HEADERS, protect: ['OWNER_APPROVER_EMAIL'],
+    validations: [['ACTIVE', yn]] });
   return specs;
 }
 
@@ -167,7 +172,9 @@ var HROS_CONTROL_DEFAULTS = [
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],
   ['LEAVE_SOURCE_TAB', 'Leave_Applications', 'Leave form-response tab in the leave spreadsheet (or the local tab when the ID is blank)'],
   ['AUTO_FULL_ATTENDANCE_EMP_IDS', 'VFL1001', 'Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)'],
-  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)']
+  ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)'],
+  ['DAILY_REMINDER_FROM', '2026-10-01', 'Daily attendance reminders (11:00) and escalation (14:00) are active from this date (YYYY-MM-DD)'],
+  ['STAGE_NOTIFICATIONS', 'Y', 'Y = tell HR / Accounts / owner after calculate, approve and lock; N = off']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [

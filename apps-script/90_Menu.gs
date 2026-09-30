@@ -50,6 +50,15 @@ function onOpen() {
       .addItem('Generate payslips (locked only)', 'menuGeneratePayslips')
       .addItem('Queue emails', 'menuQueueEmails')
       .addItem('Send queued emails', 'menuSendEmails'))
+    .addSubMenu(ui.createMenu('Alerts')
+      .addItem('Payroll status...', 'menuPayrollStatus')
+      .addSeparator()
+      .addItem('Telegram: set bot token', 'menuTelegramSetToken')
+      .addItem('Telegram: refresh chats', 'menuTelegramRefreshChats')
+      .addItem('Telegram: send test message to me', 'menuTelegramTest')
+      .addSeparator()
+      .addItem('Install reminder triggers', 'menuInstallReminderTriggers')
+      .addItem('Remove reminder triggers', 'menuRemoveReminderTriggers'))
     .addToUi();
 }
 
@@ -233,3 +242,27 @@ function lockAction_(title, fn) {
 function menuGeneratePayslips() { lockAction_('Generate payslips', 'generatePayslips'); }
 function menuQueueEmails() { lockAction_('Queue emails', 'queuePayslipEmails'); }
 function menuSendEmails() { lockAction_('Send queued emails', 'sendQueuedEmails'); }
+
+// ---- Alerts: status, Telegram, reminder triggers (61_Notify.gs, 62_Reminders.gs)
+/** Blank period = the previous calendar month (the month being paid). Shows the same digest the month-end e-mail carries. */
+function menuPayrollStatus() {
+  run_('Payroll status', function () {
+    var def = statusDefaultPeriod(status_todayIso_(), getMinPeriod());
+    var p = ask_('Payroll status', 'PERIOD (YYYY-MM); blank = ' + def);
+    if (p === null) return null;
+    p = p || def;
+    guardPeriod_(p);
+    return statusDigestText(payrollStatus(p), {}).text;
+  });
+}
+function menuTelegramSetToken() {
+  run_('Telegram: set bot token', function () {
+    notify_requireOwner_();
+    var t = ask_('Telegram: set bot token', 'Paste the bot token from @BotFather (it is stored in Script Properties, not in the sheet)');
+    return t ? telegramSetToken(t) : null;
+  });
+}
+function menuTelegramRefreshChats() { run_('Telegram: refresh chats', telegramRefreshChats); }
+function menuTelegramTest() { run_('Telegram: send test message', telegramSendTestToMe); }
+function menuInstallReminderTriggers() { run_('Install reminder triggers', installReminderTriggers); }
+function menuRemoveReminderTriggers() { run_('Remove reminder triggers', removeReminderTriggers); }

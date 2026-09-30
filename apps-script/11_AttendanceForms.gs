@@ -214,12 +214,15 @@ function planFormSubmitTrigger(existing, maxTriggers) {
 
 /** Idempotent. Creates the single spreadsheet onFormSubmit trigger if missing; never deletes or edits other triggers. */
 function installTriggers() {
-  var existing = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  var all = ScriptApp.getProjectTriggers().map(function (t) { return { handler: t.getHandlerFunction() }; });
+  // the optional alert triggers (62_Reminders.gs) are checked against the platform limit of 20, not this cap of 5
+  var alertNames = typeof REMINDER_HANDLERS === 'undefined' ? [] : Object.keys(REMINDER_HANDLERS);
+  var existing = all.filter(function (t) { return alertNames.indexOf(t.handler) < 0; });
   var plan = planFormSubmitTrigger(existing, ATT_MAX_TRIGGERS);
   if (plan.create) {
     ScriptApp.newTrigger(HROS_SUBMIT_HANDLER).forSpreadsheet(getSpreadsheet_()).onFormSubmit().create();
   }
-  var res = { created: plan.create ? 1 : 0, alreadyPresent: plan.present, totalTriggers: plan.total,
+  var res = { created: plan.create ? 1 : 0, alreadyPresent: plan.present, totalTriggers: all.length + (plan.create ? 1 : 0),
     note: plan.present > 1 ? 'more than one ' + HROS_SUBMIT_HANDLER + ' trigger exists - ask the owner to remove the extra ones' : '' };
   audit('TRIGGERS_INSTALL', '', '', res);
   return res;

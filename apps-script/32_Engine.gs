@@ -677,7 +677,10 @@ function calculateDraft(period, population) {
   });
 
   var readiness = checkReadiness(period, population, { sources: src, calcResultsByPop: calcByPop });
-  return { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
+  var result = { period: period, runId: runId, populations: summaries, skippedLocked: skippedLocked, leaveSync: leaveSync,
     unknownCategory: population ? [] : unknownCat.map(function (u) { return u.EMP_ID; }),
     readiness: { blocked: readiness.blocked, hold: readiness.hold, warn: readiness.warn, ready: readiness.ready } };
+  // alert HR (61_Notify.gs). Everything is written already; a failing notification must never affect the run
+  try { stageNotifySafe_('CALC', { period: period, populations: summaries }); } catch (eNotify) { /* never fails the calculation */ }
+  return result;
 }
