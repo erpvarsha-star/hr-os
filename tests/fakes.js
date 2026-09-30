@@ -161,4 +161,57 @@ const leaveRow = (o) => Object.assign({ Timestamp: '2026-09-10 10:00:00', 'Submi
 const LEAVE_INPUT_HDR = ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY', 'STATUS',
   'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT'];
 
-module.exports = { makeEnv, makeSheet, blank, LEAVE_HDR, LEAVE_INPUT_HDR, leaveRow };
+/** In-memory FormApp: items (list / multiple choice / page break / text with validation / paragraph), collect email, destination. */
+function makeFormApp(env) {
+  const forms = {};
+  const T = { LIST: 'LIST', MULTIPLE_CHOICE: 'MULTIPLE_CHOICE', PAGE_BREAK: 'PAGE_BREAK', TEXT: 'TEXT', PARAGRAPH_TEXT: 'PARAGRAPH_TEXT', GRID: 'GRID', DATE: 'DATE', CHECKBOX: 'CHECKBOX' };
+  let n = 0;
+  function mkForm(title) {
+    const f = { id: 'FORM' + (++n), title, items: [], collectEmail: false, description: '', destination: null };
+    const add = (type) => {
+      const it = { type, title: '', required: false, choices: [], validation: null };
+      it.setTitle = (t) => { it.title = t; return it; };
+      it.getTitle = () => it.title;
+      it.getType = () => it.type;
+      it.setRequired = (r) => { it.required = r; return it; };
+      it.setRows = (r) => { it.rows = r.slice(); return it; };
+      it.setColumns = (c) => { it.columns = c.slice(); return it; };
+      it.setChoiceValues = (c) => { it.choices = c.slice(); return it; };
+      it.setValidation = (v) => { it.validation = v; return it; };
+      it.getIndex = () => f.items.indexOf(it);
+      ['List', 'MultipleChoice', 'Grid', 'Text', 'ParagraphText', 'PageBreak'].forEach((k) => { it['as' + k + 'Item'] = () => it; });
+      f.items.push(it);
+      return it;
+    };
+    f.addListItem = () => add(T.LIST);
+    f.addMultipleChoiceItem = () => add(T.MULTIPLE_CHOICE);
+    f.addPageBreakItem = () => add(T.PAGE_BREAK);
+    f.addTextItem = () => add(T.TEXT);
+    f.addDateItem = () => add(T.DATE);
+    f.addGridItem = () => add(T.GRID);
+    f.addCheckboxItem = () => add(T.CHECKBOX);
+    f.addParagraphTextItem = () => add(T.PARAGRAPH_TEXT);
+    f.getItems = (type) => f.items.filter((i) => !type || i.type === type);
+    f.deleteItem = (it) => { const i = typeof it === 'number' ? it : f.items.indexOf(it); if (i < 0) throw new Error('item not in form'); f.items.splice(i, 1); };
+    f.moveItem = (from, to) => { const i = typeof from === 'number' ? from : f.items.indexOf(from); const [it] = f.items.splice(i, 1); f.items.splice(to, 0, it); };
+    f.setCollectEmail = (v) => { f.collectEmail = v; return f; };
+    f.setDescription = (d) => { f.description = d; return f; };
+    f.setLimitOneResponsePerUser = () => f;
+    f.setAllowResponseEdits = () => f;
+    f.setDestination = (type, id) => { f.destination = id; const sh = env.ss.insertSheet('Form Responses ' + n); f.sheet = sh; return f; };
+    f.getId = () => f.id;
+    f.getEditUrl = () => 'https://forms/edit/' + f.id;
+    f.getPublishedUrl = () => 'https://forms/live/' + f.id;
+    forms[f.id] = f;
+    return f;
+  }
+  const FormApp = {
+    ItemType: T, DestinationType: { SPREADSHEET: 'SPREADSHEET' },
+    create: mkForm, openById: (id) => { if (!forms[id]) throw new Error('no form ' + id); return forms[id]; },
+    createTextValidation: () => { const v = {}; const b = { requireNumberBetween(a, z) { v.min = a; v.max = z; return b; }, setHelpText(t) { v.help = t; return b; }, build() { return { ...v }; } }; return b; },
+  };
+  FormApp.forms = forms;
+  return FormApp;
+}
+
+module.exports = { makeFormApp, makeEnv, makeSheet, blank, LEAVE_HDR, LEAVE_INPUT_HDR, leaveRow };

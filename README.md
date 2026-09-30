@@ -147,6 +147,9 @@ The leave application form has its own spreadsheet, its own approval process and
 - If the leave spreadsheet cannot be opened, Sync leave says so (give the account that runs HR OS view access). During **Calculate draft** the failure marks the LEAVE feed OPEN and shows `LEAVE_SOURCE_UNREACHABLE` for every group; it clears with the next successful sync. Then mark the **LEAVE** feed complete.
 - After attendance is approved, later leave changes are **not** pushed into approved rows: the sync result lists them (`registerStaleApproved`); set those rows back to PENDING and submit the register again.
 
+#### Monthly attendance via Google Forms (alternative to the register dialog)
+HR fills **Monthly Attendance – VFL Waluj** / **Monthly Attendance – Pune** once per month: pick the payroll month, say whether the days entered include weekly offs (per category), then type DAYS PRESENT per employee (0 to days in month, halves allowed). Blank boxes are ignored, so the form can be submitted in parts; a later submission updates only the newly filled employees. Leave, weekly offs and holidays are added automatically, exactly as in the register, and the same PENDING `INPUT_ATTENDANCE` rows are written (APPROVED rows and LOCKED populations are skipped; any invalid value rejects the whole submission). The result (saved / NOT saved, counts, exceptions) arrives by email. Only the HR approver, the owner and `REGISTER_ENTRY_EMAILS` are accepted (verified respondent email). Then HR approves attendance per group as before. The in-sheet register still works.
+
 ### Step C - Other feeds (HR)
 
 | Feed | How the data gets in |

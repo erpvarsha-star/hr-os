@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 6781643';
+var HROS_VERSION = '2026-09-30 e3f6d75';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -44,6 +44,8 @@ var TABS = {
   AUDIT_LOG: 'AUDIT_LOG',
   ATT_FORM_VFL_RAW: 'ATT_FORM_VFL_RAW',
   ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW',
+  ATT_MONTHLY_VFL_RAW: 'ATT_MONTHLY_VFL_RAW',
+  ATT_MONTHLY_PUNE_RAW: 'ATT_MONTHLY_PUNE_RAW',
   PAYROLL_CATEGORY_CONFIG: 'PAYROLL_CATEGORY_CONFIG',
   PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
   EMPLOYEE_STATUTORY_IDS: 'EMPLOYEE_STATUTORY_IDS',
@@ -695,7 +697,7 @@ var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
-var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW'];
+var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW', 'ATT_MONTHLY_VFL_RAW', 'ATT_MONTHLY_PUNE_RAW'];
 
 /**
  * The tab registry, in tab order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Readiness / Payroll ->
@@ -1764,15 +1766,23 @@ function buildAttendanceForm_(def, roster) {
 
 function sheetNames_(ss) { return ss.getSheets().map(function (s) { return s.getName(); }); }
 
+/** Every form the create / refresh menu actions manage: the two daily forms and the two monthly days-present forms. */
+function attAllFormJobs_() {
+  var jobs = [];
+  Object.keys(ATT_FORM_DEFS).forEach(function (k) { jobs.push({ key: k, def: ATT_FORM_DEFS[k], monthly: false }); });
+  Object.keys(ATT_MONTHLY_FORM_DEFS).forEach(function (k) { jobs.push({ key: 'MONTHLY_' + k, def: ATT_MONTHLY_FORM_DEFS[k], monthly: true }); });
+  return jobs;
+}
+
 function createAttendanceForms() {
   var ss = getSpreadsheet_();
   var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { created: [], skipped: [], notes: [] };
-  Object.keys(ATT_FORM_DEFS).forEach(function (k) {
-    var def = ATT_FORM_DEFS[k];
+  attAllFormJobs_().forEach(function (job) {
+    var k = job.key, def = job.def;
     if (String(getControl(def.idKey, '')).trim()) { res.skipped.push(k + ' (form id already in PAYROLL_CONTROL)'); return; }
     var before = sheetNames_(ss);
-    var form = buildAttendanceForm_(def, roster);
+    var form = job.monthly ? buildMonthlyAttendanceForm_(def, roster) : buildAttendanceForm_(def, roster);
     form.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
     SpreadsheetApp.flush();
     var created = ss.getSheets().filter(function (s) { return before.indexOf(s.getName()) < 0; });
@@ -1796,11 +1806,12 @@ function createAttendanceForms() {
 function refreshAttendanceFormRosters() {
   var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { updated: [], added: [], removed: [], skipped: [] };
-  Object.keys(ATT_FORM_DEFS).forEach(function (k) {
-    var def = ATT_FORM_DEFS[k];
+  attAllFormJobs_().forEach(function (job) {
+    var k = job.key, def = job.def;
     var id = String(getControl(def.idKey, '')).trim();
     if (!id) { res.skipped.push(k + ' (no form id)'); return; }
     var form = FormApp.openById(id);
+    if (job.monthly) { refreshMonthlyForm_(k, def, form, roster, res); return; }
     var groups = groupRosterByDepartment(roster, attFormPopulations_(def));
     var seen = {};
     form.getItems(FormApp.ItemType.GRID).forEach(function (item) {
@@ -1832,6 +1843,8 @@ var HROS_SUBMIT_HANDLER = 'hrosOnFormSubmit';
 var HROS_FORM_ROUTES = {
   ATT_FORM_VFL_RAW: 'ATT_VFL',
   ATT_FORM_PUNE_RAW: 'ATT_PUNE',
+  ATT_MONTHLY_VFL_RAW: 'ATT_MONTHLY_VFL',
+  ATT_MONTHLY_PUNE_RAW: 'ATT_MONTHLY_PUNE',
   CANTEEN_FORM_RESPONSES: 'CANTEEN',
   EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY',
   OT_FORM_RESPONSES: 'OT'
@@ -1868,6 +1881,12 @@ function hrosOnFormSubmit(e) {
       audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: site, source: parsed.sourceRef, valid: out.valid,
         rejected: out.rejected, superseded: out.superseded });
       return out;
+    }
+    if (route === 'ATT_MONTHLY_VFL' || route === 'ATT_MONTHLY_PUNE') {
+      var mrow = e.range.getRow(), mlc = sheet.getLastColumn();
+      var mh = sheet.getRange(1, 1, 1, mlc).getValues()[0];
+      var mv = sheet.getRange(mrow, 1, 1, mlc).getValues()[0];
+      return processMonthlyAttendanceSubmit_(parseMonthlyAttendanceRow(mh, mv), e, name + '!' + mrow);
     }
     if (route === 'OT') {
       var otPeriod = feeds_otPeriodOfRow_(sheet, e.range.getRow());
@@ -1909,6 +1928,243 @@ function installTriggers() {
     note: plan.present > 1 ? 'more than one ' + HROS_SUBMIT_HANDLER + ' trigger exists - ask the owner to remove the extra ones' : '' };
   audit('TRIGGERS_INSTALL', '', '', res);
   return res;
+}
+
+// ================================================================ monthly days-present forms (feed registerApply_)
+
+var ATT_MONTHLY_FORM_DEFS = {
+  VFL: { site: 'VFL', title: 'Monthly Attendance – VFL Waluj', idKey: 'ATT_MONTHLY_VFL_ID', rawTab: 'ATT_MONTHLY_VFL_RAW' },
+  PUNE: { site: 'PUNE', title: 'Monthly Attendance – Pune', idKey: 'ATT_MONTHLY_PUNE_ID', rawTab: 'ATT_MONTHLY_PUNE_RAW' }
+};
+var ATT_MONTHLY_DESCRIPTION = 'Enter DAYS PRESENT for the month per employee (0 to days in month, halves like 25.5 allowed). ' +
+  'Leave, weekly offs and holidays are added automatically. Leave a box blank if not ready; you can submit again later - only filled boxes are saved.';
+var ATT_MONTHLY_PERIOD_TITLE = 'Payroll month';
+var ATT_MONTHLY_MODE_PREFIX = 'Days present for ';
+var ATT_MONTHLY_MODE_SUFFIX = ' counted';
+var ATT_MONTHLY_EXCL = 'Excluding weekly offs';
+var ATT_MONTHLY_INCL = 'Including weekly offs';
+var ATT_MONTHLY_SECTION_PREFIX = 'Department – ';
+var ATT_MONTHLY_REMARKS_TITLE = 'Remarks';
+
+function monthlyPopulations_(def) { return populationsOfSite(def.site); }
+
+function monthlyModeTitle_(pop) {
+  var e = categoryEntry(pop);
+  return ATT_MONTHLY_MODE_PREFIX + (e ? e.displayName : pop) + ATT_MONTHLY_MODE_SUFFIX;
+}
+
+/** Periods HR can still enter: >= the minimum period with at least one population not LOCKED (latest first). Fallback: this and last month. */
+function monthlyOpenPeriods_() {
+  var min = getMinPeriod(), open = {};
+  try {
+    if (getSheet(TABS.PAYROLL_PERIOD_CATEGORY)) {
+      readObjects(TABS.PAYROLL_PERIOD_CATEGORY).forEach(function (r) {
+        var p = normalizePeriod(r.PAYROLL_MONTH);
+        if (!p || p < min) return;
+        if (String(r.STATUS == null ? '' : r.STATUS).trim().toUpperCase() !== PERIOD_STATUS.LOCKED) open[p] = true;
+      });
+    }
+  } catch (err) { open = {}; }
+  var list = Object.keys(open);
+  if (!list.length) {
+    var now = new Date(), cur = normalizePeriod(new Date(now.getFullYear(), now.getMonth(), 1));
+    var prev = normalizePeriod(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    list = [cur, prev].filter(function (p) { return p && p >= min; });
+    if (!list.length) list = [min];
+  }
+  return list.sort().reverse();
+}
+
+function attMonthlyTextItem_(form, label) {
+  var v = FormApp.createTextValidation().requireNumberBetween(0, 31).setHelpText('0 to 31, halves allowed').build();
+  return form.addTextItem().setTitle(label).setRequired(false).setValidation(v);
+}
+
+function attMonthlySection_(form, dept, labels) {
+  form.addPageBreakItem().setTitle(ATT_MONTHLY_SECTION_PREFIX + dept);
+  labels.forEach(function (l) { attMonthlyTextItem_(form, l); });
+}
+
+function attMonthlyModeItem_(form, pop) {
+  return form.addMultipleChoiceItem().setTitle(monthlyModeTitle_(pop)).setChoiceValues([ATT_MONTHLY_EXCL, ATT_MONTHLY_INCL]).setRequired(true);
+}
+
+function buildMonthlyAttendanceForm_(def, roster) {
+  var form = FormApp.create(def.title);
+  form.setCollectEmail(true);
+  form.setDescription(ATT_MONTHLY_DESCRIPTION);
+  form.setLimitOneResponsePerUser(false);
+  form.setAllowResponseEdits(false);
+  form.addListItem().setTitle(ATT_MONTHLY_PERIOD_TITLE).setChoiceValues(monthlyOpenPeriods_()).setRequired(true);
+  var pops = monthlyPopulations_(def);
+  pops.forEach(function (pop) { attMonthlyModeItem_(form, pop); });
+  var groups = groupRosterByDepartment(roster, pops);
+  Object.keys(groups).sort().forEach(function (d) { attMonthlySection_(form, d, groups[d]); });
+  form.addParagraphTextItem().setTitle(ATT_MONTHLY_REMARKS_TITLE).setRequired(false);
+  return form;
+}
+
+/** Reads the layout of a monthly form: section page breaks, employee items, the Remarks item. */
+function attMonthlyLayout_(form) {
+  var items = form.getItems(), L = { sections: {}, emps: [], remarksIdx: items.length, firstBreak: items.length, modeTitles: {}, count: items.length };
+  var cur = null;
+  items.forEach(function (it, i) {
+    var t = it.getType(), title = it.getTitle();
+    if (t === FormApp.ItemType.PAGE_BREAK) {
+      if (L.firstBreak === items.length) L.firstBreak = i;
+      if (title.indexOf(ATT_MONTHLY_SECTION_PREFIX) === 0) {
+        cur = title.slice(ATT_MONTHLY_SECTION_PREFIX.length);
+        L.sections[cur] = { breakItem: it, breakIdx: i, endIdx: items.length, count: 0 };
+      }
+    } else if (t === FormApp.ItemType.PARAGRAPH_TEXT && title === ATT_MONTHLY_REMARKS_TITLE) {
+      L.remarksIdx = i;
+    } else if (t === FormApp.ItemType.TEXT) {
+      var pr = parseRowLabel(title);
+      if (pr) { L.emps.push({ item: it, empId: pr.empId, dept: cur }); if (cur && L.sections[cur]) L.sections[cur].count++; }
+    } else if (t === FormApp.ItemType.MULTIPLE_CHOICE) L.modeTitles[title] = true;
+  });
+  var names = Object.keys(L.sections).sort(function (a, b) { return L.sections[a].breakIdx - L.sections[b].breakIdx; });
+  names.forEach(function (n, j) { L.sections[n].endIdx = j + 1 < names.length ? L.sections[names[j + 1]].breakIdx : L.remarksIdx; });
+  return L;
+}
+
+/** Month choices rebuilt; new roster employees added to their department section (created if needed); employees no longer on the roster removed. */
+function refreshMonthlyForm_(k, def, form, roster, res) {
+  var pops = monthlyPopulations_(def), groups = groupRosterByDepartment(roster, pops);
+  var want = {};
+  Object.keys(groups).forEach(function (d) { groups[d].forEach(function (l) { want[parseRowLabel(l).empId] = d; }); });
+  form.getItems(FormApp.ItemType.LIST).forEach(function (it) {
+    if (it.getTitle() === ATT_MONTHLY_PERIOD_TITLE) it.asListItem().setChoiceValues(monthlyOpenPeriods_());
+  });
+  var L = attMonthlyLayout_(form);
+  pops.forEach(function (pop) {
+    if (L.modeTitles[monthlyModeTitle_(pop)]) return;
+    var it = attMonthlyModeItem_(form, pop);
+    if (L.firstBreak < form.getItems().length - 1) form.moveItem(it.getIndex(), L.firstBreak);
+    L = attMonthlyLayout_(form);
+  });
+  var have = {};
+  L.emps.forEach(function (x) {
+    if (want[x.empId] === undefined) { form.deleteItem(x.item); res.removed.push(k + ':' + x.empId); } else have[x.empId] = true;
+  });
+  Object.keys(groups).sort().forEach(function (d) {
+    groups[d].forEach(function (label) {
+      var id = parseRowLabel(label).empId;
+      if (have[id]) return;
+      have[id] = true;
+      var lay = attMonthlyLayout_(form);
+      if (lay.sections[d]) {
+        var item = attMonthlyTextItem_(form, label);
+        if (lay.sections[d].endIdx < lay.count) form.moveItem(item.getIndex(), lay.sections[d].endIdx);
+      } else {
+        attMonthlySection_(form, d, [label]);
+        var after = attMonthlyLayout_(form);
+        if (after.remarksIdx < after.count - 1) {
+          var rem = form.getItems()[after.remarksIdx];
+          form.moveItem(rem.getIndex(), after.count - 1);
+        }
+      }
+      res.added.push(k + ':' + id);
+    });
+  });
+  // sections left without employees are dropped (their page break only)
+  var fin = attMonthlyLayout_(form);
+  Object.keys(fin.sections).forEach(function (d) { if (!fin.sections[d].count) form.deleteItem(fin.sections[d].breakItem); });
+  res.updated.push(k);
+}
+
+/**
+ * Pure. One row of a monthly response tab -> {email, period, includesWO:{POP:'Y'|'N'}, entries:[{empId, days}], remarks, errors:[]}.
+ * Only non-blank number cells whose header parses as "EMP_ID – Name" become entries.
+ */
+function parseMonthlyAttendanceRow(headers, values) {
+  var out = { email: '', period: '', includesWO: {}, entries: [], remarks: '', errors: [] };
+  var cats = categoryList();
+  (headers || []).forEach(function (h, i) {
+    var title = String(h == null ? '' : h).trim(), v = values[i];
+    var sv = v == null ? '' : (typeof v === 'string' ? v.trim() : v);
+    var low = title.toLowerCase();
+    if (low === 'email address' || low === 'email') { out.email = String(sv).trim(); return; }
+    if (title === ATT_MONTHLY_PERIOD_TITLE) { out.period = normalizePeriod(sv); return; }
+    if (title === ATT_MONTHLY_REMARKS_TITLE) { out.remarks = String(sv); return; }
+    if (title.indexOf(ATT_MONTHLY_MODE_PREFIX) === 0 && title.slice(-ATT_MONTHLY_MODE_SUFFIX.length) === ATT_MONTHLY_MODE_SUFFIX) {
+      var nm = title.slice(ATT_MONTHLY_MODE_PREFIX.length, title.length - ATT_MONTHLY_MODE_SUFFIX.length).trim().toLowerCase();
+      cats.forEach(function (c) {
+        if (c.displayName.toLowerCase() === nm || c.code.toLowerCase() === nm) {
+          out.includesWO[c.code] = String(sv).trim().toLowerCase() === ATT_MONTHLY_INCL.toLowerCase() ? 'Y' : 'N';
+        }
+      });
+      return;
+    }
+    var pr = parseRowLabel(title);
+    if (pr && sv !== '') out.entries.push({ empId: pr.empId, days: sv });
+  });
+  if (!out.period) out.errors.push('Payroll month is missing or not recognised');
+  return out;
+}
+
+/** Pure. Plain-text result mail. out = {ok, period, reason, res}. */
+function monthlyResultEmail_(out) {
+  var lines = [], r = out.res || {};
+  function ids(a) { a = a || []; return a.length + (a.length ? ' (' + a.slice(0, 30).join(', ') + (a.length > 30 ? ', ...' : '') + ')' : ''); }
+  if (out.ok) {
+    lines.push('Monthly attendance for ' + out.period + ' was saved (as PENDING attendance rows; HR still approves them per group).');
+    lines.push('Created: ' + r.created + ', updated: ' + r.updated);
+    lines.push('Not entered (blank): ' + ids(r.notEntered));
+    lines.push('Skipped, already APPROVED: ' + ids(r.skippedApproved));
+    lines.push('Skipped, period LOCKED: ' + ids(r.skippedLocked));
+    if ((r.skippedDuplicateRows || []).length) lines.push('Skipped, duplicate attendance rows: ' + ids(r.skippedDuplicateRows));
+    if ((r.exceptions || []).length) {
+      lines.push('', 'Exceptions:');
+      r.exceptions.forEach(function (x) { lines.push('  ' + x.EMP_ID + ': ' + x.code + ' - ' + x.message); });
+    }
+    if ((r.warnings || []).length) {
+      lines.push('', 'Warnings:');
+      r.warnings.forEach(function (x) { lines.push('  ' + x.EMP_ID + ': ' + x.code + ' - ' + x.message); });
+    }
+  } else {
+    lines.push('Monthly attendance' + (out.period ? ' for ' + out.period : '') + ' was NOT saved. Nothing was written.', '', 'Reason: ' + out.reason);
+    lines.push('', 'Fix the entries and submit the form again.');
+  }
+  return { subject: 'HR OS – monthly attendance ' + (out.period || '') + ' – ' + (out.ok ? 'saved' : 'NOT saved'), body: lines.join('\n') };
+}
+
+/** Authorises the respondent, applies the entries through registerApply_ (all-or-nothing), audits and mails the result. Never throws for a bad submission. */
+function processMonthlyAttendanceSubmit_(parsed, e, sourceRef) {
+  var email = String(parsed.email || '').trim();
+  if (!email) { try { email = String(e.response.getRespondentEmail() || '').trim(); } catch (x) { email = ''; } }
+  var out = { ok: false, period: parsed.period, reason: '', res: null, email: email };
+  if (!email) out.reason = 'Respondent email not available (form must collect verified email addresses)';
+  else {
+    var ctl = readControlMap();
+    if (!registerUserAllowed(email, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, ctl.REGISTER_ENTRY_EMAILS)) {
+      out.reason = 'Not allowed: ' + email + ' is not HR_APPROVER_EMAIL, OWNER_APPROVER_EMAIL or listed in REGISTER_ENTRY_EMAILS';
+    } else if (parsed.errors.length) out.reason = parsed.errors.join('; ');
+    else {
+      try {
+        out.res = registerApply_(parsed.period, parsed.includesWO, parsed.entries, email);
+        out.ok = true;
+      } catch (err) { out.reason = String(err && err.message ? err.message : err); }
+    }
+  }
+  var r = out.res || {};
+  var detail = { by: email, source: sourceRef, ok: out.ok, reason: out.reason, remarks: parsed.remarks };
+  if (out.ok) {
+    detail.created = r.created; detail.updated = r.updated; detail.notEntered = (r.notEntered || []).length;
+    detail.skippedApproved = (r.skippedApproved || []).length; detail.skippedLocked = (r.skippedLocked || []).length;
+    detail.exceptions = (r.exceptions || []).map(function (x) { return x.EMP_ID + ':' + x.code; });
+  }
+  try { audit('ATT_MONTHLY_FORM_SUBMIT', parsed.period || '', '', detail); } catch (x2) { /* ignore */ }
+  if (!email) { try { audit('ATT_MONTHLY_MAIL_SKIPPED', parsed.period || '', '', 'no respondent email'); } catch (x3) { /* ignore */ } }
+  else {
+    try {
+      var m = monthlyResultEmail_(out);
+      MailApp.sendEmail({ to: email, subject: m.subject, body: m.body });
+    } catch (mailErr) {
+      try { audit('ATT_MONTHLY_MAIL_FAILED', parsed.period || '', '', String(mailErr && mailErr.message ? mailErr.message : mailErr)); } catch (x4) { /* ignore */ }
+    }
+  }
+  return out;
 }
 
 // ===== 12_Register.gs =====
@@ -2214,12 +2470,22 @@ function registerSubmit(payload) {
   var period = String(payload.period == null ? '' : payload.period).trim();
   guardPeriod_(period);
   var user = register_requireUser_();
+  return registerApply_(period, payload.includesWO || {}, payload.entries, user);
+}
+
+/**
+ * Shared core of the register dialog and the monthly Google Forms: no user lookup (the caller has already authorised `user`).
+ * Throws (nothing written) on a bad period, missing columns or any invalid entry.
+ */
+function registerApply_(period, includesWOMap, entries, user) {
+  period = String(period == null ? '' : period).trim();
+  guardPeriod_(period);
   register_requireColumns_();
   var ctx = register_ctx_(period);
-  var val = validateRegisterEntries(payload.entries, ctx.rosterMap, period);
+  var val = validateRegisterEntries(entries, ctx.rosterMap, period);
   if (val.errors.length) throw new Error('Register not saved - fix these first: ' + val.errors.slice(0, 20).join('; ') +
     (val.errors.length > 20 ? '; +' + (val.errors.length - 20) + ' more' : ''));
-  var incMap = payload.includesWO || {};
+  var incMap = includesWOMap || {};
   var now = nowIso_();
   var creates = [], updates = [], res = { period: period, written: 0, created: 0, updated: 0, notEntered: val.notEntered,
     skippedApproved: [], skippedLocked: [], skippedDuplicateRows: [], exceptions: [], warnings: [] };

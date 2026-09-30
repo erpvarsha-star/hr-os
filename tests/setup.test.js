@@ -21,7 +21,7 @@ test('setup creates every tab with exact headers, seeds, hides + protects the se
   });
   // every tab the code names in TABS (except the form-created raw tabs) is built
   const tabs = plain(env.c.TABS);
-  Object.keys(tabs).filter((k) => !/^ATT_FORM_/.test(k)).forEach((k) => {
+  Object.keys(tabs).filter((k) => !/^ATT_(FORM|MONTHLY)_/.test(k)).forEach((k) => {
     if (/^PAYROLL_(STAFF|WORKER|CONSULTANT|PUNE_STAFF)$/.test(k)) assert.ok(env.sheets[tabs[k]], k);
     else assert.ok(env.sheets[tabs[k]], k + ' -> ' + tabs[k]);
   });

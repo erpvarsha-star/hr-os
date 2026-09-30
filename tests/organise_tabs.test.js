@@ -71,7 +71,7 @@ test('the group table covers every registry tab, the form tabs and the category 
   all.forEach((n) => { counts[n] = (counts[n] || 0) + 1; });
   Object.keys(counts).forEach((n) => assert.equal(counts[n], 1, 'listed twice: ' + n));
   const expected = new Set(plain(env.c.hrosTabSpecs_()).map((s) => s.name));
-  ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW', 'OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'].forEach((n) => expected.add(n));
+  ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW', 'ATT_MONTHLY_VFL_RAW', 'ATT_MONTHLY_PUNE_RAW', 'OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'].forEach((n) => expected.add(n));
   plain(env.c.populationList()).forEach((code) => expected.add(env.c.populationTab(code)));
   Object.values(plain(env.c.TABS)).forEach((n) => expected.add(n));
   expected.forEach((n) => assert.equal(counts[n], 1, 'not in exactly one group: ' + n));

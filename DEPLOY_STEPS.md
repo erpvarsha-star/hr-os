@@ -130,6 +130,16 @@ Tabs it does not recognise (for example an old `ATT_FORM_NASHIK_OLD`) are put at
 | 8 | Locked & audit | Dark red `#C62828` |
 | 9 | Not recognised (end) | No colour |
 
+## E5. Monthly attendance forms (days present via Google Forms)
+
+**HR OS ▸ Setup ▸ Create attendance forms** also creates two monthly forms: **Monthly Attendance – VFL Waluj** (Staff, Permanent workers, Consultants) and **Monthly Attendance – Pune**. Their response tabs are `ATT_MONTHLY_VFL_RAW` / `ATT_MONTHLY_PUNE_RAW`. Owner steps, once per form:
+
+1. Open the form ▸ Settings ▸ Responses and confirm **Collect email addresses: Verified**.
+2. Share the live link with HR only. Run **Setup ▸ Install triggers** if not done (the same single trigger handles these forms).
+3. After joiners / leavers, run **Setup ▸ Refresh form rosters** (it updates the monthly forms too).
+
+HR fills the form once per month (it can be submitted in parts: only filled boxes are saved). The result arrives by email. Allowed emails: HR approver, owner, `REGISTER_ENTRY_EMAILS`; anyone else is rejected and nothing is written. HR then approves attendance per group as before. The in-sheet register still works and writes the same rows.
+
 ## F. Quick self-check
 
 - The **HR OS** menu is visible.

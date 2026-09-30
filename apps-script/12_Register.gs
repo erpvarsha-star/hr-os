@@ -300,12 +300,22 @@ function registerSubmit(payload) {
   var period = String(payload.period == null ? '' : payload.period).trim();
   guardPeriod_(period);
   var user = register_requireUser_();
+  return registerApply_(period, payload.includesWO || {}, payload.entries, user);
+}
+
+/**
+ * Shared core of the register dialog and the monthly Google Forms: no user lookup (the caller has already authorised `user`).
+ * Throws (nothing written) on a bad period, missing columns or any invalid entry.
+ */
+function registerApply_(period, includesWOMap, entries, user) {
+  period = String(period == null ? '' : period).trim();
+  guardPeriod_(period);
   register_requireColumns_();
   var ctx = register_ctx_(period);
-  var val = validateRegisterEntries(payload.entries, ctx.rosterMap, period);
+  var val = validateRegisterEntries(entries, ctx.rosterMap, period);
   if (val.errors.length) throw new Error('Register not saved - fix these first: ' + val.errors.slice(0, 20).join('; ') +
     (val.errors.length > 20 ? '; +' + (val.errors.length - 20) + ' more' : ''));
-  var incMap = payload.includesWO || {};
+  var incMap = includesWOMap || {};
   var now = nowIso_();
   var creates = [], updates = [], res = { period: period, written: 0, created: 0, updated: 0, notEntered: val.notEntered,
     skippedApproved: [], skippedLocked: [], skippedDuplicateRows: [], exceptions: [], warnings: [] };
