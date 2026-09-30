@@ -97,8 +97,8 @@ Follow **Clean rebuild** at the top of this file (delete old tabs / scripts / tr
 ## 5. First run
 
 1. **HR OS ▸ Setup ▸ Run setup (idempotent)**. It creates the missing tabs and columns and fills default settings. Safe to run again: the second run changes nothing.
-2. **HR OS ▸ Setup ▸ Create attendance forms** - needed from **October** (daily forms). Not needed for September. It creates *Daily Attendance - Nashik* and *Daily Attendance - Pune* and stores their IDs in PAYROLL_CONTROL.
-3. **HR OS ▸ Setup ▸ Install triggers** - installs **one** trigger for the whole sheet. From then on every answer that lands in `ATT_FORM_NASHIK_RAW`, `ATT_FORM_PUNE_RAW`, the OT tab (`OT_FORM_RESPONSES`), `CANTEEN_FORM_RESPONSES` or `EFFICIENCY_FORM_RESPONSES` is processed automatically (any other tab is ignored). No form IDs are needed. It can be run again safely (it never adds a second one and never touches other triggers; a project can hold at most 5).
+2. **HR OS ▸ Setup ▸ Create attendance forms** - needed from **October** (daily forms). Not needed for September. It creates *Daily Attendance - VFL Waluj* and *Daily Attendance - Pune* and stores their IDs in PAYROLL_CONTROL.
+3. **HR OS ▸ Setup ▸ Install triggers** - installs **one** trigger for the whole sheet. From then on every answer that lands in `ATT_FORM_VFL_RAW`, `ATT_FORM_PUNE_RAW`, the OT tab (`OT_FORM_RESPONSES`), `CANTEEN_FORM_RESPONSES` or `EFFICIENCY_FORM_RESPONSES` is processed automatically (any other tab is ignored). No form IDs are needed. It can be run again safely (it never adds a second one and never touches other triggers; a project can hold at most 5).
 4. Do the PAYROLL_CONTROL entries from section 4.
 5. **Approve the master data once** (needed before any payroll can be approved): **Approve salary structure (HR)...** for every category (it lists the pending rows), **Approve statutory config (Accounts)...** and, by the owner, **Approve category config...**. Until this is done, readiness shows BLOCKED (`PAY_STRUCTURE_APPROVED` when no row of the population is approved yet, `STATUTORY_CONFIG`, `CATEGORY_CONFIG`). Later additions (new joiners, salary revisions) only put that employee on HOLD `SALARY_NOT_APPROVED` until HR approves the new row.
 
@@ -112,7 +112,7 @@ The menu asks you to type the month as `YYYY-MM` (for example `2026-09`) and, wh
 
 1. **HR OS ▸ Month ▸ Prepare month...** - creates the four group rows in PAYROLL_PERIOD_CATEGORY and the nine feed rows in FEED_STATUS (all OPEN).
 2. In **PAYROLL_PERIOD_CATEGORY** type **WORKING_DAYS** for each of the four groups of that month (a positive number, not more than the days in the month).
-3. Add public holidays to **HOLIDAY_CALENDAR** if any (DATE, SITE = NASHIK / PUNE / ALL, HOLIDAY_NAME, PAID = Y/N).
+3. Add public holidays to **HOLIDAY_CALENDAR** if any (DATE, SITE = VFL / PUNE / ALL, HOLIDAY_NAME, PAID = Y/N).
 
 ### Step B - Attendance (HR)
 
@@ -129,7 +129,7 @@ Employees who left during the month stay on the register if the master has a las
 
 **October onward = daily forms plus the register:**
 
-1. Supervisors fill the daily Nashik / Pune forms each day (mark only exceptions; blanks count as present, weekly off or paid holiday). Sending the same date again replaces the earlier answer. HR still submits the monthly register: it is what is paid.
+1. Supervisors fill the daily VFL Waluj (plant) and Pune forms each day (mark only exceptions; blanks count as present, weekly off or paid holiday). Sending the same date again replaces the earlier answer. HR still submits the monthly register: it is what is paid.
 2. At month end: **Month ▸ Build daily vs register comparison**. Each employee gets a row in **ATTENDANCE_COMPARISON**: `DAILY_PRESENT` (from the forms: present + half of half days; OD not counted) against `REGISTER_PRESENT` (the physical days of the register). Equal = `MATCH` and the employee is paid normally. Different = `DISPUTE`: **that employee alone is on HOLD** (the rest of the group is not blocked).
 3. To settle a dispute: HR types `HR_DECIDED_DAYS` and `HR_REASON` in ATTENDANCE_COMPARISON, then runs **Month ▸ Submit dispute decisions** (logged in as the HR approver). Then the owner runs **Month ▸ Owner: approve attendance disputes** (logged in as `OWNER_APPROVER_EMAIL`; shows the list and asks for a YES). The decided days replace the employee's present / physical days in INPUT_ATTENDANCE (the row shows HR_OVERRIDE = Y and the reason). Then approve attendance again and calculate. If the owner rejects (type `REJECTED` in OWNER_DECISION, or use the reject action), the employee stays on hold.
    - Do the disputes **before** approving attendance for that group, or set the employee's INPUT_ATTENDANCE row back to PENDING; approved rows are never overwritten. Approve attendance leaves employees with an open dispute PENDING on its own.

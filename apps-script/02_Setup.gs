@@ -63,7 +63,7 @@ var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
-var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_NASHIK_RAW', 'ATT_FORM_PUNE_RAW'];
+var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW'];
 
 /**
  * The tab registry, in tab order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Readiness / Payroll ->
@@ -78,13 +78,13 @@ function hrosTabSpecs_() {
     { name: TABS.FEED_STATUS, group: 'Control', headers: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
       validations: [['STATUS', ['OPEN', 'COMPLETE']]] },
     { name: TABS.PAYROLL_CATEGORY_CONFIG, group: 'Config', headers: CATEGORY_CONFIG_HEADERS,
-      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_NASHIK, SITE_PUNE]], ['PAYSLIP', yn],
+      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_VFL, SITE_PUNE]], ['PAYSLIP', yn],
         ['PAYSLIP_TEMPLATE_KEY', PAYSLIP_TEMPLATE_KEYS], ['RATE_SOURCE', RATE_SOURCES], ['ACTIVE', yn]] },
     { name: TABS.STATUTORY_CONFIG, group: 'Config', headers: HROS_STATUTORY_HEADERS },
     { name: TABS.EFFICIENCY_CONFIG, group: 'Config', headers: HROS_EFFICIENCY_HEADERS },
     { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
     { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
-      validations: [['SITE', ['NASHIK', 'PUNE', 'ALL']], ['PAID', yn]] },
+      validations: [['SITE', ['VFL', 'PUNE', 'ALL']], ['PAID', yn]] },
     { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
     { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
     { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
@@ -153,7 +153,7 @@ var HROS_CONTROL_DEFAULTS = [
   ['PAYSLIP_TEMPLATE_WORKER_ID', '1MSmi8qVRL8SI8-svVihasYbLFGNo8Xkzko4VUaIX8SU', 'Worker payslip template Doc'],
   ['PAYSLIP_FOLDER_ID', '', 'Blank = payslip step blocked'],
   ['EMAIL_RELEASE_ENABLED', 'FALSE', 'Payslip email release switch'],
-  ['NASHIK_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
+  ['VFL_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],
   ['OT_SOURCE_TAB', 'OT_FORM_RESPONSES', 'OT form-response tab (local; falls back to Overtime_Form if absent). With an external ID: the tab there (default Form Responses 1)'],
@@ -221,10 +221,83 @@ function hrosOrderTabs_(ss, order) {
   return notes;
 }
 
+/**
+ * One-time, idempotent relabel of the plant site to VFL (Waluj); safe to run when nothing needs migrating. Called first by hrosSetup.
+ * Returns the list of changes made ([] when there was nothing to do). Never deletes response data.
+ */
+function hrosMigrateSiteToVfl() {
+  var changes = [];
+  var ss = getSpreadsheet_();
+  var OLD_SITE = 'NASHIK', OLD_WEEKLY_OFF_KEY = 'NASHIK_WEEKLY_OFF', OLD_FORM_ID_KEY = 'ATT_FORM_NASHIK_ID';
+  var OLD_RAW_TAB = 'ATT_FORM_NASHIK_RAW', OLD_KEPT_TAB = 'ATT_FORM_NASHIK_OLD';
+
+  // 1. SITE cells (a pure relabel: APPROVED_BY / APPROVED_AT are untouched, so the category approval stays valid)
+  [TABS.PAYROLL_CATEGORY_CONFIG, TABS.HOLIDAY_CALENDAR].forEach(function (tab) {
+    var sh = ss.getSheetByName(tab);
+    if (!sh) return;
+    var ups = [];
+    readObjects(sh).forEach(function (r) {
+      if (String(r.SITE == null ? '' : r.SITE).trim().toUpperCase() === OLD_SITE) ups.push({ row: r._row, values: { SITE: SITE_VFL } });
+    });
+    if (ups.length) {
+      updateRows(sh, ups);
+      changes.push(tab + ': SITE ' + OLD_SITE + ' -> ' + SITE_VFL + ' on ' + ups.length + ' row(s)');
+    }
+  });
+  categoryConfigReset_();
+
+  // 2. control keys
+  var ctl = ss.getSheetByName(TABS.PAYROLL_CONTROL);
+  if (ctl) {
+    var rows = readObjects(ctl);
+    var keyOf = function (r) { return String(r.KEY == null ? '' : r.KEY).trim(); };
+    var hasNew = rows.some(function (r) { return keyOf(r) === 'VFL_WEEKLY_OFF'; });
+    var toDelete = [];
+    rows.forEach(function (r) {
+      var k = keyOf(r);
+      if (k === OLD_WEEKLY_OFF_KEY) {
+        if (hasNew) { toDelete.push(r._row); changes.push('PAYROLL_CONTROL: removed ' + OLD_WEEKLY_OFF_KEY + ' (VFL_WEEKLY_OFF already present)'); }
+        else {
+          updateRows(ctl, [{ row: r._row, values: { KEY: 'VFL_WEEKLY_OFF' } }]);
+          hasNew = true;
+          changes.push('PAYROLL_CONTROL: renamed ' + OLD_WEEKLY_OFF_KEY + ' -> VFL_WEEKLY_OFF (value kept)');
+        }
+      } else if (k === OLD_FORM_ID_KEY) {
+        toDelete.push(r._row);
+        changes.push('PAYROLL_CONTROL: removed ' + OLD_FORM_ID_KEY + ' (the old form is retired; the new one gets ATT_FORM_VFL_ID)');
+      }
+    });
+    toDelete.sort(function (a, b) { return b - a; }).forEach(function (n) { ctl.deleteRow(n); });
+  }
+
+  // 3. the old form-response tab: unlink the form, delete when it holds no responses, otherwise keep it under a new name
+  var raw = ss.getSheetByName(OLD_RAW_TAB);
+  if (raw) {
+    try {
+      var url = raw.getFormUrl();
+      if (url) {
+        FormApp.openByUrl(url).removeDestination();
+        changes.push(OLD_RAW_TAB + ': form unlinked');
+      }
+    } catch (e) { changes.push(OLD_RAW_TAB + ': could not unlink form (' + String(e && e.message ? e.message : e) + ')'); }
+    if (raw.getLastRow() <= 1) {
+      ss.deleteSheet(raw);
+      changes.push(OLD_RAW_TAB + ': empty tab deleted');
+    } else if (ss.getSheetByName(OLD_KEPT_TAB)) {
+      changes.push(OLD_RAW_TAB + ': has responses but ' + OLD_KEPT_TAB + ' already exists; left as is, rename it by hand');
+    } else {
+      raw.setName(OLD_KEPT_TAB);
+      changes.push(OLD_RAW_TAB + ': has responses, renamed to ' + OLD_KEPT_TAB + ' (kept)');
+    }
+  }
+  return changes;
+}
+
 function hrosSetup() {
   var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], categoriesSeeded: [], validations: [],
-    hidden: [], protectedTabs: [], notes: [] };
+    hidden: [], protectedTabs: [], notes: [], siteMigration: [] };
   var ss = getSpreadsheet_();
+  log.siteMigration = hrosMigrateSiteToVfl();
   var specs = hrosTabSpecs_();
 
   // 1. every tab of the registry: create when missing, write / complete the header (columns are only appended on the right)

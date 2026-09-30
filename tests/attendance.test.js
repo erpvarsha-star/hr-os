@@ -8,39 +8,39 @@ const ctx = loadGs(['00_Config.gs', '01_SheetUtil.gs', '99_Audit.gs', '02_Setup.
 const P = '2026-10'; // 31 days, Oct 4/11/18/25 are Sundays
 const dates = ctx.enumerateDates(P);
 const roster = [
-  { EMP_ID: 'E1', PAYROLL_CATEGORY: 'STAFF', SITE: 'NASHIK', DOJ: '' },
-  { EMP_ID: 'W1', PAYROLL_CATEGORY: 'PERMANENT_WORKER', SITE: 'NASHIK', DOJ: '' },
+  { EMP_ID: 'E1', PAYROLL_CATEGORY: 'STAFF', SITE: 'VFL', DOJ: '' },
+  { EMP_ID: 'W1', PAYROLL_CATEGORY: 'PERMANENT_WORKER', SITE: 'VFL', DOJ: '' },
 ];
-const daily = (emp, code, date, extra = {}) => ({ PERIOD: P, DATE: date, SITE: 'NASHIK', EMP_ID: emp, CODE: code,
-  SOURCE: 'FORM_NASHIK', SOURCE_REF: 'r', KEY: `${emp}|${date}`, STATUS: 'VALID', ENTERED_AT: '2026-10-01T10:00:00', ...extraFix(extra) });
+const daily = (emp, code, date, extra = {}) => ({ PERIOD: P, DATE: date, SITE: 'VFL', EMP_ID: emp, CODE: code,
+  SOURCE: 'FORM_VFL', SOURCE_REF: 'r', KEY: `${emp}|${date}`, STATUS: 'VALID', ENTERED_AT: '2026-10-01T10:00:00', ...extraFix(extra) });
 function extraFix(x) { return x; }
 const fullMonth = (emp, codeFor) => dates.map((d) => daily(emp, codeFor(d), d));
 
 test('blank defaults to P, WO on weekly off, PH on paid holiday', () => {
   const holidays = [{ DATE: '2026-10-02', SITE: 'ALL', HOLIDAY_NAME: 'Gandhi Jayanti', PAID: 'Y' }];
   const mk = (date) => plain(ctx.normalizeAttendanceResponse(
-    { date, marks: {}, ack: true, timestamp: 't', sourceRef: 'R1' }, roster, holidays, 'NASHIK', 'SUN'));
+    { date, marks: {}, ack: true, timestamp: 't', sourceRef: 'R1' }, roster, holidays, 'VFL', 'SUN'));
   assert.deepEqual(mk('2026-10-01').map((r) => r.CODE), ['P', 'P']);
   assert.deepEqual(mk('2026-10-04').map((r) => r.CODE), ['WO', 'WO']); // Sunday
   assert.deepEqual(mk('2026-10-02').map((r) => r.CODE), ['PH', 'PH']);
   const r = mk('2026-10-01')[0];
   assert.equal(r.KEY, 'E1|2026-10-01');
-  assert.equal(r.SOURCE, 'FORM_NASHIK');
+  assert.equal(r.SOURCE, 'FORM_VFL');
   assert.equal(r.STATUS, 'VALID');
 });
 
 test('explicit marks win; invalid code / unknown emp rejected; ack required; unpaid holiday not guessed', () => {
   const res = plain(ctx.normalizeAttendanceResponse(
-    { date: '2026-10-01', marks: { E1: 'a', W1: 'XX', ZZ: 'P' }, ack: true }, roster, [], 'NASHIK', 'SUN'));
+    { date: '2026-10-01', marks: { E1: 'a', W1: 'XX', ZZ: 'P' }, ack: true }, roster, [], 'VFL', 'SUN'));
   const by = Object.fromEntries(res.map((r) => [r.EMP_ID, r]));
   assert.equal(by.E1.CODE, 'A');
   assert.equal(by.W1.STATUS, 'REJECTED');
   assert.equal(by.ZZ.REJECT_REASON, 'UNKNOWN_EMP_ID');
-  const noAck = plain(ctx.normalizeAttendanceResponse({ date: '2026-10-01', marks: {}, ack: false }, roster, [], 'NASHIK', 'SUN'));
+  const noAck = plain(ctx.normalizeAttendanceResponse({ date: '2026-10-01', marks: {}, ack: false }, roster, [], 'VFL', 'SUN'));
   assert.equal(noAck.length, 1);
   assert.equal(noAck[0].STATUS, 'REJECTED');
   const unpaid = plain(ctx.normalizeAttendanceResponse({ date: '2026-10-01', marks: {}, ack: true },
-    roster, [{ DATE: '2026-10-01', SITE: 'NASHIK', PAID: 'N' }], 'NASHIK', 'SUN'));
+    roster, [{ DATE: '2026-10-01', SITE: 'VFL', PAID: 'N' }], 'VFL', 'SUN'));
   assert.equal(unpaid.length, 0);
 });
 

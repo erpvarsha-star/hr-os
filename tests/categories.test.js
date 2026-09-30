@@ -6,7 +6,7 @@ const { plain } = require('./load');
 const { P, HR, ACC, OWNER, fullWorld } = require('./regenv');
 
 const CFG_HDR = ['CATEGORY_CODE', 'DISPLAY_NAME', 'CALC_METHOD', 'SITE', 'PAYSLIP', 'PAYSLIP_TEMPLATE_KEY', 'RATE_SOURCE', 'ACTIVE', 'APPROVED_BY', 'APPROVED_AT'];
-const cfgRow = (code, method, o = {}) => Object.assign({ CATEGORY_CODE: code, DISPLAY_NAME: code, CALC_METHOD: method, SITE: 'NASHIK', PAYSLIP: 'N', PAYSLIP_TEMPLATE_KEY: '',
+const cfgRow = (code, method, o = {}) => Object.assign({ CATEGORY_CODE: code, DISPLAY_NAME: code, CALC_METHOD: method, SITE: 'VFL', PAYSLIP: 'N', PAYSLIP_TEMPLATE_KEY: '',
   RATE_SOURCE: method === 'STAFF' || method === 'PERMANENT_WORKER' ? 'SALARY_STRUCTURE' : 'RATE_PROFILE', ACTIVE: 'Y', APPROVED_BY: 'yash.munot@gmail.com' }, o);
 const FOUR = [cfgRow('STAFF', 'STAFF', { PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'STAFF' }), cfgRow('PERMANENT_WORKER', 'PERMANENT_WORKER', { PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'WORKER' }),
   cfgRow('CONSULTANT', 'CONSULTANT'), cfgRow('PUNE_STAFF', 'PUNE_STAFF', { SITE: 'PUNE' })];
@@ -16,7 +16,7 @@ const RATE_HDR = ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 
 function world5(cfgRows) {
   const env = fullWorld({ master: [{ EMP_ID: 'CX1', EMPLOYEE_NAME: 'Contract One', PAYROLL_CATEGORY: 'CONTRACT_NSK', STATUS_AS_SOURCE: 'Active', DEPARTMENT: 'Dept', DESIGNATION: 'X', DOJ_AS_SOURCE: '01/01/2020' }],
     periodRows: [{ PAYROLL_MONTH: P, PAYROLL_CATEGORY: 'CONTRACT_NSK', WORKING_DAYS: 26, STATUS: 'PENDING' }] });
-  env.put('PAYROLL_CATEGORY_CONFIG', CFG_HDR, cfgRows || FOUR.concat([cfgRow('CONTRACT_NSK', 'CONSULTANT', { DISPLAY_NAME: 'Contract Nashik' })]));
+  env.put('PAYROLL_CATEGORY_CONFIG', CFG_HDR, cfgRows || FOUR.concat([cfgRow('CONTRACT_NSK', 'CONSULTANT', { DISPLAY_NAME: 'Contract VFL' })]));
   env.put('PAYROLL_RATE_PROFILE', RATE_HDR, [{ EMP_ID: 'CX1', PAYROLL_CATEGORY: 'CONTRACT_NSK', PAY_BASIS: 'DAILY_RATE', RATE_AMOUNT_INR: 700, VERSION_STATE: 'APPROVED' },
     { EMP_ID: 'C1', PAYROLL_CATEGORY: 'CONSULTANT', PAY_BASIS: 'DAILY_RATE', RATE_AMOUNT_INR: 700, VERSION_STATE: 'APPROVED' }]);
   return env;
@@ -28,7 +28,7 @@ test('no config tab: the built-in four categories, methods, sites and payslip fl
   assert.deepEqual(plain(env.c.payslipPopulations()), ['STAFF', 'PERMANENT_WORKER']);
   assert.equal(env.c.categoryMethod('PUNE_STAFF'), 'PUNE_STAFF');
   assert.equal(env.c.siteForPopulation('PUNE_STAFF'), 'PUNE');
-  assert.equal(env.c.siteForPopulation('STAFF'), 'NASHIK');
+  assert.equal(env.c.siteForPopulation('STAFF'), 'VFL');
   assert.equal(env.c.populationTab('PERMANENT_WORKER'), 'PAYROLL_WORKER');
   assert.equal(env.c.isKnownPopulation('CONTRACT_NSK'), false);
 });
@@ -41,7 +41,7 @@ test('config tab rules: active rows only, sites, tabs, payslip flags, unapproved
   assert.equal(c.isConfiguredCategory('OLD_CAT'), true, 'but configured: not UNKNOWN_CATEGORY');
   assert.equal(c.populationTab('CONTRACT_NSK'), 'PAYROLL_CONTRACT_NSK');
   assert.deepEqual(plain(c.populationsOfSite('PUNE')), ['PUNE_STAFF', 'PUNE_TEMP']);
-  assert.deepEqual(plain(c.populationsOfSite('NASHIK')), ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'CONTRACT_NSK']);
+  assert.deepEqual(plain(c.populationsOfSite('VFL')), ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'CONTRACT_NSK']);
   assert.deepEqual(plain(c.attFormPopulations_(c.ATT_FORM_DEFS.PUNE)), ['PUNE_STAFF', 'PUNE_TEMP'], 'daily forms iterate the configured categories of their site');
   assert.equal(c.categoryMethod('CONTRACT_NSK'), 'CONSULTANT');
   assert.equal(c.categoryEntry('PUNE_TEMP').approvedBy, '');

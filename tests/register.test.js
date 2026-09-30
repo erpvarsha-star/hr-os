@@ -6,7 +6,7 @@ const { P, HR, OWNER, world } = require('./regenv');
 
 // ---------------------------------------------------------------- pure derivation
 const pure = loadGs(['00_Config.gs', '01_SheetUtil.gs', '99_Audit.gs', '10_Attendance.gs', '12_Register.gs']);
-const derive = (reg, inc, pop = 'STAFF', over = {}) => plain(pure.deriveMonthlyAttendance(reg, inc, pop, over.period || P, over.site || 'NASHIK',
+const derive = (reg, inc, pop = 'STAFF', over = {}) => plain(pure.deriveMonthlyAttendance(reg, inc, pop, over.period || P, over.site || 'VFL',
   over.holidays || [], over.wo || 'SUN', over.leave || {}));
 const hol = (DATE, SITE, PAID = 'Y') => ({ DATE, SITE, HOLIDAY_NAME: 'h', PAID });
 
@@ -48,8 +48,8 @@ test('derive: paid holiday on the weekly off counts as week-off nowhere twice (W
 });
 
 test('derive: holidays respect the SITE (site or ALL), PAID=Y, and the month', () => {
-  const holidays = [hol('2026-09-15', 'PUNE'), hol('2026-09-16', 'ALL'), hol('2026-09-17', 'NASHIK', 'N'), hol('2026-10-01', 'ALL'), hol('2026-09-18', 'NASHIK')];
-  assert.equal(derive(20, false, 'STAFF', { holidays, site: 'NASHIK' }).PH, 2, '16 (ALL) and 18 (NASHIK)');
+  const holidays = [hol('2026-09-15', 'PUNE'), hol('2026-09-16', 'ALL'), hol('2026-09-17', 'VFL', 'N'), hol('2026-10-01', 'ALL'), hol('2026-09-18', 'VFL')];
+  assert.equal(derive(20, false, 'STAFF', { holidays, site: 'VFL' }).PH, 2, '16 (ALL) and 18 (VFL)');
   assert.equal(derive(20, false, 'PUNE_STAFF', { holidays, site: 'PUNE' }).PH, 2, '15 (PUNE) and 16 (ALL)');
 });
 
@@ -273,7 +273,7 @@ test('leavers: non-Active employees with a last working day on/after the period 
 
 test('generateMonthlyAttendance never regenerates register rows (the register is the pay source); other employees still get daily-generated rows', () => {
   const daily = [];
-  ['S1', 'S2'].forEach((id) => { for (let d = 1; d <= 30; d++) daily.push({ PERIOD: P, DATE: `${P}-${String(d).padStart(2, '0')}`, SITE: 'NASHIK', EMP_ID: id, CODE: d % 7 === 6 ? 'WO' : 'P', SOURCE: 'FORM_NASHIK',
+  ['S1', 'S2'].forEach((id) => { for (let d = 1; d <= 30; d++) daily.push({ PERIOD: P, DATE: `${P}-${String(d).padStart(2, '0')}`, SITE: 'VFL', EMP_ID: id, CODE: d % 7 === 6 ? 'WO' : 'P', SOURCE: 'FORM_VFL',
     SOURCE_REF: 'x', KEY: `${id}|${P}-${d}`, STATUS: 'VALID', ENTERED_AT: '2026-10-01T10:00:00' }); });
   const env = world({ daily });
   env.c.registerSubmit({ period: P, includesWO: {}, entries: [{ empId: 'S1', days: 20 }] });

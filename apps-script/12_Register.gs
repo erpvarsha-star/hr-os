@@ -45,7 +45,7 @@ function reg_leaveNum_(v) {
  * @param {boolean|string} includesWO true / 'Y' when the entered days INCLUDE weekly offs
  * @param {string} population an active category code (PAYROLL_CATEGORY_CONFIG)
  * @param {string} period 'YYYY-MM'
- * @param {string} site 'NASHIK' | 'PUNE'
+ * @param {string} site 'VFL' | 'PUNE'
  * @param {Array} holidays HOLIDAY_CALENDAR rows {DATE, SITE, PAID}
  * @param {string} weeklyOffDay 'SUN'..'SAT'
  * @param {Object} approvedLeaveDays {EL, CL, SL, OD, COFF, LWP} days inside the period (missing = 0)
@@ -238,7 +238,7 @@ function register_ctx_(period) {
   var pp = periodPopulationsOpen_(period);
   return { period: period, roster: roster, rosterMap: rosterMap,
     holidays: getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [],
-    weeklyOff: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) },
+    weeklyOff: { VFL: getWeeklyOff(SITE_VFL), PUNE: getWeeklyOff(SITE_PUNE) },
     leaveByEmp: leaveByEmp(leaveRows, period), workingDays: workingDaysFor_(period),
     lockedPops: pp.locked, isLocked: pp.isLocked, existing: existingAttendanceByEmp_(period) };
 }

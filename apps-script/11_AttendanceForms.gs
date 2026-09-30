@@ -1,5 +1,5 @@
 /**
- * 11_AttendanceForms.gs - daily attendance Google Forms (Nashik, Pune), roster refresh, trigger install.
+ * 11_AttendanceForms.gs - daily attendance Google Forms (VFL Waluj plant, Pune office), roster refresh, trigger install.
  */
 var ATT_ROW_SEPARATOR = ' – '; // "EMP_ID – Name" (en dash with spaces)
 var ATT_GRID_TITLE_PREFIX = 'Attendance – ';
@@ -11,8 +11,8 @@ var ATT_MAX_TRIGGERS = 5;
  * categories of that site in PAYROLL_CATEGORY_CONFIG (so a new category shows up in the form of its site).
  */
 var ATT_FORM_DEFS = {
-  NASHIK: { site: 'NASHIK', title: 'Daily Attendance – Nashik', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
-    idKey: 'ATT_FORM_NASHIK_ID', rawTab: 'ATT_FORM_NASHIK_RAW' },
+  VFL: { site: 'VFL', title: 'Daily Attendance – VFL Waluj', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
+    idKey: 'ATT_FORM_VFL_ID', rawTab: 'ATT_FORM_VFL_RAW' },
   PUNE: { site: 'PUNE', title: 'Daily Attendance – Pune', populations: ['PUNE_STAFF'],
     idKey: 'ATT_FORM_PUNE_ID', rawTab: 'ATT_FORM_PUNE_RAW' }
 };
@@ -127,7 +127,7 @@ var HROS_SUBMIT_HANDLER = 'hrosOnFormSubmit';
 
 /** Response tab -> handler key. Tabs not listed are ignored. The OT source tab is resolved dynamically (see routeFormSubmit). */
 var HROS_FORM_ROUTES = {
-  ATT_FORM_NASHIK_RAW: 'ATT_NASHIK',
+  ATT_FORM_VFL_RAW: 'ATT_VFL',
   ATT_FORM_PUNE_RAW: 'ATT_PUNE',
   CANTEEN_FORM_RESPONSES: 'CANTEEN',
   EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY',
@@ -144,7 +144,7 @@ function routeFormSubmit(sheetName, otTabName) {
 
 /**
  * The ONE installable onFormSubmit trigger (spreadsheet level, no form IDs needed). Routes by the name of the sheet
- * the response landed in: daily attendance (Nashik / Pune raw tabs), the OT source tab (syncOtFromForm for the
+ * the response landed in: daily attendance (VFL / Pune raw tabs), the OT source tab (syncOtFromForm for the
  * period of the OT date), canteen, efficiency. Every other tab is ignored.
  */
 function hrosOnFormSubmit(e) {
@@ -155,8 +155,8 @@ function hrosOnFormSubmit(e) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    if (route === 'ATT_NASHIK' || route === 'ATT_PUNE') {
-      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_NASHIK;
+    if (route === 'ATT_VFL' || route === 'ATT_PUNE') {
+      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_VFL;
       var rowNum = e.range.getRow(), lc = sheet.getLastColumn();
       var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
       var values = sheet.getRange(rowNum, 1, 1, lc).getValues()[0];

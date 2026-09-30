@@ -583,7 +583,7 @@ SCHEMA = json.loads(r"""{
    "Payslip email release switch"
   ],
   [
-   "NASHIK_WEEKLY_OFF",
+   "VFL_WEEKLY_OFF",
    "SUN",
    "Weekly off used to default blank attendance"
   ],
@@ -700,7 +700,7 @@ SCHEMA = json.loads(r"""{
    "CATEGORY_CODE": "STAFF",
    "DISPLAY_NAME": "Staff",
    "CALC_METHOD": "STAFF",
-   "SITE": "NASHIK",
+   "SITE": "VFL",
    "PAYSLIP": "Y",
    "PAYSLIP_TEMPLATE_KEY": "STAFF",
    "RATE_SOURCE": "SALARY_STRUCTURE",
@@ -710,7 +710,7 @@ SCHEMA = json.loads(r"""{
    "CATEGORY_CODE": "PERMANENT_WORKER",
    "DISPLAY_NAME": "Permanent worker",
    "CALC_METHOD": "PERMANENT_WORKER",
-   "SITE": "NASHIK",
+   "SITE": "VFL",
    "PAYSLIP": "Y",
    "PAYSLIP_TEMPLATE_KEY": "WORKER",
    "RATE_SOURCE": "SALARY_STRUCTURE",
@@ -720,7 +720,7 @@ SCHEMA = json.loads(r"""{
    "CATEGORY_CODE": "CONSULTANT",
    "DISPLAY_NAME": "Consultant",
    "CALC_METHOD": "CONSULTANT",
-   "SITE": "NASHIK",
+   "SITE": "VFL",
    "PAYSLIP": "N",
    "PAYSLIP_TEMPLATE_KEY": "",
    "RATE_SOURCE": "RATE_PROFILE",

@@ -29,6 +29,9 @@ function makeSheet(name) {
     setDataValidation() {},
     clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) if (s.data[r - 1 + i]) s.data[r - 1 + i][c - 1 + j] = ''; },
   });
+  s.deleteRow = (n) => { s.data.splice(n - 1, 1); };
+  s.setName = (n) => { s.name = n; if (s.env) { const next = {}; Object.keys(s.env.sheets).forEach((k) => { next[k === name ? n : k] = s.env.sheets[k]; }); s.env.sheets = next; } name = n; };
+  s.getFormUrl = () => s.formUrl || null;
   s.protections = [];
   s.hidden = false;
   s.protect = () => {
@@ -54,7 +57,7 @@ function makeEnv(opts = {}) {
   const env = { user: opts.user || 'hr@varshaforgings.com', sheets: {}, external: {}, triggers: (opts.triggers || []).slice(), created: [] };
   const ss = {
     getSheetByName: (n) => env.sheets[n] || null,
-    insertSheet: (n) => (env.sheets[n] = makeSheet(n)),
+    insertSheet: (n) => { const sh = (env.sheets[n] = makeSheet(n)); sh.env = env; return sh; },
     getSheets: () => Object.values(env.sheets),
     deleteSheet: (sh) => { delete env.sheets[sh.getName()]; },
     setActiveSheet: (sh) => { env.active = sh; return sh; },
@@ -71,6 +74,7 @@ function makeEnv(opts = {}) {
   const resetCat = (name) => { if (name === 'PAYROLL_CATEGORY_CONFIG' && env.c && env.c.categoryConfigReset_) env.c.categoryConfigReset_(); };
   env.put = (name, headers, rows = []) => {
     const s = makeSheet(name);
+    s.env = env;
     s.data = [headers.slice()].concat(rows.map((r) => headers.map((h) => (h in r ? r[h] : ''))));
     env.sheets[name] = s;
     resetCat(name);

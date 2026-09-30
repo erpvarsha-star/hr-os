@@ -262,7 +262,7 @@ function isUnpaidHoliday_(holidays, date, site) {
  * Response-level failure (bad date, ack missing) -> single REJECTED row with EMP_ID '*'.
  */
 function normalizeAttendanceResponse(response, roster, holidays, site, weeklyOff) {
-  var source = site === SITE_PUNE ? 'FORM_PUNE' : 'FORM_NASHIK';
+  var source = site === SITE_PUNE ? 'FORM_PUNE' : 'FORM_VFL';
   var entered = response.timestamp || '';
   var date = toIsoDate(response.date);
   function row(emp, code, status, reason) {
@@ -475,7 +475,7 @@ function generateMonthlyAttendance(period) {
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
   var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
-  var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
+  var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_VFL));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var creates = [], updates = [], counts = { CREATE: 0, REGENERATE: 0, UNCHANGED: 0, OVERRIDE: 0, KEEP_APPROVED: 0 };
   var registerKept = [];
@@ -563,7 +563,7 @@ function approveAttendance(period, population) {
 }
 
 /**
- * Pure: one row of an attendance form-response tab (ATT_FORM_NASHIK_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
+ * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
  * {date, marks, ack, timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked
  * response sheet are the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid
  * row, the cell holds the chosen code) and the acknowledgement checkbox title.

@@ -41,7 +41,7 @@ var TABS = {
   PAYSLIP_REGISTER: 'PAYSLIP_REGISTER',
   PAYSLIP_EMAIL_LOG: 'PAYSLIP_EMAIL_LOG',
   AUDIT_LOG: 'AUDIT_LOG',
-  ATT_FORM_NASHIK_RAW: 'ATT_FORM_NASHIK_RAW',
+  ATT_FORM_VFL_RAW: 'ATT_FORM_VFL_RAW',
   ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW',
   PAYROLL_CATEGORY_CONFIG: 'PAYROLL_CATEGORY_CONFIG',
   PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
@@ -58,7 +58,7 @@ var POP = {
 };
 /** Defaults used when the PAYROLL_CATEGORY_CONFIG tab is absent (or empty). With the tab, the configured ACTIVE rows rule. */
 var POPULATION_LIST = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
-var SITE_NASHIK = 'NASHIK';
+var SITE_VFL = 'VFL';
 var SITE_PUNE = 'PUNE';
 
 var DAILY_CODES = ['P', 'HD', 'A', 'WO', 'PH', 'EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
@@ -219,11 +219,11 @@ var RATE_SOURCES = ['SALARY_STRUCTURE', 'RATE_PROFILE'];
 var PAYSLIP_TEMPLATE_KEYS = ['STAFF', 'WORKER'];
 /** Seed rows of PAYROLL_CATEGORY_CONFIG = the built-in defaults (APPROVED_BY blank: the owner signs them off once). */
 var CATEGORY_DEFAULTS = [
-  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'NASHIK', PAYSLIP: 'Y',
+  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'VFL', PAYSLIP: 'Y',
     PAYSLIP_TEMPLATE_KEY: 'STAFF', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
-  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'NASHIK',
+  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'VFL',
     PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'WORKER', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
-  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'NASHIK', PAYSLIP: 'N',
+  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'VFL', PAYSLIP: 'N',
     PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' },
   { CATEGORY_CODE: 'PUNE_STAFF', DISPLAY_NAME: 'Pune staff', CALC_METHOD: 'PUNE_STAFF', SITE: 'PUNE', PAYSLIP: 'N',
     PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }
@@ -255,7 +255,7 @@ function categoryEntryFromRow(r) {
 function categoryEntryProblems(e) {
   var out = [];
   if (CALC_METHODS.indexOf(e.method) < 0) out.push(e.code + ': CALC_METHOD must be one of ' + CALC_METHODS.join(', '));
-  if (e.site !== SITE_NASHIK && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be NASHIK or PUNE');
+  if (e.site !== SITE_VFL && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be VFL or PUNE');
   if (RATE_SOURCES.indexOf(e.rateSource) < 0) out.push(e.code + ': RATE_SOURCE must be SALARY_STRUCTURE or RATE_PROFILE');
   if (e.payslip && PAYSLIP_TEMPLATE_KEYS.indexOf(e.templateKey) < 0) out.push(e.code + ': PAYSLIP=Y needs PAYSLIP_TEMPLATE_KEY STAFF or WORKER');
   return out;
@@ -316,7 +316,7 @@ function isKnownPopulation(pop) { var e = categoryEntry(pop); return !!e && e.ac
 
 function siteForPopulation(pop) {
   var e = categoryEntry(pop);
-  if (e && e.active && (e.site === SITE_NASHIK || e.site === SITE_PUNE)) return e.site;
+  if (e && e.active && (e.site === SITE_VFL || e.site === SITE_PUNE)) return e.site;
   throw new Error('Unknown population "' + pop + '"');
 }
 
@@ -376,7 +376,7 @@ function getMinPeriod() {
 }
 
 function getWeeklyOff(site) {
-  var key = site === SITE_PUNE ? 'PUNE_WEEKLY_OFF' : 'NASHIK_WEEKLY_OFF';
+  var key = site === SITE_PUNE ? 'PUNE_WEEKLY_OFF' : 'VFL_WEEKLY_OFF';
   var v = String(getControl(key, 'SUN')).trim().toUpperCase();
   if (WEEKDAY_CODES.indexOf(v) < 0) throw new Error(key + ' must be one of ' + WEEKDAY_CODES.join(',') + ' (got "' + v + '")');
   return v;
@@ -687,7 +687,7 @@ var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
-var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_NASHIK_RAW', 'ATT_FORM_PUNE_RAW'];
+var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW'];
 
 /**
  * The tab registry, in tab order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Readiness / Payroll ->
@@ -702,13 +702,13 @@ function hrosTabSpecs_() {
     { name: TABS.FEED_STATUS, group: 'Control', headers: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
       validations: [['STATUS', ['OPEN', 'COMPLETE']]] },
     { name: TABS.PAYROLL_CATEGORY_CONFIG, group: 'Config', headers: CATEGORY_CONFIG_HEADERS,
-      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_NASHIK, SITE_PUNE]], ['PAYSLIP', yn],
+      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_VFL, SITE_PUNE]], ['PAYSLIP', yn],
         ['PAYSLIP_TEMPLATE_KEY', PAYSLIP_TEMPLATE_KEYS], ['RATE_SOURCE', RATE_SOURCES], ['ACTIVE', yn]] },
     { name: TABS.STATUTORY_CONFIG, group: 'Config', headers: HROS_STATUTORY_HEADERS },
     { name: TABS.EFFICIENCY_CONFIG, group: 'Config', headers: HROS_EFFICIENCY_HEADERS },
     { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
     { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
-      validations: [['SITE', ['NASHIK', 'PUNE', 'ALL']], ['PAID', yn]] },
+      validations: [['SITE', ['VFL', 'PUNE', 'ALL']], ['PAID', yn]] },
     { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
     { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
     { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
@@ -777,7 +777,7 @@ var HROS_CONTROL_DEFAULTS = [
   ['PAYSLIP_TEMPLATE_WORKER_ID', '1MSmi8qVRL8SI8-svVihasYbLFGNo8Xkzko4VUaIX8SU', 'Worker payslip template Doc'],
   ['PAYSLIP_FOLDER_ID', '', 'Blank = payslip step blocked'],
   ['EMAIL_RELEASE_ENABLED', 'FALSE', 'Payslip email release switch'],
-  ['NASHIK_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
+  ['VFL_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['PUNE_WEEKLY_OFF', 'SUN', 'Weekly off used to default blank attendance'],
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],
   ['OT_SOURCE_TAB', 'OT_FORM_RESPONSES', 'OT form-response tab (local; falls back to Overtime_Form if absent). With an external ID: the tab there (default Form Responses 1)'],
@@ -845,10 +845,83 @@ function hrosOrderTabs_(ss, order) {
   return notes;
 }
 
+/**
+ * One-time, idempotent relabel of the plant site to VFL (Waluj); safe to run when nothing needs migrating. Called first by hrosSetup.
+ * Returns the list of changes made ([] when there was nothing to do). Never deletes response data.
+ */
+function hrosMigrateSiteToVfl() {
+  var changes = [];
+  var ss = getSpreadsheet_();
+  var OLD_SITE = 'NASHIK', OLD_WEEKLY_OFF_KEY = 'NASHIK_WEEKLY_OFF', OLD_FORM_ID_KEY = 'ATT_FORM_NASHIK_ID';
+  var OLD_RAW_TAB = 'ATT_FORM_NASHIK_RAW', OLD_KEPT_TAB = 'ATT_FORM_NASHIK_OLD';
+
+  // 1. SITE cells (a pure relabel: APPROVED_BY / APPROVED_AT are untouched, so the category approval stays valid)
+  [TABS.PAYROLL_CATEGORY_CONFIG, TABS.HOLIDAY_CALENDAR].forEach(function (tab) {
+    var sh = ss.getSheetByName(tab);
+    if (!sh) return;
+    var ups = [];
+    readObjects(sh).forEach(function (r) {
+      if (String(r.SITE == null ? '' : r.SITE).trim().toUpperCase() === OLD_SITE) ups.push({ row: r._row, values: { SITE: SITE_VFL } });
+    });
+    if (ups.length) {
+      updateRows(sh, ups);
+      changes.push(tab + ': SITE ' + OLD_SITE + ' -> ' + SITE_VFL + ' on ' + ups.length + ' row(s)');
+    }
+  });
+  categoryConfigReset_();
+
+  // 2. control keys
+  var ctl = ss.getSheetByName(TABS.PAYROLL_CONTROL);
+  if (ctl) {
+    var rows = readObjects(ctl);
+    var keyOf = function (r) { return String(r.KEY == null ? '' : r.KEY).trim(); };
+    var hasNew = rows.some(function (r) { return keyOf(r) === 'VFL_WEEKLY_OFF'; });
+    var toDelete = [];
+    rows.forEach(function (r) {
+      var k = keyOf(r);
+      if (k === OLD_WEEKLY_OFF_KEY) {
+        if (hasNew) { toDelete.push(r._row); changes.push('PAYROLL_CONTROL: removed ' + OLD_WEEKLY_OFF_KEY + ' (VFL_WEEKLY_OFF already present)'); }
+        else {
+          updateRows(ctl, [{ row: r._row, values: { KEY: 'VFL_WEEKLY_OFF' } }]);
+          hasNew = true;
+          changes.push('PAYROLL_CONTROL: renamed ' + OLD_WEEKLY_OFF_KEY + ' -> VFL_WEEKLY_OFF (value kept)');
+        }
+      } else if (k === OLD_FORM_ID_KEY) {
+        toDelete.push(r._row);
+        changes.push('PAYROLL_CONTROL: removed ' + OLD_FORM_ID_KEY + ' (the old form is retired; the new one gets ATT_FORM_VFL_ID)');
+      }
+    });
+    toDelete.sort(function (a, b) { return b - a; }).forEach(function (n) { ctl.deleteRow(n); });
+  }
+
+  // 3. the old form-response tab: unlink the form, delete when it holds no responses, otherwise keep it under a new name
+  var raw = ss.getSheetByName(OLD_RAW_TAB);
+  if (raw) {
+    try {
+      var url = raw.getFormUrl();
+      if (url) {
+        FormApp.openByUrl(url).removeDestination();
+        changes.push(OLD_RAW_TAB + ': form unlinked');
+      }
+    } catch (e) { changes.push(OLD_RAW_TAB + ': could not unlink form (' + String(e && e.message ? e.message : e) + ')'); }
+    if (raw.getLastRow() <= 1) {
+      ss.deleteSheet(raw);
+      changes.push(OLD_RAW_TAB + ': empty tab deleted');
+    } else if (ss.getSheetByName(OLD_KEPT_TAB)) {
+      changes.push(OLD_RAW_TAB + ': has responses but ' + OLD_KEPT_TAB + ' already exists; left as is, rename it by hand');
+    } else {
+      raw.setName(OLD_KEPT_TAB);
+      changes.push(OLD_RAW_TAB + ': has responses, renamed to ' + OLD_KEPT_TAB + ' (kept)');
+    }
+  }
+  return changes;
+}
+
 function hrosSetup() {
   var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], categoriesSeeded: [], validations: [],
-    hidden: [], protectedTabs: [], notes: [] };
+    hidden: [], protectedTabs: [], notes: [], siteMigration: [] };
   var ss = getSpreadsheet_();
+  log.siteMigration = hrosMigrateSiteToVfl();
   var specs = hrosTabSpecs_();
 
   // 1. every tab of the registry: create when missing, write / complete the header (columns are only appended on the right)
@@ -1261,7 +1334,7 @@ function isUnpaidHoliday_(holidays, date, site) {
  * Response-level failure (bad date, ack missing) -> single REJECTED row with EMP_ID '*'.
  */
 function normalizeAttendanceResponse(response, roster, holidays, site, weeklyOff) {
-  var source = site === SITE_PUNE ? 'FORM_PUNE' : 'FORM_NASHIK';
+  var source = site === SITE_PUNE ? 'FORM_PUNE' : 'FORM_VFL';
   var entered = response.timestamp || '';
   var date = toIsoDate(response.date);
   function row(emp, code, status, reason) {
@@ -1474,7 +1547,7 @@ function generateMonthlyAttendance(period) {
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
   var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
-  var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
+  var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_VFL));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var creates = [], updates = [], counts = { CREATE: 0, REGENERATE: 0, UNCHANGED: 0, OVERRIDE: 0, KEEP_APPROVED: 0 };
   var registerKept = [];
@@ -1562,7 +1635,7 @@ function approveAttendance(period, population) {
 }
 
 /**
- * Pure: one row of an attendance form-response tab (ATT_FORM_NASHIK_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
+ * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
  * {date, marks, ack, timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked
  * response sheet are the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid
  * row, the cell holds the chosen code) and the acknowledgement checkbox title.
@@ -1617,7 +1690,7 @@ function ingestAttendanceResponse_(parsed, site) {
 
 // ===== 11_AttendanceForms.gs =====
 /**
- * 11_AttendanceForms.gs - daily attendance Google Forms (Nashik, Pune), roster refresh, trigger install.
+ * 11_AttendanceForms.gs - daily attendance Google Forms (VFL Waluj plant, Pune office), roster refresh, trigger install.
  */
 var ATT_ROW_SEPARATOR = ' – '; // "EMP_ID – Name" (en dash with spaces)
 var ATT_GRID_TITLE_PREFIX = 'Attendance – ';
@@ -1629,8 +1702,8 @@ var ATT_MAX_TRIGGERS = 5;
  * categories of that site in PAYROLL_CATEGORY_CONFIG (so a new category shows up in the form of its site).
  */
 var ATT_FORM_DEFS = {
-  NASHIK: { site: 'NASHIK', title: 'Daily Attendance – Nashik', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
-    idKey: 'ATT_FORM_NASHIK_ID', rawTab: 'ATT_FORM_NASHIK_RAW' },
+  VFL: { site: 'VFL', title: 'Daily Attendance – VFL Waluj', populations: ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT'],
+    idKey: 'ATT_FORM_VFL_ID', rawTab: 'ATT_FORM_VFL_RAW' },
   PUNE: { site: 'PUNE', title: 'Daily Attendance – Pune', populations: ['PUNE_STAFF'],
     idKey: 'ATT_FORM_PUNE_ID', rawTab: 'ATT_FORM_PUNE_RAW' }
 };
@@ -1745,7 +1818,7 @@ var HROS_SUBMIT_HANDLER = 'hrosOnFormSubmit';
 
 /** Response tab -> handler key. Tabs not listed are ignored. The OT source tab is resolved dynamically (see routeFormSubmit). */
 var HROS_FORM_ROUTES = {
-  ATT_FORM_NASHIK_RAW: 'ATT_NASHIK',
+  ATT_FORM_VFL_RAW: 'ATT_VFL',
   ATT_FORM_PUNE_RAW: 'ATT_PUNE',
   CANTEEN_FORM_RESPONSES: 'CANTEEN',
   EFFICIENCY_FORM_RESPONSES: 'EFFICIENCY',
@@ -1762,7 +1835,7 @@ function routeFormSubmit(sheetName, otTabName) {
 
 /**
  * The ONE installable onFormSubmit trigger (spreadsheet level, no form IDs needed). Routes by the name of the sheet
- * the response landed in: daily attendance (Nashik / Pune raw tabs), the OT source tab (syncOtFromForm for the
+ * the response landed in: daily attendance (VFL / Pune raw tabs), the OT source tab (syncOtFromForm for the
  * period of the OT date), canteen, efficiency. Every other tab is ignored.
  */
 function hrosOnFormSubmit(e) {
@@ -1773,8 +1846,8 @@ function hrosOnFormSubmit(e) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    if (route === 'ATT_NASHIK' || route === 'ATT_PUNE') {
-      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_NASHIK;
+    if (route === 'ATT_VFL' || route === 'ATT_PUNE') {
+      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_VFL;
       var rowNum = e.range.getRow(), lc = sheet.getLastColumn();
       var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
       var values = sheet.getRange(rowNum, 1, 1, lc).getValues()[0];
@@ -1874,7 +1947,7 @@ function reg_leaveNum_(v) {
  * @param {boolean|string} includesWO true / 'Y' when the entered days INCLUDE weekly offs
  * @param {string} population an active category code (PAYROLL_CATEGORY_CONFIG)
  * @param {string} period 'YYYY-MM'
- * @param {string} site 'NASHIK' | 'PUNE'
+ * @param {string} site 'VFL' | 'PUNE'
  * @param {Array} holidays HOLIDAY_CALENDAR rows {DATE, SITE, PAID}
  * @param {string} weeklyOffDay 'SUN'..'SAT'
  * @param {Object} approvedLeaveDays {EL, CL, SL, OD, COFF, LWP} days inside the period (missing = 0)
@@ -2067,7 +2140,7 @@ function register_ctx_(period) {
   var pp = periodPopulationsOpen_(period);
   return { period: period, roster: roster, rosterMap: rosterMap,
     holidays: getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [],
-    weeklyOff: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) },
+    weeklyOff: { VFL: getWeeklyOff(SITE_VFL), PUNE: getWeeklyOff(SITE_PUNE) },
     leaveByEmp: leaveByEmp(leaveRows, period), workingDays: workingDaysFor_(period),
     lockedPops: pp.locked, isLocked: pp.isLocked, existing: existingAttendanceByEmp_(period) };
 }

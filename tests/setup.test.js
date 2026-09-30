@@ -63,7 +63,7 @@ test('setup creates every tab with exact headers, seeds, hides + protects the se
 
 test('a configured 5th category gets its PAYROLL_<CODE> tab on setup', () => {
   const env = emptyWorld();
-  env.put('PAYROLL_CATEGORY_CONFIG', plain(env.c.CATEGORY_CONFIG_HEADERS), [{ CATEGORY_CODE: 'CONTRACT_NSK', CALC_METHOD: 'CONSULTANT', SITE: 'NASHIK', PAYSLIP: 'N', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }]);
+  env.put('PAYROLL_CATEGORY_CONFIG', plain(env.c.CATEGORY_CONFIG_HEADERS), [{ CATEGORY_CODE: 'CONTRACT_NSK', CALC_METHOD: 'CONSULTANT', SITE: 'VFL', PAYSLIP: 'N', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }]);
   env.c.hrosSetup();
   assert.deepEqual(env.sheets.PAYROLL_CONTRACT_NSK.data[0], plain(env.c.HROS_OUTPUT_COLUMNS));
   assert.equal(env.sheets.PAYROLL_STAFF, undefined, 'only configured categories');
@@ -79,4 +79,94 @@ test('setup removes an empty _TEMP tab, but keeps one that holds data', () => {
   env2.put('_TEMP', ['note'], [{ note: 'keep me' }]);
   env2.c.hrosSetup();
   assert.ok(env2.sheets._TEMP, 'non-empty _TEMP kept');
+});
+
+// ---- one-time NASHIK -> VFL migration ----
+const fs = require('node:fs');
+const path = require('node:path');
+const CTL_H = ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'];
+function oldWorld(opts = {}) {
+  const unlinked = [];
+  const env = makeEnv({ user: 'owner@varshaforgings.com', globals: { FormApp: { openByUrl: (u) => { if (opts.formGone) throw new Error('gone'); return { removeDestination: () => unlinked.push(u) }; } } } });
+  ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'].forEach((n) => env.put(n, ['Timestamp', 'x'], []));
+  env.c.hrosSetup();
+  // turn the freshly set-up sheet back into the pre-rename state
+  env.editCells('PAYROLL_CATEGORY_CONFIG', { SITE: 'VFL' }, { SITE: ' nashik ' });
+  env.editCells('PAYROLL_CATEGORY_CONFIG', { CATEGORY_CODE: 'STAFF' }, { APPROVED_BY: 'owner@varshaforgings.com', APPROVED_AT: '2026-09-20' });
+  env.editCells('PAYROLL_CONTROL', { KEY: 'VFL_WEEKLY_OFF' }, { KEY: 'NASHIK_WEEKLY_OFF', VALUE: 'MON' });
+  env.addRows('PAYROLL_CONTROL', [{ KEY: 'ATT_FORM_NASHIK_ID', VALUE: 'FORM1' }]);
+  env.put('HOLIDAY_CALENDAR', plain(env.c.hrosTabSpecs_().find((s) => s.name === 'HOLIDAY_CALENDAR').headers),
+    [{ DATE: '2026-10-02', SITE: 'NASHIK', HOLIDAY_NAME: 'Gandhi', PAID: 'Y' }, { DATE: '2026-10-03', SITE: 'PUNE', HOLIDAY_NAME: 'x', PAID: 'Y' }]);
+  const raw = env.put('ATT_FORM_NASHIK_RAW', ['Timestamp', 'Date'], opts.responses ? [{ Timestamp: 't', Date: 'd' }] : []);
+  raw.formUrl = 'https://forms/old';
+  return { env, unlinked };
+}
+const ctlMap = (env) => Object.fromEntries(env.rowsOf('PAYROLL_CONTROL').map((r) => [r.KEY, r.VALUE]));
+
+test('hrosMigrateSiteToVfl: relabels sites, moves weekly-off key, drops old form id, deletes the empty old raw tab', () => {
+  const { env, unlinked } = oldWorld();
+  const ch = plain(env.c.hrosMigrateSiteToVfl());
+  assert.ok(ch.length >= 5);
+  assert.ok(env.rowsOf('PAYROLL_CATEGORY_CONFIG').filter((r) => r.CATEGORY_CODE !== 'PUNE_STAFF').every((r) => r.SITE === 'VFL'));
+  assert.equal(env.rowsOf('PAYROLL_CATEGORY_CONFIG').find((r) => r.CATEGORY_CODE === 'PUNE_STAFF').SITE, 'PUNE');
+  assert.deepEqual(env.rowsOf('HOLIDAY_CALENDAR').map((r) => r.SITE), ['VFL', 'PUNE']);
+  const ctl = ctlMap(env);
+  assert.equal(ctl.VFL_WEEKLY_OFF, 'MON');
+  assert.ok(!('NASHIK_WEEKLY_OFF' in ctl) && !('ATT_FORM_NASHIK_ID' in ctl));
+  assert.ok(!env.sheets.ATT_FORM_NASHIK_RAW && !env.sheets.ATT_FORM_NASHIK_OLD);
+  assert.deepEqual(unlinked, ['https://forms/old']);
+  assert.equal(env.c.getWeeklyOff('VFL'), 'MON');
+});
+
+test('hrosMigrateSiteToVfl: existing VFL_WEEKLY_OFF wins, old row just removed; already-deleted form does not break it', () => {
+  const { env } = oldWorld({ formGone: true });
+  env.addRows('PAYROLL_CONTROL', [{ KEY: 'VFL_WEEKLY_OFF', VALUE: 'SAT' }]);
+  const ch = plain(env.c.hrosMigrateSiteToVfl());
+  assert.ok(ch.some((c) => /could not unlink/.test(c)));
+  assert.equal(ctlMap(env).VFL_WEEKLY_OFF, 'SAT');
+  assert.equal(env.rowsOf('PAYROLL_CONTROL').filter((r) => /WEEKLY_OFF/.test(r.KEY) && /^(NASHIK|VFL)/.test(r.KEY)).length, 1);
+  assert.ok(!env.sheets.ATT_FORM_NASHIK_RAW);
+});
+
+test('hrosMigrateSiteToVfl: old raw tab with responses is renamed to ATT_FORM_NASHIK_OLD, never deleted', () => {
+  const { env } = oldWorld({ responses: true });
+  env.c.hrosMigrateSiteToVfl();
+  assert.ok(!env.sheets.ATT_FORM_NASHIK_RAW);
+  assert.equal(env.sheets.ATT_FORM_NASHIK_OLD.getName(), 'ATT_FORM_NASHIK_OLD');
+  assert.equal(env.rowsOf('ATT_FORM_NASHIK_OLD').length, 1);
+});
+
+test('hrosMigrateSiteToVfl: second run is a no-op (and Setup runs it first)', () => {
+  const { env } = oldWorld({ responses: true });
+  const log = plain(env.c.hrosSetup());
+  assert.ok(log.siteMigration.length > 0);
+  const snap = JSON.stringify(Object.keys(env.sheets).map((k) => [k, env.sheets[k].data]));
+  assert.deepEqual(plain(env.c.hrosMigrateSiteToVfl()), []);
+  assert.deepEqual(plain(env.c.hrosSetup().siteMigration), []);
+  assert.equal(JSON.stringify(Object.keys(env.sheets).map((k) => [k, env.sheets[k].data])).replace(/AUDIT_LOG.*/, ''), snap.replace(/AUDIT_LOG.*/, ''));
+});
+
+test('hrosMigrateSiteToVfl: category approval survives the relabel (APPROVED_BY untouched, approval gate has no SITE hash)', () => {
+  const { env } = oldWorld();
+  env.editCells('PAYROLL_CATEGORY_CONFIG', { CATEGORY_CODE: 'PERMANENT_WORKER' }, { APPROVED_BY: 'owner@varshaforgings.com' });
+  const approvedBefore = env.rowsOf('PAYROLL_CATEGORY_CONFIG').map((r) => [r.CATEGORY_CODE, r.APPROVED_BY, r.APPROVED_AT]);
+  env.c.hrosMigrateSiteToVfl();
+  assert.deepEqual(env.rowsOf('PAYROLL_CATEGORY_CONFIG').map((r) => [r.CATEGORY_CODE, r.APPROVED_BY, r.APPROVED_AT]), approvedBefore);
+  const staff = plain(env.c.categoryEntry('STAFF'));
+  assert.equal(staff.site, 'VFL');
+  assert.equal(staff.approvedBy, 'owner@varshaforgings.com');
+});
+
+test('no NASHIK left in apps-script/ except inside hrosMigrateSiteToVfl', () => {
+  const dir = path.join(__dirname, '..', 'apps-script');
+  const bad = [];
+  fs.readdirSync(dir).filter((f) => f.endsWith('.gs')).forEach((f) => {
+    let inMig = false;
+    fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => {
+      if (/^function hrosMigrateSiteToVfl\b/.test(line)) inMig = true;
+      if (/nashik/i.test(line) && !inMig) bad.push(f + ':' + (i + 1));
+      if (inMig && /^}/.test(line)) inMig = false;
+    });
+  });
+  assert.deepEqual(bad, []);
 });

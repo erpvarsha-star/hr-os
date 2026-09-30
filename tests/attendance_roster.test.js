@@ -58,7 +58,7 @@ test('WORKING_DAYS refresh also runs on generateMonthlyAttendance (daily forms, 
   env.put('PAYROLL_PERIOD_CATEGORY', PC_HDR, ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'].map((c) => ({ PAYROLL_MONTH: '2026-10', PAYROLL_CATEGORY: c, WORKING_DAYS: 27, STATUS: 'PENDING' })));
   env.put('HOLIDAY_CALENDAR', ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID']);
   env.put('ATTENDANCE_DAILY', ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'REJECT_REASON', 'ENTERED_AT'], [
-    { PERIOD: '2026-10', DATE: '2026-10-05', SITE: 'NASHIK', EMP_ID: 'VFL1001', CODE: 'P', KEY: 'VFL1001|2026-10-05', STATUS: 'VALID', ENTERED_AT: '2026-10-05T09:00:00' }]);
+    { PERIOD: '2026-10', DATE: '2026-10-05', SITE: 'VFL', EMP_ID: 'VFL1001', CODE: 'P', KEY: 'VFL1001|2026-10-05', STATUS: 'VALID', ENTERED_AT: '2026-10-05T09:00:00' }]);
   const r = plain(env.c.generateMonthlyAttendance('2026-10'));
   assert.ok(r.workingDaysRefreshed >= 1);
   assert.equal(attOf(env, 'VFL1001')[0].WORKING_DAYS, 27);

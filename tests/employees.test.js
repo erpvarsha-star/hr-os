@@ -25,7 +25,7 @@ function world(opts = {}) {
   return env;
 }
 const addStaff = (o = {}) => Object.assign({ mode: 'ADD', empId: 'S9', name: 'New Joiner', email: 'new@x.com', doj: '2026-09-10', category: 'STAFF', department: 'Stores',
-  designation: 'Clerk', site: 'NASHIK', salary: SAL, ids: SEC }, o);
+  designation: 'Clerk', site: 'VFL', salary: SAL, ids: SEC }, o);
 const master = (env, id) => env.rowsOf('EMPLOYEE_MASTER').filter((r) => r.EMP_ID === id);
 const pays = (env, tab, id) => env.rowsOf(tab).filter((r) => r.EMP_ID === id);
 
@@ -48,7 +48,7 @@ test('add STAFF: master row PENDING_HR_APPROVAL, PENDING pay row effective the 1
   assert.equal(r.pendingHrApproval, true);
   const m = master(env, 'S9')[0];
   assert.deepEqual([m.STATUS_AS_SOURCE, m.VALIDATION_STATE, m.PAYROLL_CATEGORY, m.DOJ_AS_SOURCE, m.EMPLOYEE_NAME, m.DEPARTMENT, m.PLANT_TO_VERIFY],
-    ['Active', 'PENDING_HR_APPROVAL', 'STAFF', '10/09/2026', 'New Joiner', 'Stores', 'NASHIK']);
+    ['Active', 'PENDING_HR_APPROVAL', 'STAFF', '10/09/2026', 'New Joiner', 'Stores', 'VFL']);
   const s = pays(env, 'SALARY_STRUCTURE', 'S9');
   assert.equal(s.length, 1);
   assert.deepEqual([s[0].EFFECTIVE_FROM, s[0].VERSION_STATE, s[0].HR_APPROVED_BY, s[0].PAYROLL_CATEGORY], ['2026-09-01', 'PENDING', '', 'STAFF']);
@@ -65,7 +65,7 @@ test('add STAFF: master row PENDING_HR_APPROVAL, PENDING pay row effective the 1
   assert.match(env.rowsOf('AUDIT_LOG').map((a) => a.Message).join('\n'), /EMPLOYEE_ADD.*S9/);
   // form rosters are refreshed after an add (guarded: a broken form must not fail the save)
   assert.equal(r.rosterRefresh.ok, true);
-  const env2 = world({ control: [{ KEY: 'ATT_FORM_NASHIK_ID', VALUE: 'FORM1' }] });
+  const env2 = world({ control: [{ KEY: 'ATT_FORM_VFL_ID', VALUE: 'FORM1' }] });
   const r2 = plain(env2.c.empSave(addStaff()));
   assert.equal(r2.ok, true);
   assert.equal(r2.rosterRefresh.ok, false);

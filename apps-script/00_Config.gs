@@ -38,7 +38,7 @@ var TABS = {
   PAYSLIP_REGISTER: 'PAYSLIP_REGISTER',
   PAYSLIP_EMAIL_LOG: 'PAYSLIP_EMAIL_LOG',
   AUDIT_LOG: 'AUDIT_LOG',
-  ATT_FORM_NASHIK_RAW: 'ATT_FORM_NASHIK_RAW',
+  ATT_FORM_VFL_RAW: 'ATT_FORM_VFL_RAW',
   ATT_FORM_PUNE_RAW: 'ATT_FORM_PUNE_RAW',
   PAYROLL_CATEGORY_CONFIG: 'PAYROLL_CATEGORY_CONFIG',
   PAYROLL_SUPPLEMENTARY: 'PAYROLL_SUPPLEMENTARY',
@@ -55,7 +55,7 @@ var POP = {
 };
 /** Defaults used when the PAYROLL_CATEGORY_CONFIG tab is absent (or empty). With the tab, the configured ACTIVE rows rule. */
 var POPULATION_LIST = ['STAFF', 'PERMANENT_WORKER', 'CONSULTANT', 'PUNE_STAFF'];
-var SITE_NASHIK = 'NASHIK';
+var SITE_VFL = 'VFL';
 var SITE_PUNE = 'PUNE';
 
 var DAILY_CODES = ['P', 'HD', 'A', 'WO', 'PH', 'EL', 'CL', 'SL', 'OD', 'COFF', 'LWP'];
@@ -216,11 +216,11 @@ var RATE_SOURCES = ['SALARY_STRUCTURE', 'RATE_PROFILE'];
 var PAYSLIP_TEMPLATE_KEYS = ['STAFF', 'WORKER'];
 /** Seed rows of PAYROLL_CATEGORY_CONFIG = the built-in defaults (APPROVED_BY blank: the owner signs them off once). */
 var CATEGORY_DEFAULTS = [
-  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'NASHIK', PAYSLIP: 'Y',
+  { CATEGORY_CODE: 'STAFF', DISPLAY_NAME: 'Staff', CALC_METHOD: 'STAFF', SITE: 'VFL', PAYSLIP: 'Y',
     PAYSLIP_TEMPLATE_KEY: 'STAFF', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
-  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'NASHIK',
+  { CATEGORY_CODE: 'PERMANENT_WORKER', DISPLAY_NAME: 'Permanent worker', CALC_METHOD: 'PERMANENT_WORKER', SITE: 'VFL',
     PAYSLIP: 'Y', PAYSLIP_TEMPLATE_KEY: 'WORKER', RATE_SOURCE: 'SALARY_STRUCTURE', ACTIVE: 'Y' },
-  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'NASHIK', PAYSLIP: 'N',
+  { CATEGORY_CODE: 'CONSULTANT', DISPLAY_NAME: 'Consultant', CALC_METHOD: 'CONSULTANT', SITE: 'VFL', PAYSLIP: 'N',
     PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' },
   { CATEGORY_CODE: 'PUNE_STAFF', DISPLAY_NAME: 'Pune staff', CALC_METHOD: 'PUNE_STAFF', SITE: 'PUNE', PAYSLIP: 'N',
     PAYSLIP_TEMPLATE_KEY: '', RATE_SOURCE: 'RATE_PROFILE', ACTIVE: 'Y' }
@@ -252,7 +252,7 @@ function categoryEntryFromRow(r) {
 function categoryEntryProblems(e) {
   var out = [];
   if (CALC_METHODS.indexOf(e.method) < 0) out.push(e.code + ': CALC_METHOD must be one of ' + CALC_METHODS.join(', '));
-  if (e.site !== SITE_NASHIK && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be NASHIK or PUNE');
+  if (e.site !== SITE_VFL && e.site !== SITE_PUNE) out.push(e.code + ': SITE must be VFL or PUNE');
   if (RATE_SOURCES.indexOf(e.rateSource) < 0) out.push(e.code + ': RATE_SOURCE must be SALARY_STRUCTURE or RATE_PROFILE');
   if (e.payslip && PAYSLIP_TEMPLATE_KEYS.indexOf(e.templateKey) < 0) out.push(e.code + ': PAYSLIP=Y needs PAYSLIP_TEMPLATE_KEY STAFF or WORKER');
   return out;
@@ -313,7 +313,7 @@ function isKnownPopulation(pop) { var e = categoryEntry(pop); return !!e && e.ac
 
 function siteForPopulation(pop) {
   var e = categoryEntry(pop);
-  if (e && e.active && (e.site === SITE_NASHIK || e.site === SITE_PUNE)) return e.site;
+  if (e && e.active && (e.site === SITE_VFL || e.site === SITE_PUNE)) return e.site;
   throw new Error('Unknown population "' + pop + '"');
 }
 
@@ -373,7 +373,7 @@ function getMinPeriod() {
 }
 
 function getWeeklyOff(site) {
-  var key = site === SITE_PUNE ? 'PUNE_WEEKLY_OFF' : 'NASHIK_WEEKLY_OFF';
+  var key = site === SITE_PUNE ? 'PUNE_WEEKLY_OFF' : 'VFL_WEEKLY_OFF';
   var v = String(getControl(key, 'SUN')).trim().toUpperCase();
   if (WEEKDAY_CODES.indexOf(v) < 0) throw new Error(key + ' must be one of ' + WEEKDAY_CODES.join(',') + ' (got "' + v + '")');
   return v;

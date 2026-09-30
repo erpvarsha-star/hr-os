@@ -26,7 +26,7 @@ function world(opts = {}) {
   const env = makeEnv({ user: opts.user || HR });
   env.put('PAYROLL_CONTROL', ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'], [
     { KEY: 'MIN_PERIOD', VALUE: '2026-09' }, { KEY: 'HR_APPROVER_EMAIL', VALUE: HR }, { KEY: 'ACCOUNTS_APPROVER_EMAIL', VALUE: ACC },
-    { KEY: 'OWNER_APPROVER_EMAIL', VALUE: OWNER }, { KEY: 'NASHIK_WEEKLY_OFF', VALUE: 'SUN' }, { KEY: 'PUNE_WEEKLY_OFF', VALUE: 'SUN' },
+    { KEY: 'OWNER_APPROVER_EMAIL', VALUE: OWNER }, { KEY: 'VFL_WEEKLY_OFF', VALUE: 'SUN' }, { KEY: 'PUNE_WEEKLY_OFF', VALUE: 'SUN' },
   ].concat(opts.control || []));
   env.put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
   env.put('EMPLOYEE_MASTER', MASTER_HDR, EMPS.map(([EMP_ID, PAYROLL_CATEGORY, EMPLOYEE_NAME]) => ({ EMP_ID, EMPLOYEE_NAME, PAYROLL_CATEGORY,
@@ -43,10 +43,10 @@ function world(opts = {}) {
 }
 
 /** Daily rows (VALID) of one employee: codes = {day: code}. Days not listed are not written. */
-function dailyRows(empId, codes, site = 'NASHIK') {
+function dailyRows(empId, codes, site = 'VFL') {
   return Object.keys(codes).map((day) => {
     const date = `${P}-${String(day).padStart(2, '0')}`;
-    return { PERIOD: P, DATE: date, SITE: site, EMP_ID: empId, CODE: codes[day], SOURCE: 'FORM_NASHIK', SOURCE_REF: 'x', KEY: `${empId}|${date}`,
+    return { PERIOD: P, DATE: date, SITE: site, EMP_ID: empId, CODE: codes[day], SOURCE: 'FORM_VFL', SOURCE_REF: 'x', KEY: `${empId}|${date}`,
       STATUS: 'VALID', REJECT_REASON: '', ENTERED_AT: '2026-10-01T10:00:00' };
   });
 }

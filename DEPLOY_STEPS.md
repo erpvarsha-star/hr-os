@@ -90,7 +90,7 @@ If it fails: a message saying you are not the approver means the wrong Google ac
 
   PAYROLL_CONTROL, PAYROLL_PERIOD_CATEGORY, FEED_STATUS, PAYROLL_CATEGORY_CONFIG, STATUTORY_CONFIG, EFFICIENCY_CONFIG, PT_EXEMPTIONS, HOLIDAY_CALENDAR, EMPLOYEE_MASTER, SALARY_STRUCTURE, PAYROLL_RATE_PROFILE, EMPLOYEE_STATUTORY_IDS (hidden), INPUT_OT, INPUT_CANTEEN, INPUT_EFFICIENCY, INPUT_ADVANCE, INPUT_SOCIETY, INPUT_ADJUSTMENTS, INPUT_LEAVE, ATTENDANCE_DAILY, OT_FORM_RESPONSES, CANTEEN_FORM_RESPONSES, EFFICIENCY_FORM_RESPONSES, INPUT_ATTENDANCE, ATTENDANCE_COMPARISON, PAYROLL_READINESS, PAYROLL_DRAFT, PAYROLL_STAFF, PAYROLL_WORKER, PAYROLL_CONSULTANT, PAYROLL_PUNE_STAFF, PAYROLL_EXCEPTIONS, PAYROLL_RECON, PAYROLL_SUPPLEMENTARY, PAYROLL_LOCKED (hidden), PAYSLIP_REGISTER, PAYSLIP_EMAIL_LOG, AUDIT_LOG.
 
-- The daily attendance form tabs (ATT_FORM_NASHIK_RAW, ATT_FORM_PUNE_RAW) appear only when you run **Setup ▸ Create attendance forms**. That is needed from October, not for September.
+- The daily attendance form tabs (ATT_FORM_VFL_RAW, ATT_FORM_PUNE_RAW) appear only when you run **Setup ▸ Create attendance forms**. That is needed from October, not for September.
 
 If something is missing: run **HR OS ▸ Setup ▸ Run setup** once more (it is safe to repeat). If still missing, send a screenshot of the tab bar.
 

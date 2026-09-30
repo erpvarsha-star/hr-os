@@ -16,7 +16,7 @@ const R = (o) => {
     dec: 'Approved', days: '', kase: '' }, o);
   return [d.ts, d.type, d.emp, d.from, d.fromHalf, d.to, d.toHalf, d.lt, d.dec, d.days, d.kase];
 };
-const ROSTER = [{ EMP_ID: 'S1', PAYROLL_CATEGORY: 'STAFF', SITE: 'NASHIK' }, { EMP_ID: 'S2', PAYROLL_CATEGORY: 'STAFF', SITE: 'NASHIK' },
+const ROSTER = [{ EMP_ID: 'S1', PAYROLL_CATEGORY: 'STAFF', SITE: 'VFL' }, { EMP_ID: 'S2', PAYROLL_CATEGORY: 'STAFF', SITE: 'VFL' },
   { EMP_ID: 'P1', PAYROLL_CATEGORY: 'PUNE_STAFF', SITE: 'PUNE' }];
 const map = (rows, period = P, opts = {}) => plain(pure.mapLeaveRows(HDR, rows, period, ROSTER, Object.assign({ enteredAt: 'T', sourceLabel: 'LV' }, opts)));
 const summary = (m) => m.valid.map((v) => `${v.EMP_ID}:${v.LEAVE_TYPE}:${v.DAYS}`).sort();
@@ -143,7 +143,7 @@ test('half-day flags are SIDE-AWARE: start "Second Half" / end "First Half" = ha
 });
 
 test('approved days are CALENDAR days incl. weekly offs: never rescaled, spread evenly over ALL dates of the range, only in-window dates counted', () => {
-  const opts = { weeklyOffBySite: { NASHIK: 'SUN', PUNE: 'SUN' }, holidays: [{ DATE: '2026-09-01', SITE: 'ALL', PAID: 'Y' }] };
+  const opts = { weeklyOffBySite: { VFL: 'SUN', PUNE: 'SUN' }, holidays: [{ DATE: '2026-09-01', SITE: 'ALL', PAID: 'Y' }] };
   // Mon 7 .. Sun 13 Sep with the Sunday inside: 7 calendar days approved as 7 (the sheet deducts 7); weekly off / holiday info is ignored
   assert.deepEqual(summary(map([R({ from: '2026-09-07', to: '2026-09-13', days: 7 })], P, opts)), ['S1:EL:7']);
   // a leave on a single Sunday / paid holiday is chargeable as approved (the sheet charges 1)

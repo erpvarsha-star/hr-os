@@ -6,7 +6,7 @@ const { plain } = require('./load');
 
 test('routeFormSubmit: only the attendance raw tabs, OT source tab, canteen and efficiency are routed', () => {
   const { c } = makeEnv();
-  assert.equal(c.routeFormSubmit('ATT_FORM_NASHIK_RAW'), 'ATT_NASHIK');
+  assert.equal(c.routeFormSubmit('ATT_FORM_VFL_RAW'), 'ATT_VFL');
   assert.equal(c.routeFormSubmit('ATT_FORM_PUNE_RAW'), 'ATT_PUNE');
   assert.equal(c.routeFormSubmit('OT_FORM_RESPONSES'), 'OT');
   assert.equal(c.routeFormSubmit('Form Responses 7', 'Form Responses 7'), 'OT', 'a renamed local OT tab in use is routed too');
@@ -53,8 +53,8 @@ test('parseAttendanceRawRow: grid headers "Attendance – Dept [ID – Name]", D
   const { c } = makeEnv();
   const ack = c.ATT_ACK_TEXT;
   const hdr = ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-B – Beta]', 'Attendance – Store [T-C – Gamma]', ack, 'Note'];
-  const p = plain(c.parseAttendanceRawRow(hdr, [new Date(2026, 9, 5, 18, 30, 5), new Date(2026, 9, 5), 'a', '', 'hd', 'Confirmed', 'x'], 'ATT_FORM_NASHIK_RAW', 7));
-  assert.deepEqual(p, { date: '2026-10-05', marks: { 'T-A': 'A', 'T-C': 'HD' }, ack: true, timestamp: '2026-10-05T18:30:05', sourceRef: 'ATT_FORM_NASHIK_RAW!7' });
+  const p = plain(c.parseAttendanceRawRow(hdr, [new Date(2026, 9, 5, 18, 30, 5), new Date(2026, 9, 5), 'a', '', 'hd', 'Confirmed', 'x'], 'ATT_FORM_VFL_RAW', 7));
+  assert.deepEqual(p, { date: '2026-10-05', marks: { 'T-A': 'A', 'T-C': 'HD' }, ack: true, timestamp: '2026-10-05T18:30:05', sourceRef: 'ATT_FORM_VFL_RAW!7' });
   const noAck = plain(c.parseAttendanceRawRow(hdr, ['t', '2026-10-05', '', '', '', '', ''], 'ATT_FORM_PUNE_RAW', 2));
   assert.equal(noAck.ack, false);
   assert.deepEqual(noAck.marks, {});
@@ -78,10 +78,10 @@ function attendanceWorld() {
 }
 const ev = (sheet, row, namedValues) => ({ range: { getSheet: () => sheet, getRow: () => row }, namedValues });
 
-test('hrosOnFormSubmit: attendance raw tab -> ATTENDANCE_DAILY (Nashik site; Pune tab uses the Pune site)', () => {
+test('hrosOnFormSubmit: attendance raw tab -> ATTENDANCE_DAILY (VFL site; Pune tab uses the Pune site)', () => {
   const env = attendanceWorld();
   const ack = env.c.ATT_ACK_TEXT;
-  const raw = env.put('ATT_FORM_NASHIK_RAW', ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha]', 'Attendance – Forge [T-B – Beta]', ack]);
+  const raw = env.put('ATT_FORM_VFL_RAW', ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha]', 'Attendance – Forge [T-B – Beta]', ack]);
   raw.data.push([new Date(2026, 9, 5, 9, 0, 0), new Date(2026, 9, 5), 'A', '', 'Confirmed']);
   const out = plain(env.c.hrosOnFormSubmit(ev(raw, 2)));
   assert.deepEqual([out.valid, out.rejected, out.superseded], [4, 0, 0]);
@@ -90,8 +90,8 @@ test('hrosOnFormSubmit: attendance raw tab -> ATTENDANCE_DAILY (Nashik site; Pun
   assert.equal(by['T-A'], 'A');
   assert.equal(by['T-B'], 'P', 'blank = present on a Monday');
   assert.equal(by['T-W'], 'P');
-  assert.ok(!('T-P' in by), 'Pune employee is not part of the Nashik form');
-  assert.ok(daily.every((r) => r.SOURCE === 'FORM_NASHIK' && r.SOURCE_REF === 'ATT_FORM_NASHIK_RAW!2' && r.STATUS === 'VALID'));
+  assert.ok(!('T-P' in by), 'Pune employee is not part of the VFL form');
+  assert.ok(daily.every((r) => r.SOURCE === 'FORM_VFL' && r.SOURCE_REF === 'ATT_FORM_VFL_RAW!2' && r.STATUS === 'VALID'));
   // re-submitting the same date supersedes
   raw.data.push([new Date(2026, 9, 5, 10, 0, 0), new Date(2026, 9, 5), '', 'HD', 'Confirmed']);
   const again = plain(env.c.hrosOnFormSubmit(ev(raw, 3)));
