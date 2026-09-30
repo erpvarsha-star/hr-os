@@ -236,13 +236,13 @@ function categoryConfigReset_() { HROS_CATEGORY_CACHE_ = null; }
 
 function cat_yn_(v) { return String(v == null ? '' : v).trim().toUpperCase() === 'Y'; }
 
-/** Pure: one PAYROLL_CATEGORY_CONFIG row object -> normalized entry (or null when the code is blank). */
 /** Normalised SITE cell; the pre-rename code of the VFL Waluj plant is still accepted until the sheet is migrated. */
 function legacySite_(v) {
   var s = String(v == null ? '' : v).trim().toUpperCase();
   return s === 'NASHIK' ? SITE_VFL : s; // legacy-alias
 }
 
+/** Pure: one PAYROLL_CATEGORY_CONFIG row object -> normalized entry (or null when the code is blank). */
 function categoryEntryFromRow(r) {
   var code = String(r.CATEGORY_CODE == null ? '' : r.CATEGORY_CODE).trim();
   if (!code) return null;
