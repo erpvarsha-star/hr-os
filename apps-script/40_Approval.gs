@@ -163,12 +163,15 @@ function reopenPeriod(period, population) {
 // ================================================================ approval gates for master data (R11 / R27 / PROCESS_FLOW 1.0)
 
 /**
- * Pure. Which effective SALARY_STRUCTURE rows of a population still need the HR stamp for the period.
- * roster = engine roster entries ({EMP_ID, PAYROLL_CATEGORY}); rows = SALARY_STRUCTURE row objects ({_row, ...}).
- * Returns {population, period, employees, withEffectiveRow, alreadyApproved, toStamp:[{row, empId}], withoutRow:[ids]}.
+ * Pure. Which effective pay-structure rows of a population still need the HR stamp for the period.
+ * roster = engine roster entries ({EMP_ID, PAYROLL_CATEGORY}); rows = row objects ({_row, ...}); rateBased = the category
+ * reads PAYROLL_RATE_PROFILE (RATE_SOURCE) instead of SALARY_STRUCTURE. A SALARY_STRUCTURE row is pending while
+ * HR_APPROVED_BY is blank; a rate-profile row while its VERSION_STATE is not an approved state (blank = approved).
+ * Returns {population, period, employees, withEffectiveRow, alreadyApproved, toStamp:[{row, empId, effectiveFrom, versionState}],
+ * withoutRow:[ids]}.
  */
-function salaryApprovalPlan(salaryRows, roster, period, population) {
-  var pick = engine_pickSalary(salaryRows, period);
+function salaryApprovalPlan(salaryRows, roster, period, population, rateBased) {
+  var pick = rateBased ? engine_pickRate(salaryRows, period) : engine_pickSalary(salaryRows, period);
   var ids = [], seen = {};
   (roster || []).forEach(function (e) {
     var id = engine_id_(e.EMP_ID);
@@ -181,8 +184,9 @@ function salaryApprovalPlan(salaryRows, roster, period, population) {
     var r = pick[id];
     if (!r) { plan.withoutRow.push(id); return; }
     plan.withEffectiveRow++;
-    if (engine_id_(r.HR_APPROVED_BY) !== '') plan.alreadyApproved++;
-    else plan.toStamp.push({ row: r._row, empId: id });
+    var approved = rateBased ? calc_isRateApproved(r) : engine_id_(r.HR_APPROVED_BY) !== '';
+    if (approved) plan.alreadyApproved++;
+    else plan.toStamp.push({ row: r._row, empId: id, effectiveFrom: engine_dateLo_(r.EFFECTIVE_FROM), versionState: engine_id_(r.VERSION_STATE) });
   });
   return plan;
 }
@@ -204,20 +208,30 @@ function approval_requireStampColumns_(tab, cols) {
   if (missing.length) throw new Error(tab + ' lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup)');
 }
 
-/** Read-only counts for the HR confirmation dialog. */
+/** Tab that holds the pay structure of an active category (RATE_SOURCE) and whether it is the rate-profile kind. */
+function approval_payTab_(population) {
+  var e = categoryEntry(population);
+  if (!e || !e.active) throw new Error('Unknown population "' + population + '"');
+  return e.rateSource === 'RATE_PROFILE' ? { tab: TABS.PAYROLL_RATE_PROFILE, rateBased: true }
+    : { tab: TABS.SALARY_STRUCTURE, rateBased: false };
+}
+
+/** Read-only counts and the list of pending rows (empId, effective from) for the HR confirmation dialog. */
 function planSalaryStructureApproval(period, population) {
   guardPeriod_(period);
-  if (population !== POP.STAFF && population !== POP.PERMANENT_WORKER) {
-    throw new Error('SALARY_STRUCTURE approval is for STAFF and PERMANENT_WORKER (got "' + population + '")');
-  }
+  var pt = approval_payTab_(population);
   var roster = engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period);
-  var plan = salaryApprovalPlan(readObjects('SALARY_STRUCTURE'), roster.all, period, population);
+  var plan = salaryApprovalPlan(readObjects(pt.tab), roster.all, period, population, pt.rateBased);
+  plan.tab = pt.tab;
   return plan;
 }
 
 /**
- * HR approves the SALARY_STRUCTURE rows effective for the period of one population (active employees only).
- * Runner must be HR_APPROVER_EMAIL. Stamps HR_APPROVED_BY / HR_APPROVED_AT on rows that are still blank; audited.
+ * HR approves the pending pay-structure rows effective for the period of one category (active employees only): the
+ * SALARY_STRUCTURE row (HR_APPROVED_BY / HR_APPROVED_AT) or the PAYROLL_RATE_PROFILE row (VERSION_STATE APPROVED +
+ * HR_APPROVED_BY / HR_APPROVED_AT). Rows added later through the employee dialog (new joiners, revisions) are approved the
+ * same way; a revision effective from a later month is approved by running this for that month. Runner must be
+ * HR_APPROVER_EMAIL; audited; idempotent. The employee's VALIDATION_STATE PENDING_HR_APPROVAL becomes HR_APPROVED.
  */
 function approveSalaryStructure(period, population) {
   var plan = planSalaryStructureApproval(period, population);
@@ -228,16 +242,40 @@ function approveSalaryStructure(period, population) {
     audit('SALARY_APPROVE', period, population, { result: 'REFUSED', reason: 'USER_NOT_HR_APPROVER', user: user });
     return { ok: false, reason: 'USER_NOT_HR_APPROVER' };
   }
-  approval_requireStampColumns_('SALARY_STRUCTURE', ['HR_APPROVED_BY', 'HR_APPROVED_AT']);
+  var rateBased = plan.tab === TABS.PAYROLL_RATE_PROFILE;
+  approval_requireStampColumns_(plan.tab, rateBased ? ['VERSION_STATE', 'HR_APPROVED_BY', 'HR_APPROVED_AT'] : ['HR_APPROVED_BY', 'HR_APPROVED_AT']);
   var now = nowIso_();
-  updateRows('SALARY_STRUCTURE', plan.toStamp.map(function (t) {
-    return { row: t.row, values: { HR_APPROVED_BY: user, HR_APPROVED_AT: now } };
+  updateRows(plan.tab, plan.toStamp.map(function (t) {
+    var v = { HR_APPROVED_BY: user, HR_APPROVED_AT: now };
+    if (rateBased) v.VERSION_STATE = 'APPROVED';
+    else if (t.versionState.toUpperCase() === 'PENDING') v.VERSION_STATE = 'APPROVED';
+    return { row: t.row, values: v };
   }));
+  approval_signOffMaster_(plan.toStamp.map(function (t) { return t.empId; }), user, now);
   var res = { ok: true, reason: 'OK', period: period, population: population, stamped: plan.toStamp.length,
     alreadyApproved: plan.alreadyApproved, employeesWithoutStructure: plan.withoutRow };
   audit('SALARY_APPROVE', period, population, { result: 'APPROVED', user: user, stamped: res.stamped,
-    alreadyApproved: res.alreadyApproved, withoutStructure: plan.withoutRow.length });
+    alreadyApproved: res.alreadyApproved, withoutStructure: plan.withoutRow.length,
+    empIds: plan.toStamp.map(function (t) { return t.empId; }) });
   return res;
+}
+
+/** EMPLOYEE_MASTER.VALIDATION_STATE PENDING_HR_APPROVAL -> HR_APPROVED (+ HR_SIGNOFF_BY / _AT when the columns exist). */
+function approval_signOffMaster_(empIds, user, now) {
+  if (!empIds.length || !getSheet(TABS.EMPLOYEE_MASTER)) return;
+  var want = {};
+  empIds.forEach(function (id) { want[id] = true; });
+  var headers = getHeaders(resolveSheet_(TABS.EMPLOYEE_MASTER));
+  if (headers.indexOf('VALIDATION_STATE') < 0) return;
+  var ups = [];
+  readObjects(TABS.EMPLOYEE_MASTER).forEach(function (r) {
+    if (!want[engine_id_(r.EMP_ID)] || engine_id_(r.VALIDATION_STATE).toUpperCase() !== 'PENDING_HR_APPROVAL') return;
+    var v = { VALIDATION_STATE: 'HR_APPROVED' };
+    if (headers.indexOf('HR_SIGNOFF_BY') >= 0) v.HR_SIGNOFF_BY = user;
+    if (headers.indexOf('HR_SIGNOFF_AT') >= 0) v.HR_SIGNOFF_AT = now;
+    ups.push({ row: r._row, values: v });
+  });
+  updateRows(TABS.EMPLOYEE_MASTER, ups);
 }
 
 /** Read-only counts for the Accounts confirmation dialog. */

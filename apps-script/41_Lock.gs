@@ -56,8 +56,9 @@ function lockPeriod(period, population) {
   var pc = approval_pcRow_(period, population);
   var status = String(pc.STATUS || '').trim().toUpperCase();
   var re = approval_recomputeHash_(period, population);
+  // supplementary (top-up) rows share PAYROLL_DRAFT but are locked by supplementaryLock, never by this function
   var draftRows = readObjects(TABS.PAYROLL_DRAFT).filter(function (r) {
-    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population;
+    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population && engine_runType_(r.RUN_ID) === 'NORMAL';
   });
   var payable = engine_payableRows_(draftRows);
   var heldRows = draftRows.filter(engine_isHeldRow_);

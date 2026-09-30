@@ -441,16 +441,16 @@ function syncLeaveFromSource(period) {
   var res = mapLeaveRows(block.header, block.rows, period, roster, { firstRow: 2, enteredAt: nowIso_(), sourceLabel: src.label,
     holidays: holidays, weeklyOffBySite: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) } });
   if (res.missingColumns.length) throw new Error('Leave source is missing required column(s): ' + res.missingColumns.join(', '));
-  var locked = feeds_lockedPops_(period), lockedSkipped = 0;
+  var isLockedEmp = feeds_lockedFn_(period), lockedSkipped = 0;
   var open = function (o) {
     var pop = popOf[String(o.EMP_ID).toUpperCase()];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   };
   var fresh = res.valid.concat(res.exceptions).filter(open);
   var existing = readObjects(TABS.INPUT_LEAVE).filter(function (r) {
     var pop = popOf[String(r.EMP_ID).toUpperCase()];
-    return !(pop && locked[pop]);
+    return !(pop && isLockedEmp(pop, r.EMP_ID));
   });
   var plan = leave_planResync(existing, fresh, period);
   var stamp = nowIso_();

@@ -723,6 +723,9 @@ function feeds_lockedPops_(period) {
   return locked;
 }
 
+/** (population, empId) -> true when that employee is frozen by a lock (held-and-unlocked employees of a locked run stay open). */
+function feeds_lockedFn_(period) { return lockScope_(period).isLocked; }
+
 function feeds_toast_(msg) {
   try { SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'HR OS', 5); } catch (e) { /* not in UI context */ }
 }
@@ -848,17 +851,17 @@ function syncOtFromForm(period) {
   var res = mapOtRows(header, rows, period, roster, {}, { firstRow: 2, enteredAt: nowIso_(),
     windowStart: win.start, windowEnd: win.end });
   if (res.missingColumns.length) throw new Error('OT source is missing required column(s): ' + res.missingColumns.join(', '));
-  var locked = feeds_lockedPops_(period);
+  var isLockedEmp = feeds_lockedFn_(period);
   var lockedSkipped = 0;
   function open(o) {
     var pop = popOf[String(o.EMP_ID).toUpperCase()];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   }
   var fresh = res.valid.concat(res.exceptions).filter(open);
   var existing = readObjects(TABS.INPUT_OT).filter(function (r) {
     var pop = popOf[String(r.EMP_ID).toUpperCase()];
-    return !(pop && locked[pop]);
+    return !(pop && isLockedEmp(pop, r.EMP_ID));
   });
   var plan = feeds_planOtResync(existing, fresh, period);
   var stamp = nowIso_();
@@ -901,12 +904,12 @@ function feeds_syncForm_(period, tab, target, mapper, name, action) {
     if (excKeys[o.SOURCE_REF + '|' + o.REMARKS]) { res.skippedExisting++; return false; }
     return true;
   });
-  var locked = feeds_lockedPops_(period), popOf = {};
+  var isLockedEmp = feeds_lockedFn_(period), popOf = {};
   roster.forEach(function (r) { popOf[r.EMP_ID.toUpperCase()] = r.PAYROLL_CATEGORY; });
   var lockedSkipped = 0;
   function open(o) {
     var pop = popOf[o.EMP_ID];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   }
   var toWrite = res.valid.concat(res.exceptions).filter(open);

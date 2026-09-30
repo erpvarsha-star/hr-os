@@ -1,42 +1,149 @@
 /**
- * 02_Setup.gs - idempotent setup (DESIGN section 2). Adds only: missing tabs, missing headers (to the right),
- * missing config keys, seed rows, data validation. Never deletes, clears or renames.
+ * 02_Setup.gs - idempotent setup (DESIGN section 2). Builds EVERY tab the code uses (exact headers, validations, hidden /
+ * protected state, tab order) on a spreadsheet that holds only the Google-Form response tabs plus the imported tabs.
+ * Adds only: missing tabs, missing headers (to the right), missing config keys, seed rows, data validation. Never deletes,
+ * clears or renames a tab or a row; the only thing it does to existing tabs is to move them into the standard order.
  */
 var HROS_DEFAULT_EFFECTIVE_FROM = '2026-09';
 
-var HROS_NEW_TABS = {
-  PT_EXEMPTIONS: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'],
-  HOLIDAY_CALENDAR: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
-  FEED_STATUS: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
-  ATTENDANCE_DAILY: ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS',
-    'REJECT_REASON', 'ENTERED_AT'],
-  PAYROLL_CONSULTANT: HROS_OUTPUT_COLUMNS,
-  PAYROLL_PUNE_STAFF: HROS_OUTPUT_COLUMNS,
-  PAYROLL_LOCKED: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS),
-  PAYSLIP_REGISTER: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'],
-  ATTENDANCE_COMPARISON: ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
-    'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS']
-};
+var HROS_PERIOD_CATEGORY_HEADERS = ['PAYROLL_MONTH', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'STATUS', 'APPROVED_BY', 'APPROVED_AT', 'NOTE',
+  'DRAFT_RUN_ID', 'DRAFT_HASH', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'];
+var HROS_STATUTORY_HEADERS = ['KEY', 'VALUE', 'NOTE', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY', 'APPROVED_AT'];
+var HROS_EFFICIENCY_HEADERS = ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'BASIS', 'SOURCE', 'IMPLEMENTATION_STATE', 'NOTE'];
+var HROS_EMPLOYEE_MASTER_HEADERS = ['EMP_ID', 'EMPLOYEE_NAME', 'EMAIL_ID', 'DOJ_AS_SOURCE', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE',
+  'DEPARTMENT', 'DESIGNATION', 'PLANT_TO_VERIFY', 'MANAGER_EMAIL_TO_VERIFY', 'STATUTORY_PROFILE_TO_VERIFY', 'SOURCE_RECORD_KEY',
+  'SOURCE_TAB', 'SOURCE_ROW', 'DUPLICATE_FLAG', 'VALIDATION_STATE', 'SOURCE_SNAPSHOT_DATE', 'HR_SIGNOFF_BY', 'HR_SIGNOFF_AT',
+  'REVIEW_NOTE', 'LAST_WORKING_DAY'];
+var HROS_SALARY_STRUCTURE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'SOURCE_PAYROLL_MONTH', 'EFFECTIVE_FROM', 'EFFECTIVE_TO',
+  'EMPLOYMENT_STATUS_AT_SOURCE', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
+  'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR',
+  'PRODUCTION_MASTER_INR', 'FIXED_GROSS_PM_AS_SOURCE_INR', 'CTC_PA_AS_SOURCE_INR', 'CTC_PM_AS_SOURCE_INR', 'SOURCE_TAB',
+  'SOURCE_ROW', 'SOURCE_ROW_KEY', 'VERSION_STATE', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'VALIDATION_NOTE'];
+var HROS_RATE_PROFILE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 'MONTHLY_GROSS_INR',
+  'ATTENDANCE_REQUIRED', 'WORKING_DAYS_REQUIRED', 'PRESENT_DAYS_REQUIRED', 'WORKED_DAYS_REQUIRED', 'OT_METHOD', 'BASELINE_MONTH',
+  'SOURCE_MONTH', 'SOURCE_USAGE', 'SOURCE_SPREADSHEET_ID', 'SOURCE_SHEET', 'SOURCE_ROW', 'VERSION_STATE', 'NOTE',
+  'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'HR_APPROVED_BY', 'HR_APPROVED_AT'];
+/** The ONLY place sensitive identity values live: hidden + protected (HR / owner edit). */
+var HROS_STATUTORY_ID_HEADERS = ['EMP_ID', 'UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'IFSC'];
+var HROS_INPUT_OT_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'OT_HOURS', 'SOURCE_REF', 'APPROVAL_STATUS', 'ENTERED_AT', 'SOURCE_CASE_NOS',
+  'SOURCE_EVENT_COUNT', 'DATE_RANGE', 'OT_KEY', 'OT_DATE', 'SOURCE_ROW', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON'];
+var HROS_INPUT_CANTEEN_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_EFFICIENCY_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE',
+  'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_ADVANCE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'ADVANCE_TYPE', 'ADVANCE_DATE',
+  'ORIGINAL_ADVANCE_INR', 'OPENING_BALANCE_INR', 'RECOVERY_THIS_MONTH_INR', 'CLOSING_BALANCE_INR', 'ACCOUNTS_LEDGER_REFERENCE',
+  'SOURCE_BATCH_ID', 'APPROVAL_STATUS', 'APPROVED_BY', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_SOCIETY_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'SOCIETY_NAME', 'LOAN_REFERENCE',
+  'GENERAL_EMI_INR', 'EMERGENCY_EMI_INR', 'EDUCATION_EMI_INR', 'SHARES_OTHER_INR', 'TOTAL_RECOVERY_INR', 'OUTSTANDING_BALANCE_INR',
+  'APPROVAL_STATUS', 'SOURCE_BATCH_ID', 'REMARKS'];
+var HROS_INPUT_ADJUSTMENTS_HEADERS = ['ENTRY_ID', 'PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'ADJUSTMENT_TYPE',
+  'SIGNED_AMOUNT_INR', 'REASON', 'SOURCE_REFERENCE', 'APPROVAL_STATUS', 'APPROVED_BY', 'APPROVED_AT', 'REVERSAL_OF_ENTRY_ID',
+  'ENTERED_BY', 'ENTERED_AT'];
+var HROS_INPUT_LEAVE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO',
+  'KEY', 'STATUS', 'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT'];
+var HROS_INPUT_ATTENDANCE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'PRESENT_DAYS', 'WEEK_OFF', 'PH',
+  'EL_AVAILED', 'CL_AVAILED', 'SL_AVAILED', 'PAID_LEAVE_OTHER', 'WORKED_DAYS', 'PAYABLE_DAYS', 'APPROVAL_STATUS', 'APPROVED_BY',
+  'SOURCE_REF', 'ENTERED_AT', 'REMARKS', 'PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
+  'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'];
+var HROS_ATTENDANCE_DAILY_HEADERS = ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS',
+  'REJECT_REASON', 'ENTERED_AT'];
+var HROS_COMPARISON_HEADERS = ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
+  'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
+var HROS_READINESS_HEADERS = ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'];
+var HROS_EXCEPTION_HEADERS = ['RUN_ID', 'PERIOD', 'POPULATION', 'EMP_ID', 'SEVERITY', 'CODE', 'MESSAGE'];
+var HROS_RECON_HEADERS = ['PERIOD', 'POPULATION', 'HEADCOUNT', 'TOTAL_GROSS', 'TOTAL_DEDUCTIONS', 'TOTAL_NET', 'PREV_PERIOD_NET',
+  'DELTA_PCT', 'RUN_ID'];
+/** Supplementary (top-up) run of released employees: one row per SUPP_ID (42_Supplementary.gs). */
+var HROS_SUPPLEMENTARY_HEADERS = ['PERIOD', 'POPULATION', 'SUPP_ID', 'EMP_IDS', 'HASH', 'STATUS', 'CREATED_BY', 'CREATED_AT',
+  'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT', 'LOCK_ID', 'LOCKED_AT'];
+var HROS_SUPP_STATUSES = ['DRAFT', 'HR_APPROVED', 'ACCOUNTS_APPROVED', 'LOCKED', 'SUPERSEDED'];
+var HROS_PAYSLIP_REGISTER_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'];
+var HROS_EMAIL_LOG_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'];
+var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 
-/** Existing tabs that only get columns appended on the right. */
-var HROS_APPEND_COLUMNS = {
-  PAYROLL_PERIOD_CATEGORY: ['DRAFT_RUN_ID', 'DRAFT_HASH', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY',
-    'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'],
-  STATUTORY_CONFIG: ['EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY', 'APPROVED_AT'],
-  INPUT_ATTENDANCE: ['PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
-    'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'],
-  INPUT_OT: ['OT_KEY', 'OT_DATE', 'SOURCE_ROW', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON']
-};
+/** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
+var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
+var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_NASHIK_RAW', 'ATT_FORM_PUNE_RAW'];
 
-/** Header-less today: write full header only when row 1 is empty. */
-var HROS_HEADER_ONLY_TABS = {
-  INPUT_CANTEEN: ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
-  INPUT_EFFICIENCY: ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE',
-    'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
-  PAYSLIP_EMAIL_LOG: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'],
-  INPUT_LEAVE: ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY',
-    'STATUS', 'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT']
-};
+/**
+ * The tab registry, in tab order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Readiness / Payroll ->
+ * Payslips -> Audit. {name, group, headers, hidden, protect: [control keys of the extra editors], validations: [[column, list]]}.
+ * A function (not a var) so it can read constants of files that load later.
+ */
+function hrosTabSpecs_() {
+  var yn = ['Y', 'N'];
+  var specs = [
+    { name: TABS.PAYROLL_CONTROL, group: 'Control', headers: ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'] },
+    { name: TABS.PAYROLL_PERIOD_CATEGORY, group: 'Control', headers: HROS_PERIOD_CATEGORY_HEADERS },
+    { name: TABS.FEED_STATUS, group: 'Control', headers: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
+      validations: [['STATUS', ['OPEN', 'COMPLETE']]] },
+    { name: TABS.PAYROLL_CATEGORY_CONFIG, group: 'Config', headers: CATEGORY_CONFIG_HEADERS,
+      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_NASHIK, SITE_PUNE]], ['PAYSLIP', yn],
+        ['PAYSLIP_TEMPLATE_KEY', PAYSLIP_TEMPLATE_KEYS], ['RATE_SOURCE', RATE_SOURCES], ['ACTIVE', yn]] },
+    { name: TABS.STATUTORY_CONFIG, group: 'Config', headers: HROS_STATUTORY_HEADERS },
+    { name: TABS.EFFICIENCY_CONFIG, group: 'Config', headers: HROS_EFFICIENCY_HEADERS },
+    { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
+    { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
+      validations: [['SITE', ['NASHIK', 'PUNE', 'ALL']], ['PAID', yn]] },
+    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
+    { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
+    { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
+    { name: TABS.EMPLOYEE_STATUTORY_IDS, group: 'Masters', headers: HROS_STATUTORY_ID_HEADERS, hidden: true,
+      protect: ['HR_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] },
+    { name: TABS.INPUT_OT, group: 'Monthly inputs', headers: HROS_INPUT_OT_HEADERS },
+    { name: TABS.INPUT_CANTEEN, group: 'Monthly inputs', headers: HROS_INPUT_CANTEEN_HEADERS },
+    { name: TABS.INPUT_EFFICIENCY, group: 'Monthly inputs', headers: HROS_INPUT_EFFICIENCY_HEADERS },
+    { name: TABS.INPUT_ADVANCE, group: 'Monthly inputs', headers: HROS_INPUT_ADVANCE_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_SOCIETY, group: 'Monthly inputs', headers: HROS_INPUT_SOCIETY_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_ADJUSTMENTS, group: 'Monthly inputs', headers: HROS_INPUT_ADJUSTMENTS_HEADERS,
+      validations: [['ADJUSTMENT_TYPE', ADJUSTMENT_TYPES], ['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_LEAVE, group: 'Monthly inputs', headers: HROS_INPUT_LEAVE_HEADERS },
+    { name: TABS.ATTENDANCE_DAILY, group: 'Attendance', headers: HROS_ATTENDANCE_DAILY_HEADERS },
+    { name: TABS.INPUT_ATTENDANCE, group: 'Attendance', headers: HROS_INPUT_ATTENDANCE_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.ATTENDANCE_COMPARISON, group: 'Attendance', headers: HROS_COMPARISON_HEADERS,
+      validations: [['OWNER_DECISION', ['APPROVED', 'REJECTED']]] },
+    { name: TABS.PAYROLL_READINESS, group: 'Payroll', headers: HROS_READINESS_HEADERS },
+    { name: TABS.PAYROLL_DRAFT, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS }
+  ];
+  var seen = {};
+  populationList().forEach(function (code) {
+    var tab = populationTab(code);
+    if (seen[tab]) return;
+    seen[tab] = true;
+    specs.push({ name: tab, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS });
+  });
+  specs.push({ name: TABS.PAYROLL_EXCEPTIONS, group: 'Payroll', headers: HROS_EXCEPTION_HEADERS });
+  specs.push({ name: TABS.PAYROLL_RECON, group: 'Payroll', headers: HROS_RECON_HEADERS });
+  specs.push({ name: TABS.PAYROLL_SUPPLEMENTARY, group: 'Payroll', headers: HROS_SUPPLEMENTARY_HEADERS,
+    validations: [['STATUS', HROS_SUPP_STATUSES]] });
+  specs.push({ name: TABS.PAYROLL_LOCKED, group: 'Payroll', headers: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS), hidden: true,
+    protect: ['ACCOUNTS_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] });
+  specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS });
+  specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS });
+  specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS });
+  return specs;
+}
+
+/** Tab names in the standard order, with the form-response tabs that exist slotted next to what they feed. */
+function hrosTabOrder_(existingNames, otTab) {
+  var have = {};
+  existingNames.forEach(function (n) { have[n] = true; });
+  var out = [];
+  hrosTabSpecs_().forEach(function (sp) {
+    if (sp.name === TABS.ATTENDANCE_DAILY) {
+      HROS_FORM_TABS_ATTENDANCE.forEach(function (n) { if (have[n] && out.indexOf(n) < 0) out.push(n); });
+    }
+    if (sp.name === TABS.INPUT_ATTENDANCE) {
+      var forms = HROS_FORM_TABS_INPUT.concat(otTab ? [otTab] : []);
+      forms.forEach(function (n) { if (have[n] && out.indexOf(n) < 0) out.push(n); });
+    }
+    out.push(sp.name);
+  });
+  return out;
+}
 
 var HROS_CONTROL_DEFAULTS = [
   ['HR_APPROVER_EMAIL', 'hr@varshaforgings.com', 'HR approver (state machine)'],
@@ -95,46 +202,46 @@ function addMissingKeys_(tabName, defs, extraFn) {
   return added;
 }
 
+/** Move the tabs that exist into the standard order (moves only; nothing is deleted, cleared or renamed). Returns notes. */
+function hrosOrderTabs_(ss, order) {
+  var notes = [];
+  try {
+    if (typeof ss.setActiveSheet !== 'function' || typeof ss.moveActiveSheet !== 'function') return ['tab order not supported'];
+    var current = ss.getSheets().map(function (s) { return s.getName(); });
+    var want = order.filter(function (n) { return current.indexOf(n) >= 0; });
+    for (var i = 0; i < want.length; i++) {
+      if (current[i] === want[i]) continue;
+      ss.setActiveSheet(ss.getSheetByName(want[i]));
+      ss.moveActiveSheet(i + 1);
+      current.splice(current.indexOf(want[i]), 1);
+      current.splice(i, 0, want[i]);
+    }
+  } catch (e) { notes.push('tab order: ' + String(e && e.message ? e.message : e)); }
+  return notes;
+}
+
 function hrosSetup() {
-  var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], validations: [] };
+  var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], categoriesSeeded: [], validations: [],
+    hidden: [], protectedTabs: [], notes: [] };
   var ss = getSpreadsheet_();
+  var specs = hrosTabSpecs_();
 
-  // 1. new tabs
-  Object.keys(HROS_NEW_TABS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_NEW_TABS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
+  // 1. every tab of the registry: create when missing, write / complete the header (columns are only appended on the right)
+  specs.forEach(function (sp) {
+    var existed = !!ss.getSheetByName(sp.name);
+    var sheet = ensureSheet(sp.name);
+    if (!existed) log.createdTabs.push(sp.name);
+    var r = ensureHeaders(sheet, sp.headers);
+    if (r.written.length) log.headersWritten.push(sp.name);
+    if (r.added.length) log.columnsAdded[sp.name] = r.added;
   });
-  // 2. header-less existing tabs
-  Object.keys(HROS_HEADER_ONLY_TABS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_HEADER_ONLY_TABS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
-  });
-  // 3. append columns on existing tabs
-  Object.keys(HROS_APPEND_COLUMNS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_APPEND_COLUMNS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
-  });
-  // PAYROLL_CONTROL keeps its own header; make sure UPDATED_AT etc. exist
-  ensureHeaders(ensureSheet(TABS.PAYROLL_CONTROL), ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT']);
 
-  // 4. control keys
+  // 2. control keys
   log.keysAdded.PAYROLL_CONTROL = addMissingKeys_(TABS.PAYROLL_CONTROL, HROS_CONTROL_DEFAULTS, function (o) {
     o.UPDATED_AT = nowIso_();
   });
 
-  // 5. statutory config: version existing rows, then add missing keys
+  // 3. statutory config: version existing rows, then add missing keys
   var stat = ensureSheet(TABS.STATUTORY_CONFIG);
   var fill = [];
   readObjects(stat).forEach(function (r) {
@@ -150,7 +257,7 @@ function hrosSetup() {
   });
   log.statutoryRowsVersioned = fill.length;
 
-  // 6. PT exemptions seed
+  // 4. PT exemptions seed
   var pt = ensureSheet(TABS.PT_EXEMPTIONS);
   var haveEmp = {};
   readObjects(pt).forEach(function (r) { haveEmp[String(r.EMP_ID).trim()] = true; });
@@ -161,19 +268,48 @@ function hrosSetup() {
   appendObjects(pt, seed);
   log.ptSeeded = seed.map(function (s) { return s.EMP_ID; });
 
-  // 7. data validation
-  setListValidation(ensureSheet(TABS.INPUT_ADJUSTMENTS), 'ADJUSTMENT_TYPE', ADJUSTMENT_TYPES);
-  setListValidation(ensureSheet(TABS.INPUT_ATTENDANCE), 'APPROVAL_STATUS', APPROVAL_STATUSES);
-  setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'SITE', ['NASHIK', 'PUNE', 'ALL']);
-  setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'PAID', ['Y', 'N']);
-  setListValidation(ensureSheet(TABS.FEED_STATUS), 'STATUS', ['OPEN', 'COMPLETE']);
-  setListValidation(ensureSheet(TABS.ATTENDANCE_COMPARISON), 'OWNER_DECISION', ['APPROVED', 'REJECTED']);
-  log.validations = ['INPUT_ADJUSTMENTS.ADJUSTMENT_TYPE', 'INPUT_ATTENDANCE.APPROVAL_STATUS', 'HOLIDAY_CALENDAR.SITE',
-    'HOLIDAY_CALENDAR.PAID', 'FEED_STATUS.STATUS', 'ATTENDANCE_COMPARISON.OWNER_DECISION'];
+  // 5. category config: seed the four built-in categories when the tab has no rows (APPROVED_BY blank: the owner signs off)
+  var cc = ensureSheet(TABS.PAYROLL_CATEGORY_CONFIG);
+  if (!readObjects(cc).length) {
+    appendObjects(cc, CATEGORY_DEFAULTS.map(function (r) { return Object.assign({}, r); }));
+    log.categoriesSeeded = CATEGORY_DEFAULTS.map(function (r) { return r.CATEGORY_CODE; });
+  }
+  categoryConfigReset_();
 
-  // 8. protect the append-only ledger (idempotent)
-  var locked = ensureSheet(TABS.PAYROLL_LOCKED);
-  if (!isSheetProtected(locked)) protectSheet(locked, 'PAYROLL_LOCKED append-only (HR OS)');
+  // 6. data validation
+  specs.forEach(function (sp) {
+    (sp.validations || []).forEach(function (v) {
+      setListValidation(ensureSheet(sp.name), v[0], v[1]);
+      log.validations.push(sp.name + '.' + v[0]);
+    });
+  });
+
+  // 7. protect the append-only ledger and the statutory-ID tab (idempotent); the extra editors are the approvers who write
+  //    through the menu (a script run by a non-editor cannot write a protected tab)
+  var ctl = readControlMap();
+  specs.forEach(function (sp) {
+    if (!sp.protect) return;
+    var sheet = ensureSheet(sp.name);
+    if (!isSheetProtected(sheet)) {
+      var emails = sp.protect.map(function (k) { return String(ctl[k] == null ? '' : ctl[k]).trim(); }).filter(function (e) { return e; });
+      protectSheet(sheet, sp.name + ' (HR OS: append-only / restricted)', emails);
+      log.protectedTabs.push(sp.name);
+    }
+  });
+
+  // 8. tab order, then hide the sensitive tabs (the first tab is activated so no hidden tab is the active one)
+  var otTab = String(ctl.OT_SOURCE_TAB || '').trim();
+  log.notes = log.notes.concat(hrosOrderTabs_(ss, hrosTabOrder_(ss.getSheets().map(function (s) { return s.getName(); }), otTab)));
+  try {
+    if (typeof ss.setActiveSheet === 'function') ss.setActiveSheet(ss.getSheetByName(TABS.PAYROLL_CONTROL));
+  } catch (e) { /* ignore */ }
+  specs.forEach(function (sp) {
+    if (!sp.hidden) return;
+    var sheet = ensureSheet(sp.name);
+    try {
+      if (typeof sheet.hideSheet === 'function') { sheet.hideSheet(); log.hidden.push(sp.name); }
+    } catch (e2) { log.notes.push('could not hide ' + sp.name + ': ' + String(e2 && e2.message ? e2.message : e2)); }
+  });
 
   audit('SETUP', '', '', log);
   return log;

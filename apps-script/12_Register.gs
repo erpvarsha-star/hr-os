@@ -240,7 +240,7 @@ function register_ctx_(period) {
     holidays: getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [],
     weeklyOff: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) },
     leaveByEmp: leaveByEmp(leaveRows, period), workingDays: workingDaysFor_(period),
-    lockedPops: pp.locked, existing: existingAttendanceByEmp_(period) };
+    lockedPops: pp.locked, isLocked: pp.isLocked, existing: existingAttendanceByEmp_(period) };
 }
 
 function register_derive_(ctx, emp, registerDays, includesWO) {
@@ -278,7 +278,7 @@ function registerLoad(period) {
       days = Number(row.REGISTER_DAYS_PRESENT);
       incBy[e.PAYROLL_CATEGORY][String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y' ? 'Y' : 'N']++;
     } // rows typed directly are not prefilled: the register value is the pay source
-    var state = ctx.lockedPops.indexOf(e.PAYROLL_CATEGORY) >= 0 ? 'LOCKED'
+    var state = ctx.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID) ? 'LOCKED'
       : (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED' ? 'APPROVED' : 'OPEN');
     return { empId: e.EMP_ID, name: e.NAME, department: e.DEPARTMENT, population: e.PAYROLL_CATEGORY, days: days, state: state };
   });
@@ -311,7 +311,7 @@ function registerSubmit(payload) {
     skippedApproved: [], skippedLocked: [], skippedDuplicateRows: [], exceptions: [], warnings: [] };
   val.entries.forEach(function (en) {
     var emp = ctx.rosterMap[en.empId], pop = emp.PAYROLL_CATEGORY;
-    if (ctx.lockedPops.indexOf(pop) >= 0) { res.skippedLocked.push(en.empId); return; }
+    if (ctx.isLocked(pop, en.empId)) { res.skippedLocked.push(en.empId); return; }
     var row = ctx.existing[en.empId];
     if (ctx.existing.__dups.indexOf(en.empId) >= 0) { res.skippedDuplicateRows.push(en.empId); return; }
     if (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') { res.skippedApproved.push(en.empId); return; }
@@ -351,7 +351,7 @@ function refreshRegisterAttendance_(period) {
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (row) {
     if (normalizePeriod(row.PAYROLL_MONTH) !== period || !isRegisterRow_(row)) return;
     var id = String(row.EMP_ID).trim(), emp = ctx.rosterMap[id];
-    if (!emp || ctx.lockedPops.indexOf(emp.PAYROLL_CATEGORY) >= 0) return;
+    if (!emp || ctx.isLocked(emp.PAYROLL_CATEGORY, id)) return;
     var reg = row.REGISTER_DAYS_PRESENT;
     if (reg === '' || reg == null || isNaN(Number(reg))) return;
     var d = register_derive_(ctx, emp, Number(reg), String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y');

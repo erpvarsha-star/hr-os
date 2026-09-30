@@ -9,6 +9,9 @@ function onOpen() {
       .addItem('Create attendance forms', 'menuCreateForms')
       .addItem('Refresh form rosters', 'menuRefreshRosters')
       .addItem('Install triggers', 'menuInstallTriggers'))
+    .addSubMenu(ui.createMenu('Employees')
+      .addItem('Add or update employee', 'menuEmployeeDialog')
+      .addItem('Mark employee exit', 'menuEmployeeExit'))
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
       .addItem('Open monthly attendance register', 'menuOpenRegister')
@@ -35,7 +38,12 @@ function onOpen() {
       .addItem('HR approve (population)', 'menuHrApprove')
       .addItem('Accounts approve (population)', 'menuAccountsApprove')
       .addItem('Lock period (population)', 'menuLock')
-      .addItem('Reopen (owner only, before lock)', 'menuReopen'))
+      .addItem('Reopen (owner only, before lock)', 'menuReopen')
+      .addSeparator()
+      .addItem('Run top-up for released employees...', 'menuSuppRun')
+      .addItem('Top-up: HR approve...', 'menuSuppHrApprove')
+      .addItem('Top-up: Accounts approve...', 'menuSuppAccountsApprove')
+      .addItem('Top-up: lock...', 'menuSuppLock'))
     .addSubMenu(ui.createMenu('Payslips')
       .addItem('Generate payslips (locked only)', 'menuGeneratePayslips')
       .addItem('Queue emails', 'menuQueueEmails')
@@ -153,8 +161,9 @@ function menuApproveSalary() {
     var p = askPeriod_('Approve salary structure'); if (!p) return null;
     var pop = askPopulation_('Approve salary structure'); if (!pop) return null;
     var plan = planSalaryStructureApproval(p, pop);
-    var text = 'Period ' + p + ', ' + pop + ': ' + plan.employees + ' active employee(s), ' + plan.withEffectiveRow +
-      ' with an effective SALARY_STRUCTURE row.\n' + plan.toStamp.length + ' row(s) will be stamped HR-approved, ' +
+    var list = plan.toStamp.slice(0, 40).map(function (t) { return t.empId + ' (from ' + (t.effectiveFrom || '?') + ')'; }).join(', ');
+    var text = 'Period ' + p + ', ' + pop + ' (' + plan.tab + '): ' + plan.employees + ' active employee(s), ' + plan.withEffectiveRow +
+      ' with an effective row.\n' + plan.toStamp.length + ' pending row(s) will be stamped HR-approved' + (list ? ': ' + list : '') + '; ' +
       plan.alreadyApproved + ' already approved' + (plan.withoutRow.length ? ', ' + plan.withoutRow.length + ' employee(s) have NO structure (' + plan.withoutRow.slice(0, 15).join(', ') + ')' : '') +
       '.\nYou must be logged in as HR_APPROVER_EMAIL. Stamp now?';
     if (!confirm_('Approve salary structure', text)) return 'Cancelled - nothing was stamped.';
@@ -183,6 +192,22 @@ function menuApproveCategory() {
     return approveCategoryConfig();
   });
 }
-function menuGeneratePayslips() { popAction_('Generate payslips', 'generatePayslips', 8); }
-function menuQueueEmails() { run_('Queue emails', function () { var p = askPeriod_('Queue emails'); return p && callStage_('queuePayslipEmails', 8, [p]); }); }
-function menuSendEmails() { run_('Send queued emails', function () { var p = askPeriod_('Send queued emails'); return p && callStage_('sendQueuedEmails', 8, [p]); }); }
+function menuEmployeeDialog() { run_('Add or update employee', function () { return empOpenDialog('ADD'); }); }
+function menuEmployeeExit() { run_('Mark employee exit', function () { return empOpenDialog('EXIT'); }); }
+function menuSuppRun() { popAction_('Run top-up', 'supplementaryRun', 9); }
+function menuSuppHrApprove() { popAction_('Top-up: HR approve', 'supplementaryHrApprove', 9); }
+function menuSuppAccountsApprove() { popAction_('Top-up: Accounts approve', 'supplementaryAccountsApprove', 9); }
+function menuSuppLock() { popAction_('Top-up: lock', 'supplementaryLock', 9); }
+/** Period, population and an optional LOCK_ID (blank = the population's main lock; a top-up lock id for a supplementary set). */
+function lockAction_(title, fn) {
+  run_(title, function () {
+    var p = askPeriod_(title); if (!p) return null;
+    var pop = askPopulation_(title); if (!pop) return null;
+    var lid = ask_(title, 'LOCK_ID (blank = the main lock of ' + p + ' x ' + pop + '; enter a top-up LOCK_ID for a supplementary set)');
+    if (lid === null) return null;
+    return callStage_(fn, 8, [p, pop, lid || undefined]);
+  });
+}
+function menuGeneratePayslips() { lockAction_('Generate payslips', 'generatePayslips'); }
+function menuQueueEmails() { lockAction_('Queue emails', 'queuePayslipEmails'); }
+function menuSendEmails() { lockAction_('Send queued emails', 'sendQueuedEmails'); }

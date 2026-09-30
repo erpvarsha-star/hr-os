@@ -364,6 +364,36 @@ function getPeriodStatusMap(period) {
   return map;
 }
 
+/**
+ * Which employees does a lock freeze? A LOCKED period x population freezes its employees EXCEPT the ones that were held in
+ * the locked run and are not in PAYROLL_LOCKED yet: they can still be fixed (register, attendance approval, feeds) and paid
+ * by a supplementary run. Returns {pops:{pop:true}, open:{EMP_ID_UPPERCASE:true}, isLocked(pop, empId)}.
+ */
+function lockScope_(period) {
+  var st = getPeriodStatusMap(period), pops = {}, any = false;
+  populationList().forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) { pops[p] = true; any = true; } });
+  var open = {};
+  if (any && getSheet(TABS.PAYROLL_DRAFT)) {
+    var lockedIds = {};
+    if (getSheet(TABS.PAYROLL_LOCKED)) {
+      readObjects(TABS.PAYROLL_LOCKED).forEach(function (r) {
+        if (normalizePeriod(r.PERIOD) === period) lockedIds[String(r.POPULATION).trim() + '|' + String(r.EMP_ID).trim().toUpperCase()] = true;
+      });
+    }
+    readObjects(TABS.PAYROLL_DRAFT).forEach(function (r) {
+      var pop = String(r.POPULATION == null ? '' : r.POPULATION).trim();
+      if (normalizePeriod(r.PERIOD) !== period || !pops[pop]) return;
+      if (String(r.RUN_ID == null ? '' : r.RUN_ID).indexOf('SUPP-') === 0) return;
+      if (String(r.FLAGS == null ? '' : r.FLAGS).split(';').indexOf('HOLD') < 0) return;
+      var id = String(r.EMP_ID).trim().toUpperCase();
+      if (!lockedIds[pop + '|' + id]) open[id] = true;
+    });
+  }
+  return { pops: pops, open: open, isLocked: function (pop, empId) {
+    return !!pops[pop] && !open[String(empId == null ? '' : empId).trim().toUpperCase()];
+  } };
+}
+
 function isLocked(period, population) {
   return getPeriodStatusMap(period)[population] === PERIOD_STATUS.LOCKED;
 }

@@ -63,7 +63,7 @@ function sheetNames_(ss) { return ss.getSheets().map(function (s) { return s.get
 
 function createAttendanceForms() {
   var ss = getSpreadsheet_();
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { created: [], skipped: [], notes: [] };
   Object.keys(ATT_FORM_DEFS).forEach(function (k) {
     var def = ATT_FORM_DEFS[k];
@@ -91,7 +91,7 @@ function createAttendanceForms() {
 /** Rebuild grid rows per department from the active master. Existing grids updated in place, new depts added
  * (before the checkbox), grids for departments with no active employees deleted. Never touches responses. */
 function refreshAttendanceFormRosters() {
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { updated: [], added: [], removed: [], skipped: [] };
   Object.keys(ATT_FORM_DEFS).forEach(function (k) {
     var def = ATT_FORM_DEFS[k];

@@ -367,6 +367,36 @@ function getPeriodStatusMap(period) {
   return map;
 }
 
+/**
+ * Which employees does a lock freeze? A LOCKED period x population freezes its employees EXCEPT the ones that were held in
+ * the locked run and are not in PAYROLL_LOCKED yet: they can still be fixed (register, attendance approval, feeds) and paid
+ * by a supplementary run. Returns {pops:{pop:true}, open:{EMP_ID_UPPERCASE:true}, isLocked(pop, empId)}.
+ */
+function lockScope_(period) {
+  var st = getPeriodStatusMap(period), pops = {}, any = false;
+  populationList().forEach(function (p) { if (st[p] === PERIOD_STATUS.LOCKED) { pops[p] = true; any = true; } });
+  var open = {};
+  if (any && getSheet(TABS.PAYROLL_DRAFT)) {
+    var lockedIds = {};
+    if (getSheet(TABS.PAYROLL_LOCKED)) {
+      readObjects(TABS.PAYROLL_LOCKED).forEach(function (r) {
+        if (normalizePeriod(r.PERIOD) === period) lockedIds[String(r.POPULATION).trim() + '|' + String(r.EMP_ID).trim().toUpperCase()] = true;
+      });
+    }
+    readObjects(TABS.PAYROLL_DRAFT).forEach(function (r) {
+      var pop = String(r.POPULATION == null ? '' : r.POPULATION).trim();
+      if (normalizePeriod(r.PERIOD) !== period || !pops[pop]) return;
+      if (String(r.RUN_ID == null ? '' : r.RUN_ID).indexOf('SUPP-') === 0) return;
+      if (String(r.FLAGS == null ? '' : r.FLAGS).split(';').indexOf('HOLD') < 0) return;
+      var id = String(r.EMP_ID).trim().toUpperCase();
+      if (!lockedIds[pop + '|' + id]) open[id] = true;
+    });
+  }
+  return { pops: pops, open: open, isLocked: function (pop, empId) {
+    return !!pops[pop] && !open[String(empId == null ? '' : empId).trim().toUpperCase()];
+  } };
+}
+
 function isLocked(period, population) {
   return getPeriodStatusMap(period)[population] === PERIOD_STATUS.LOCKED;
 }
@@ -518,15 +548,25 @@ function ensureHeaders(sheet, wanted) {
   return { written: [], added: missing };
 }
 
-/** Warning-style protection that only the owner can edit through. Never removes existing protections. */
-function protectSheet(sheet, description) {
+/**
+ * Protection that only the script owner (effective user) can edit through, plus the optional extra editors (approver
+ * emails: a script run by a non-editor cannot write a protected tab). Never removes existing protections.
+ */
+function protectSheet(sheet, description, extraEditorEmails) {
   var protection = sheet.protect().setDescription(description || 'HR OS protected');
   try {
     var me = Session.getEffectiveUser();
     protection.addEditor(me);
+    var keep = {};
+    keep[String(me.getEmail()).toLowerCase()] = true;
+    (extraEditorEmails || []).forEach(function (e) {
+      var em = String(e == null ? '' : e).trim();
+      if (!em) return;
+      try { protection.addEditor(em); keep[em.toLowerCase()] = true; } catch (e1) { /* not a valid Google account: skip */ }
+    });
     var editors = protection.getEditors();
     for (var i = 0; i < editors.length; i++) {
-      if (editors[i].getEmail() !== me.getEmail()) protection.removeEditor(editors[i]);
+      if (!keep[String(editors[i].getEmail()).toLowerCase()]) protection.removeEditor(editors[i]);
     }
     if (protection.canDomainEdit()) protection.setDomainEdit(false);
   } catch (e) {
@@ -549,44 +589,151 @@ function setListValidation(sheet, headerName, list, rows) {
 
 // ===== 02_Setup.gs =====
 /**
- * 02_Setup.gs - idempotent setup (DESIGN section 2). Adds only: missing tabs, missing headers (to the right),
- * missing config keys, seed rows, data validation. Never deletes, clears or renames.
+ * 02_Setup.gs - idempotent setup (DESIGN section 2). Builds EVERY tab the code uses (exact headers, validations, hidden /
+ * protected state, tab order) on a spreadsheet that holds only the Google-Form response tabs plus the imported tabs.
+ * Adds only: missing tabs, missing headers (to the right), missing config keys, seed rows, data validation. Never deletes,
+ * clears or renames a tab or a row; the only thing it does to existing tabs is to move them into the standard order.
  */
 var HROS_DEFAULT_EFFECTIVE_FROM = '2026-09';
 
-var HROS_NEW_TABS = {
-  PT_EXEMPTIONS: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'],
-  HOLIDAY_CALENDAR: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
-  FEED_STATUS: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
-  ATTENDANCE_DAILY: ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS',
-    'REJECT_REASON', 'ENTERED_AT'],
-  PAYROLL_CONSULTANT: HROS_OUTPUT_COLUMNS,
-  PAYROLL_PUNE_STAFF: HROS_OUTPUT_COLUMNS,
-  PAYROLL_LOCKED: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS),
-  PAYSLIP_REGISTER: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'],
-  ATTENDANCE_COMPARISON: ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
-    'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS']
-};
+var HROS_PERIOD_CATEGORY_HEADERS = ['PAYROLL_MONTH', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'STATUS', 'APPROVED_BY', 'APPROVED_AT', 'NOTE',
+  'DRAFT_RUN_ID', 'DRAFT_HASH', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'];
+var HROS_STATUTORY_HEADERS = ['KEY', 'VALUE', 'NOTE', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY', 'APPROVED_AT'];
+var HROS_EFFICIENCY_HEADERS = ['EFFICIENCY_PERCENT_EXACT', 'INCENTIVE_SLAB_INR', 'BASIS', 'SOURCE', 'IMPLEMENTATION_STATE', 'NOTE'];
+var HROS_EMPLOYEE_MASTER_HEADERS = ['EMP_ID', 'EMPLOYEE_NAME', 'EMAIL_ID', 'DOJ_AS_SOURCE', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE',
+  'DEPARTMENT', 'DESIGNATION', 'PLANT_TO_VERIFY', 'MANAGER_EMAIL_TO_VERIFY', 'STATUTORY_PROFILE_TO_VERIFY', 'SOURCE_RECORD_KEY',
+  'SOURCE_TAB', 'SOURCE_ROW', 'DUPLICATE_FLAG', 'VALIDATION_STATE', 'SOURCE_SNAPSHOT_DATE', 'HR_SIGNOFF_BY', 'HR_SIGNOFF_AT',
+  'REVIEW_NOTE', 'LAST_WORKING_DAY'];
+var HROS_SALARY_STRUCTURE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'SOURCE_PAYROLL_MONTH', 'EFFECTIVE_FROM', 'EFFECTIVE_TO',
+  'EMPLOYMENT_STATUS_AT_SOURCE', 'BASIC_PM_INR', 'HRA_PM_INR', 'CONVEYANCE_PM_INR', 'EDUCATION_PM_INR', 'MEDICAL_PM_INR',
+  'PRO_DEV_PM_INR', 'COMMUNICATION_PM_INR', 'UNIFORM_PM_INR', 'WASHING_PM_INR', 'HEAT_MASTER_INR', 'VDA_MASTER_INR',
+  'PRODUCTION_MASTER_INR', 'FIXED_GROSS_PM_AS_SOURCE_INR', 'CTC_PA_AS_SOURCE_INR', 'CTC_PM_AS_SOURCE_INR', 'SOURCE_TAB',
+  'SOURCE_ROW', 'SOURCE_ROW_KEY', 'VERSION_STATE', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'VALIDATION_NOTE'];
+var HROS_RATE_PROFILE_HEADERS = ['EMP_ID', 'PAYROLL_CATEGORY', 'PAY_BASIS', 'RATE_AMOUNT_INR', 'MONTHLY_GROSS_INR',
+  'ATTENDANCE_REQUIRED', 'WORKING_DAYS_REQUIRED', 'PRESENT_DAYS_REQUIRED', 'WORKED_DAYS_REQUIRED', 'OT_METHOD', 'BASELINE_MONTH',
+  'SOURCE_MONTH', 'SOURCE_USAGE', 'SOURCE_SPREADSHEET_ID', 'SOURCE_SHEET', 'SOURCE_ROW', 'VERSION_STATE', 'NOTE',
+  'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'HR_APPROVED_BY', 'HR_APPROVED_AT'];
+/** The ONLY place sensitive identity values live: hidden + protected (HR / owner edit). */
+var HROS_STATUTORY_ID_HEADERS = ['EMP_ID', 'UAN', 'ESI_NO', 'PAN', 'BANK_NAME', 'BANK_ACCOUNT', 'IFSC'];
+var HROS_INPUT_OT_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'OT_HOURS', 'SOURCE_REF', 'APPROVAL_STATUS', 'ENTERED_AT', 'SOURCE_CASE_NOS',
+  'SOURCE_EVENT_COUNT', 'DATE_RANGE', 'OT_KEY', 'OT_DATE', 'SOURCE_ROW', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON'];
+var HROS_INPUT_CANTEEN_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_EFFICIENCY_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE',
+  'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_ADVANCE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'ADVANCE_TYPE', 'ADVANCE_DATE',
+  'ORIGINAL_ADVANCE_INR', 'OPENING_BALANCE_INR', 'RECOVERY_THIS_MONTH_INR', 'CLOSING_BALANCE_INR', 'ACCOUNTS_LEDGER_REFERENCE',
+  'SOURCE_BATCH_ID', 'APPROVAL_STATUS', 'APPROVED_BY', 'ENTERED_AT', 'REMARKS'];
+var HROS_INPUT_SOCIETY_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'SOCIETY_NAME', 'LOAN_REFERENCE',
+  'GENERAL_EMI_INR', 'EMERGENCY_EMI_INR', 'EDUCATION_EMI_INR', 'SHARES_OTHER_INR', 'TOTAL_RECOVERY_INR', 'OUTSTANDING_BALANCE_INR',
+  'APPROVAL_STATUS', 'SOURCE_BATCH_ID', 'REMARKS'];
+var HROS_INPUT_ADJUSTMENTS_HEADERS = ['ENTRY_ID', 'PAYROLL_MONTH', 'EMP_ID', 'EMPLOYEE_NAME_DISPLAY', 'ADJUSTMENT_TYPE',
+  'SIGNED_AMOUNT_INR', 'REASON', 'SOURCE_REFERENCE', 'APPROVAL_STATUS', 'APPROVED_BY', 'APPROVED_AT', 'REVERSAL_OF_ENTRY_ID',
+  'ENTERED_BY', 'ENTERED_AT'];
+var HROS_INPUT_LEAVE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO',
+  'KEY', 'STATUS', 'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT'];
+var HROS_INPUT_ATTENDANCE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'PRESENT_DAYS', 'WEEK_OFF', 'PH',
+  'EL_AVAILED', 'CL_AVAILED', 'SL_AVAILED', 'PAID_LEAVE_OTHER', 'WORKED_DAYS', 'PAYABLE_DAYS', 'APPROVAL_STATUS', 'APPROVED_BY',
+  'SOURCE_REF', 'ENTERED_AT', 'REMARKS', 'PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
+  'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'];
+var HROS_ATTENDANCE_DAILY_HEADERS = ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS',
+  'REJECT_REASON', 'ENTERED_AT'];
+var HROS_COMPARISON_HEADERS = ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
+  'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
+var HROS_READINESS_HEADERS = ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'];
+var HROS_EXCEPTION_HEADERS = ['RUN_ID', 'PERIOD', 'POPULATION', 'EMP_ID', 'SEVERITY', 'CODE', 'MESSAGE'];
+var HROS_RECON_HEADERS = ['PERIOD', 'POPULATION', 'HEADCOUNT', 'TOTAL_GROSS', 'TOTAL_DEDUCTIONS', 'TOTAL_NET', 'PREV_PERIOD_NET',
+  'DELTA_PCT', 'RUN_ID'];
+/** Supplementary (top-up) run of released employees: one row per SUPP_ID (42_Supplementary.gs). */
+var HROS_SUPPLEMENTARY_HEADERS = ['PERIOD', 'POPULATION', 'SUPP_ID', 'EMP_IDS', 'HASH', 'STATUS', 'CREATED_BY', 'CREATED_AT',
+  'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY', 'ACCOUNTS_APPROVED_AT', 'LOCK_ID', 'LOCKED_AT'];
+var HROS_SUPP_STATUSES = ['DRAFT', 'HR_APPROVED', 'ACCOUNTS_APPROVED', 'LOCKED', 'SUPERSEDED'];
+var HROS_PAYSLIP_REGISTER_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'POPULATION', 'DOC_ID', 'PDF_ID', 'PDF_URL', 'GENERATED_AT', 'STATUS'];
+var HROS_EMAIL_LOG_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'];
+var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 
-/** Existing tabs that only get columns appended on the right. */
-var HROS_APPEND_COLUMNS = {
-  PAYROLL_PERIOD_CATEGORY: ['DRAFT_RUN_ID', 'DRAFT_HASH', 'HR_APPROVED_BY', 'HR_APPROVED_AT', 'ACCOUNTS_APPROVED_BY',
-    'ACCOUNTS_APPROVED_AT', 'LOCKED_AT', 'LOCK_ID'],
-  STATUTORY_CONFIG: ['EFFECTIVE_FROM', 'EFFECTIVE_TO', 'VERSION', 'APPROVED_BY', 'APPROVED_AT'],
-  INPUT_ATTENDANCE: ['PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
-    'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'],
-  INPUT_OT: ['OT_KEY', 'OT_DATE', 'SOURCE_ROW', 'NORMALIZER_VERSION', 'ELIGIBILITY', 'EXCEPTION_REASON']
-};
+/** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
+var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
+var HROS_FORM_TABS_ATTENDANCE = ['ATT_FORM_NASHIK_RAW', 'ATT_FORM_PUNE_RAW'];
 
-/** Header-less today: write full header only when row 1 is empty. */
-var HROS_HEADER_ONLY_TABS = {
-  INPUT_CANTEEN: ['PAYROLL_MONTH', 'EMP_ID', 'AMOUNT_INR', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
-  INPUT_EFFICIENCY: ['PAYROLL_MONTH', 'EMP_ID', 'EFFICIENCY_PCT', 'PHYSICAL_PRESENT_DAYS_OVERRIDE', 'SOURCE',
-    'SOURCE_REF', 'KEY', 'STATUS', 'ENTERED_AT', 'REMARKS'],
-  PAYSLIP_EMAIL_LOG: ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID', 'STATUS', 'ATTEMPTED_AT', 'ERROR'],
-  INPUT_LEAVE: ['PAYROLL_MONTH', 'EMP_ID', 'LEAVE_TYPE', 'DAYS', 'FROM_DATE', 'TO_DATE', 'SOURCE_REF', 'CASE_NO', 'KEY',
-    'STATUS', 'EXCEPTION_REASON', 'NORMALIZER_VERSION', 'ENTERED_AT']
-};
+/**
+ * The tab registry, in tab order: Control -> Config -> Masters -> Monthly inputs -> Attendance -> Readiness / Payroll ->
+ * Payslips -> Audit. {name, group, headers, hidden, protect: [control keys of the extra editors], validations: [[column, list]]}.
+ * A function (not a var) so it can read constants of files that load later.
+ */
+function hrosTabSpecs_() {
+  var yn = ['Y', 'N'];
+  var specs = [
+    { name: TABS.PAYROLL_CONTROL, group: 'Control', headers: ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'] },
+    { name: TABS.PAYROLL_PERIOD_CATEGORY, group: 'Control', headers: HROS_PERIOD_CATEGORY_HEADERS },
+    { name: TABS.FEED_STATUS, group: 'Control', headers: ['PERIOD', 'FEED', 'STATUS', 'MARKED_BY', 'MARKED_AT', 'NOTE'],
+      validations: [['STATUS', ['OPEN', 'COMPLETE']]] },
+    { name: TABS.PAYROLL_CATEGORY_CONFIG, group: 'Config', headers: CATEGORY_CONFIG_HEADERS,
+      validations: [['CALC_METHOD', CALC_METHODS], ['SITE', [SITE_NASHIK, SITE_PUNE]], ['PAYSLIP', yn],
+        ['PAYSLIP_TEMPLATE_KEY', PAYSLIP_TEMPLATE_KEYS], ['RATE_SOURCE', RATE_SOURCES], ['ACTIVE', yn]] },
+    { name: TABS.STATUTORY_CONFIG, group: 'Config', headers: HROS_STATUTORY_HEADERS },
+    { name: TABS.EFFICIENCY_CONFIG, group: 'Config', headers: HROS_EFFICIENCY_HEADERS },
+    { name: TABS.PT_EXEMPTIONS, group: 'Config', headers: ['EMP_ID', 'REASON', 'EFFECTIVE_FROM', 'EFFECTIVE_TO', 'APPROVED_BY'] },
+    { name: TABS.HOLIDAY_CALENDAR, group: 'Config', headers: ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID'],
+      validations: [['SITE', ['NASHIK', 'PUNE', 'ALL']], ['PAID', yn]] },
+    { name: TABS.EMPLOYEE_MASTER, group: 'Masters', headers: HROS_EMPLOYEE_MASTER_HEADERS },
+    { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
+    { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
+    { name: TABS.EMPLOYEE_STATUTORY_IDS, group: 'Masters', headers: HROS_STATUTORY_ID_HEADERS, hidden: true,
+      protect: ['HR_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] },
+    { name: TABS.INPUT_OT, group: 'Monthly inputs', headers: HROS_INPUT_OT_HEADERS },
+    { name: TABS.INPUT_CANTEEN, group: 'Monthly inputs', headers: HROS_INPUT_CANTEEN_HEADERS },
+    { name: TABS.INPUT_EFFICIENCY, group: 'Monthly inputs', headers: HROS_INPUT_EFFICIENCY_HEADERS },
+    { name: TABS.INPUT_ADVANCE, group: 'Monthly inputs', headers: HROS_INPUT_ADVANCE_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_SOCIETY, group: 'Monthly inputs', headers: HROS_INPUT_SOCIETY_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_ADJUSTMENTS, group: 'Monthly inputs', headers: HROS_INPUT_ADJUSTMENTS_HEADERS,
+      validations: [['ADJUSTMENT_TYPE', ADJUSTMENT_TYPES], ['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.INPUT_LEAVE, group: 'Monthly inputs', headers: HROS_INPUT_LEAVE_HEADERS },
+    { name: TABS.ATTENDANCE_DAILY, group: 'Attendance', headers: HROS_ATTENDANCE_DAILY_HEADERS },
+    { name: TABS.INPUT_ATTENDANCE, group: 'Attendance', headers: HROS_INPUT_ATTENDANCE_HEADERS,
+      validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
+    { name: TABS.ATTENDANCE_COMPARISON, group: 'Attendance', headers: HROS_COMPARISON_HEADERS,
+      validations: [['OWNER_DECISION', ['APPROVED', 'REJECTED']]] },
+    { name: TABS.PAYROLL_READINESS, group: 'Payroll', headers: HROS_READINESS_HEADERS },
+    { name: TABS.PAYROLL_DRAFT, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS }
+  ];
+  var seen = {};
+  populationList().forEach(function (code) {
+    var tab = populationTab(code);
+    if (seen[tab]) return;
+    seen[tab] = true;
+    specs.push({ name: tab, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS });
+  });
+  specs.push({ name: TABS.PAYROLL_EXCEPTIONS, group: 'Payroll', headers: HROS_EXCEPTION_HEADERS });
+  specs.push({ name: TABS.PAYROLL_RECON, group: 'Payroll', headers: HROS_RECON_HEADERS });
+  specs.push({ name: TABS.PAYROLL_SUPPLEMENTARY, group: 'Payroll', headers: HROS_SUPPLEMENTARY_HEADERS,
+    validations: [['STATUS', HROS_SUPP_STATUSES]] });
+  specs.push({ name: TABS.PAYROLL_LOCKED, group: 'Payroll', headers: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS), hidden: true,
+    protect: ['ACCOUNTS_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] });
+  specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS });
+  specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS });
+  specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS });
+  return specs;
+}
+
+/** Tab names in the standard order, with the form-response tabs that exist slotted next to what they feed. */
+function hrosTabOrder_(existingNames, otTab) {
+  var have = {};
+  existingNames.forEach(function (n) { have[n] = true; });
+  var out = [];
+  hrosTabSpecs_().forEach(function (sp) {
+    if (sp.name === TABS.ATTENDANCE_DAILY) {
+      HROS_FORM_TABS_ATTENDANCE.forEach(function (n) { if (have[n] && out.indexOf(n) < 0) out.push(n); });
+    }
+    if (sp.name === TABS.INPUT_ATTENDANCE) {
+      var forms = HROS_FORM_TABS_INPUT.concat(otTab ? [otTab] : []);
+      forms.forEach(function (n) { if (have[n] && out.indexOf(n) < 0) out.push(n); });
+    }
+    out.push(sp.name);
+  });
+  return out;
+}
 
 var HROS_CONTROL_DEFAULTS = [
   ['HR_APPROVER_EMAIL', 'hr@varshaforgings.com', 'HR approver (state machine)'],
@@ -645,46 +792,46 @@ function addMissingKeys_(tabName, defs, extraFn) {
   return added;
 }
 
+/** Move the tabs that exist into the standard order (moves only; nothing is deleted, cleared or renamed). Returns notes. */
+function hrosOrderTabs_(ss, order) {
+  var notes = [];
+  try {
+    if (typeof ss.setActiveSheet !== 'function' || typeof ss.moveActiveSheet !== 'function') return ['tab order not supported'];
+    var current = ss.getSheets().map(function (s) { return s.getName(); });
+    var want = order.filter(function (n) { return current.indexOf(n) >= 0; });
+    for (var i = 0; i < want.length; i++) {
+      if (current[i] === want[i]) continue;
+      ss.setActiveSheet(ss.getSheetByName(want[i]));
+      ss.moveActiveSheet(i + 1);
+      current.splice(current.indexOf(want[i]), 1);
+      current.splice(i, 0, want[i]);
+    }
+  } catch (e) { notes.push('tab order: ' + String(e && e.message ? e.message : e)); }
+  return notes;
+}
+
 function hrosSetup() {
-  var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], validations: [] };
+  var log = { createdTabs: [], headersWritten: [], columnsAdded: {}, keysAdded: {}, ptSeeded: [], categoriesSeeded: [], validations: [],
+    hidden: [], protectedTabs: [], notes: [] };
   var ss = getSpreadsheet_();
+  var specs = hrosTabSpecs_();
 
-  // 1. new tabs
-  Object.keys(HROS_NEW_TABS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_NEW_TABS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
+  // 1. every tab of the registry: create when missing, write / complete the header (columns are only appended on the right)
+  specs.forEach(function (sp) {
+    var existed = !!ss.getSheetByName(sp.name);
+    var sheet = ensureSheet(sp.name);
+    if (!existed) log.createdTabs.push(sp.name);
+    var r = ensureHeaders(sheet, sp.headers);
+    if (r.written.length) log.headersWritten.push(sp.name);
+    if (r.added.length) log.columnsAdded[sp.name] = r.added;
   });
-  // 2. header-less existing tabs
-  Object.keys(HROS_HEADER_ONLY_TABS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_HEADER_ONLY_TABS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
-  });
-  // 3. append columns on existing tabs
-  Object.keys(HROS_APPEND_COLUMNS).forEach(function (name) {
-    var existed = !!ss.getSheetByName(name);
-    var sheet = ensureSheet(name);
-    if (!existed) log.createdTabs.push(name);
-    var r = ensureHeaders(sheet, HROS_APPEND_COLUMNS[name]);
-    if (r.written.length) log.headersWritten.push(name);
-    if (r.added.length) log.columnsAdded[name] = r.added;
-  });
-  // PAYROLL_CONTROL keeps its own header; make sure UPDATED_AT etc. exist
-  ensureHeaders(ensureSheet(TABS.PAYROLL_CONTROL), ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT']);
 
-  // 4. control keys
+  // 2. control keys
   log.keysAdded.PAYROLL_CONTROL = addMissingKeys_(TABS.PAYROLL_CONTROL, HROS_CONTROL_DEFAULTS, function (o) {
     o.UPDATED_AT = nowIso_();
   });
 
-  // 5. statutory config: version existing rows, then add missing keys
+  // 3. statutory config: version existing rows, then add missing keys
   var stat = ensureSheet(TABS.STATUTORY_CONFIG);
   var fill = [];
   readObjects(stat).forEach(function (r) {
@@ -700,7 +847,7 @@ function hrosSetup() {
   });
   log.statutoryRowsVersioned = fill.length;
 
-  // 6. PT exemptions seed
+  // 4. PT exemptions seed
   var pt = ensureSheet(TABS.PT_EXEMPTIONS);
   var haveEmp = {};
   readObjects(pt).forEach(function (r) { haveEmp[String(r.EMP_ID).trim()] = true; });
@@ -711,19 +858,48 @@ function hrosSetup() {
   appendObjects(pt, seed);
   log.ptSeeded = seed.map(function (s) { return s.EMP_ID; });
 
-  // 7. data validation
-  setListValidation(ensureSheet(TABS.INPUT_ADJUSTMENTS), 'ADJUSTMENT_TYPE', ADJUSTMENT_TYPES);
-  setListValidation(ensureSheet(TABS.INPUT_ATTENDANCE), 'APPROVAL_STATUS', APPROVAL_STATUSES);
-  setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'SITE', ['NASHIK', 'PUNE', 'ALL']);
-  setListValidation(ensureSheet(TABS.HOLIDAY_CALENDAR), 'PAID', ['Y', 'N']);
-  setListValidation(ensureSheet(TABS.FEED_STATUS), 'STATUS', ['OPEN', 'COMPLETE']);
-  setListValidation(ensureSheet(TABS.ATTENDANCE_COMPARISON), 'OWNER_DECISION', ['APPROVED', 'REJECTED']);
-  log.validations = ['INPUT_ADJUSTMENTS.ADJUSTMENT_TYPE', 'INPUT_ATTENDANCE.APPROVAL_STATUS', 'HOLIDAY_CALENDAR.SITE',
-    'HOLIDAY_CALENDAR.PAID', 'FEED_STATUS.STATUS', 'ATTENDANCE_COMPARISON.OWNER_DECISION'];
+  // 5. category config: seed the four built-in categories when the tab has no rows (APPROVED_BY blank: the owner signs off)
+  var cc = ensureSheet(TABS.PAYROLL_CATEGORY_CONFIG);
+  if (!readObjects(cc).length) {
+    appendObjects(cc, CATEGORY_DEFAULTS.map(function (r) { return Object.assign({}, r); }));
+    log.categoriesSeeded = CATEGORY_DEFAULTS.map(function (r) { return r.CATEGORY_CODE; });
+  }
+  categoryConfigReset_();
 
-  // 8. protect the append-only ledger (idempotent)
-  var locked = ensureSheet(TABS.PAYROLL_LOCKED);
-  if (!isSheetProtected(locked)) protectSheet(locked, 'PAYROLL_LOCKED append-only (HR OS)');
+  // 6. data validation
+  specs.forEach(function (sp) {
+    (sp.validations || []).forEach(function (v) {
+      setListValidation(ensureSheet(sp.name), v[0], v[1]);
+      log.validations.push(sp.name + '.' + v[0]);
+    });
+  });
+
+  // 7. protect the append-only ledger and the statutory-ID tab (idempotent); the extra editors are the approvers who write
+  //    through the menu (a script run by a non-editor cannot write a protected tab)
+  var ctl = readControlMap();
+  specs.forEach(function (sp) {
+    if (!sp.protect) return;
+    var sheet = ensureSheet(sp.name);
+    if (!isSheetProtected(sheet)) {
+      var emails = sp.protect.map(function (k) { return String(ctl[k] == null ? '' : ctl[k]).trim(); }).filter(function (e) { return e; });
+      protectSheet(sheet, sp.name + ' (HR OS: append-only / restricted)', emails);
+      log.protectedTabs.push(sp.name);
+    }
+  });
+
+  // 8. tab order, then hide the sensitive tabs (the first tab is activated so no hidden tab is the active one)
+  var otTab = String(ctl.OT_SOURCE_TAB || '').trim();
+  log.notes = log.notes.concat(hrosOrderTabs_(ss, hrosTabOrder_(ss.getSheets().map(function (s) { return s.getName(); }), otTab)));
+  try {
+    if (typeof ss.setActiveSheet === 'function') ss.setActiveSheet(ss.getSheetByName(TABS.PAYROLL_CONTROL));
+  } catch (e) { /* ignore */ }
+  specs.forEach(function (sp) {
+    if (!sp.hidden) return;
+    var sheet = ensureSheet(sp.name);
+    try {
+      if (typeof sheet.hideSheet === 'function') { sheet.hideSheet(); log.hidden.push(sp.name); }
+    } catch (e2) { log.notes.push('could not hide ' + sp.name + ': ' + String(e2 && e2.message ? e2.message : e2)); }
+  });
 
   audit('SETUP', '', '', log);
   return log;
@@ -1132,7 +1308,9 @@ function periodPopulationsOpen_(period) {
   var st = getPeriodStatusMap(period);
   var open = [], locked = [];
   populationList().forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
-  return { open: open, locked: locked, status: st };
+  var scope = lockScope_(period);
+  // isLocked(pop, empId): the population is LOCKED and the employee is not a held-and-unlocked one (see lockScope_)
+  return { open: open, locked: locked, status: st, scope: scope, isLocked: scope.isLocked };
 }
 
 /**
@@ -1140,10 +1318,12 @@ function periodPopulationsOpen_(period) {
  * With a period, employees whose DOJ is after the period end are left out (roster.joinersExcluded); an ambiguous or
  * unparseable DOJ keeps the employee in with DOJ_WARN set (roster.dojWarnings).
  */
-function buildRoster(period) {
+function buildRoster(period, opts) {
   var rows = readObjects(TABS.EMPLOYEE_MASTER), seen = {}, roster = [], duplicates = [], excluded = [], warnings = [];
   var end = period ? periodEnd(period) : '';
-  var start = period ? periodStart(period) : '';
+  // without a period, opts.asOf (ISO date, e.g. today or the date of a daily response) keeps leavers whose last working day
+  // is on / after it (still working their notice); without either, only Active employees are listed
+  var start = period ? periodStart(period) : String((opts && opts.asOf) || '');
   rows.forEach(function (r) {
     var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = String(r.PAYROLL_CATEGORY || '').trim();
@@ -1202,7 +1382,7 @@ function refreshAttendanceWorkingDays_(period) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var cat = String(r.PAYROLL_CATEGORY || '').trim();
-    if (pp.locked.indexOf(cat) >= 0) return;
+    if (pp.isLocked(cat, r.EMP_ID)) return;
     var want = wd[cat];
     if (want === undefined || want === null || want === '') return;
     var have = r.WORKING_DAYS;
@@ -1220,7 +1400,7 @@ function prepareMonthlyAttendance(period) {
   var roster = buildRoster(period), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var rows = [], skipped = 0;
   roster.forEach(function (e) {
-    if (pp.locked.indexOf(e.PAYROLL_CATEGORY) >= 0) { skipped++; return; }
+    if (pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID)) { skipped++; return; }
     if (existing[e.EMP_ID]) return;
     rows.push({ PAYROLL_MONTH: period, EMP_ID: e.EMP_ID, PAYROLL_CATEGORY: e.PAYROLL_CATEGORY,
       WORKING_DAYS: wd[e.PAYROLL_CATEGORY] === undefined ? '' : wd[e.PAYROLL_CATEGORY],
@@ -1244,7 +1424,7 @@ function generateMonthlyAttendance(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
-  var roster = buildRoster(period).filter(function (e) { return pp.locked.indexOf(e.PAYROLL_CATEGORY) < 0; });
+  var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
@@ -1296,7 +1476,10 @@ function generateMonthlyAttendance(period) {
 function approveAttendance(period, population) {
   guardPeriod_(period);
   if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
-  assertNotLocked(period, population);
+  // a LOCKED population refuses attendance approval, except for employees that were held in the locked run and are not
+  // locked yet (they are approved so that a supplementary run can pay them)
+  var scope = lockScope_(period), lockedPop = !!scope.pops[population];
+  if (lockedPop && !Object.keys(scope.open).length) assertNotLocked(period, population);
   var user = '';
   try { user = Session.getActiveUser().getEmail(); } catch (e) { user = ''; }
   if (!user) throw new Error('Cannot determine active user email - approval refused');
@@ -1316,6 +1499,7 @@ function approveAttendance(period, population) {
   }
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period || String(r.PAYROLL_CATEGORY).trim() !== population) return;
+    if (scope.isLocked(population, r.EMP_ID)) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var problems = validateAttendanceRowForApproval(r);
     if (openDispute[String(r.EMP_ID).trim()]) problems.push('attendance dispute open (daily vs register): see ATTENDANCE_COMPARISON');
@@ -1363,14 +1547,14 @@ function ingestAttendanceResponse_(parsed, site) {
   if (!date) throw new Error('Response has no valid date');
   var period = date.slice(0, 7);
   guardPeriod_(period);
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: date });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var rows = normalizeAttendanceResponse(parsed, roster, holidays, site, getWeeklyOff(site));
-  var st = getPeriodStatusMap(period);
+  var scope = lockScope_(period);
   var popOf = {};
   roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });
   rows = rows.map(function (r) {
-    if (r.STATUS === 'VALID' && st[popOf[r.EMP_ID]] === PERIOD_STATUS.LOCKED) {
+    if (r.STATUS === 'VALID' && scope.isLocked(popOf[r.EMP_ID], r.EMP_ID)) {
       r.STATUS = 'REJECTED'; r.REJECT_REASON = 'PERIOD_LOCKED';
     }
     return r;
@@ -1449,7 +1633,7 @@ function sheetNames_(ss) { return ss.getSheets().map(function (s) { return s.get
 
 function createAttendanceForms() {
   var ss = getSpreadsheet_();
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { created: [], skipped: [], notes: [] };
   Object.keys(ATT_FORM_DEFS).forEach(function (k) {
     var def = ATT_FORM_DEFS[k];
@@ -1477,7 +1661,7 @@ function createAttendanceForms() {
 /** Rebuild grid rows per department from the active master. Existing grids updated in place, new depts added
  * (before the checkbox), grids for departments with no active employees deleted. Never touches responses. */
 function refreshAttendanceFormRosters() {
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: nowIso_().slice(0, 10) });
   var res = { updated: [], added: [], removed: [], skipped: [] };
   Object.keys(ATT_FORM_DEFS).forEach(function (k) {
     var def = ATT_FORM_DEFS[k];
@@ -1837,7 +2021,7 @@ function register_ctx_(period) {
     holidays: getSheet(TABS.HOLIDAY_CALENDAR) ? readObjects(TABS.HOLIDAY_CALENDAR) : [],
     weeklyOff: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) },
     leaveByEmp: leaveByEmp(leaveRows, period), workingDays: workingDaysFor_(period),
-    lockedPops: pp.locked, existing: existingAttendanceByEmp_(period) };
+    lockedPops: pp.locked, isLocked: pp.isLocked, existing: existingAttendanceByEmp_(period) };
 }
 
 function register_derive_(ctx, emp, registerDays, includesWO) {
@@ -1875,7 +2059,7 @@ function registerLoad(period) {
       days = Number(row.REGISTER_DAYS_PRESENT);
       incBy[e.PAYROLL_CATEGORY][String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y' ? 'Y' : 'N']++;
     } // rows typed directly are not prefilled: the register value is the pay source
-    var state = ctx.lockedPops.indexOf(e.PAYROLL_CATEGORY) >= 0 ? 'LOCKED'
+    var state = ctx.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID) ? 'LOCKED'
       : (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED' ? 'APPROVED' : 'OPEN');
     return { empId: e.EMP_ID, name: e.NAME, department: e.DEPARTMENT, population: e.PAYROLL_CATEGORY, days: days, state: state };
   });
@@ -1908,7 +2092,7 @@ function registerSubmit(payload) {
     skippedApproved: [], skippedLocked: [], skippedDuplicateRows: [], exceptions: [], warnings: [] };
   val.entries.forEach(function (en) {
     var emp = ctx.rosterMap[en.empId], pop = emp.PAYROLL_CATEGORY;
-    if (ctx.lockedPops.indexOf(pop) >= 0) { res.skippedLocked.push(en.empId); return; }
+    if (ctx.isLocked(pop, en.empId)) { res.skippedLocked.push(en.empId); return; }
     var row = ctx.existing[en.empId];
     if (ctx.existing.__dups.indexOf(en.empId) >= 0) { res.skippedDuplicateRows.push(en.empId); return; }
     if (row && String(row.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') { res.skippedApproved.push(en.empId); return; }
@@ -1948,7 +2132,7 @@ function refreshRegisterAttendance_(period) {
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (row) {
     if (normalizePeriod(row.PAYROLL_MONTH) !== period || !isRegisterRow_(row)) return;
     var id = String(row.EMP_ID).trim(), emp = ctx.rosterMap[id];
-    if (!emp || ctx.lockedPops.indexOf(emp.PAYROLL_CATEGORY) >= 0) return;
+    if (!emp || ctx.isLocked(emp.PAYROLL_CATEGORY, id)) return;
     var reg = row.REGISTER_DAYS_PRESENT;
     if (reg === '' || reg == null || isNaN(Number(reg))) return;
     var d = register_derive_(ctx, emp, Number(reg), String(row.REGISTER_INCLUDES_WO).trim().toUpperCase() === 'Y');
@@ -2068,6 +2252,553 @@ function registerApiSubmit(payload) {
     lock.releaseLock();
   }
 }
+
+// ===== 14_Employees.gs =====
+/**
+ * 14_Employees.gs - HR-only "Add or update employee" and "Mark employee exit" (modal dialog, no Google Form, so the
+ * sensitive statutory IDs never land in a form-response tab). Pure validation / row building first (Node-testable),
+ * sheet-touching server functions after. Runner must be HR_APPROVER_EMAIL or OWNER_APPROVER_EMAIL.
+ *
+ * Add / update writes EMPLOYEE_MASTER (STATUS_AS_SOURCE Active, VALIDATION_STATE PENDING_HR_APPROVAL), a NEW
+ * effective-dated SALARY_STRUCTURE / PAYROLL_RATE_PROFILE row (VERSION_STATE PENDING, HR_APPROVED_BY blank; older rows are
+ * never touched, a salary revision is just a later row) and, when given, the statutory IDs into the hidden protected
+ * EMPLOYEE_STATUTORY_IDS tab only. Until HR approves the new row (Payroll > Approve salary structure) the employee is on
+ * HOLD (SALARY_NOT_APPROVED), the rest of the population is not blocked.
+ */
+var EMP_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-]{1,24}$/;
+/** SALARY_STRUCTURE components (input key -> column) per calc method; every other component is written as 0. */
+var EMP_SALARY_COLUMNS = { BASIC: 'BASIC_PM_INR', HRA: 'HRA_PM_INR', CONVEYANCE: 'CONVEYANCE_PM_INR', EDUCATION: 'EDUCATION_PM_INR',
+  MEDICAL: 'MEDICAL_PM_INR', PRO_DEV: 'PRO_DEV_PM_INR', COMMUNICATION: 'COMMUNICATION_PM_INR', UNIFORM: 'UNIFORM_PM_INR',
+  WASHING: 'WASHING_PM_INR' };
+var EMP_COMPONENTS_STAFF = ['BASIC', 'HRA', 'CONVEYANCE', 'EDUCATION', 'MEDICAL', 'PRO_DEV', 'COMMUNICATION', 'UNIFORM', 'WASHING'];
+var EMP_COMPONENTS_WORKER = ['BASIC', 'HRA', 'CONVEYANCE', 'EDUCATION', 'WASHING'];
+var EMP_OT_METHODS = ['DAILY_RATE_DIV_8_X_OT_HOURS', 'MONTHLY_GROSS_DIV_WORKING_DAYS_DIV_8_X_OT_HOURS',
+  'BLOCK_NONZERO_OT_UNTIL_ACCOUNTS_CONFIRM'];
+var EMP_PAY_BASES = ['DAILY_RATE', 'MONTHLY_GROSS_PRORATED'];
+var EMP_DIALOG_SOURCE = 'HR_OS_DIALOG';
+
+// ================================================================ pure
+
+function emp_str_(v) { return String(v == null ? '' : v).trim(); }
+
+/** Number of a form field: blank -> 0; anything not a finite number -> NaN. */
+function emp_num_(v) {
+  if (v === '' || v == null) return 0;
+  if (typeof v === 'boolean') return NaN;
+  var n = Number(String(v).replace(/,/g, '').trim());
+  return isFinite(n) ? n : NaN;
+}
+
+/** 'YYYY-MM-DD' (date input) or 'dd/mm/yyyy' -> ISO date, '' when it is not a real date. */
+function emp_isoDate_(v) {
+  var s = emp_str_(v), y, m, d;
+  var a = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s), b = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  if (a) { y = +a[1]; m = +a[2]; d = +a[3]; } else if (b) { d = +b[1]; m = +b[2]; y = +b[3]; } else return '';
+  var dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+  return y + '-' + pad2_(m) + '-' + pad2_(d);
+}
+
+/** ISO date -> 'dd/mm/yyyy' (the text format DOJ_AS_SOURCE uses, read day-first by the roster rule). */
+function emp_dojText_(iso) { return iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4); }
+
+function emp_components_(method) { return method === 'PERMANENT_WORKER' ? EMP_COMPONENTS_WORKER : EMP_COMPONENTS_STAFF; }
+
+/**
+ * Pure. SALARY_STRUCTURE values from the dialog's salary section.
+ * salary = {BASIC, HRA, CONVEYANCE, EDUCATION, MEDICAL, PRO_DEV, COMMUNICATION, UNIFORM, WASHING, heat (150|0|true|false),
+ * vda, production}. STAFF: the nine components; PERMANENT_WORKER: BASIC, HRA, CONVEYANCE, EDUCATION, WASHING + heat flag
+ * (150 or 0), VDA master, production master. FIXED_GROSS_PM_AS_SOURCE_INR is the auto-sum of everything entered
+ * (worker: the five components + the heat amount 150 + VDA master + production master).
+ * Returns {errors, values:{column: number}, fixedGross}.
+ */
+function emp_salaryValues(method, salary) {
+  var errors = [], values = {}, sal = salary || {}, sum = 0;
+  Object.keys(EMP_SALARY_COLUMNS).forEach(function (k) { values[EMP_SALARY_COLUMNS[k]] = 0; });
+  values.HEAT_MASTER_INR = 0; values.VDA_MASTER_INR = 0; values.PRODUCTION_MASTER_INR = 0;
+  emp_components_(method).forEach(function (k) {
+    var n = emp_num_(sal[k]);
+    if (isNaN(n) || n < 0) { errors.push(k + ' must be a number >= 0'); return; }
+    values[EMP_SALARY_COLUMNS[k]] = n;
+    sum += n;
+  });
+  if (method === 'PERMANENT_WORKER') {
+    var heat = sal.heat === true || sal.heat === 'true' ? 150 : (sal.heat === false || sal.heat === 'false' ? 0 : emp_num_(sal.heat));
+    if (heat !== 0 && heat !== 150) errors.push('Heat must be 150 (heat allowance) or 0');
+    else { values.HEAT_MASTER_INR = heat; sum += heat; }
+    var vda = emp_num_(sal.vda), prod = emp_num_(sal.production);
+    if (isNaN(vda) || vda < 0) errors.push('VDA master must be a number >= 0'); else { values.VDA_MASTER_INR = vda; sum += vda; }
+    if (isNaN(prod) || prod < 0) errors.push('Production master must be a number >= 0'); else { values.PRODUCTION_MASTER_INR = prod; sum += prod; }
+  }
+  if (!errors.length && !(values.BASIC_PM_INR > 0)) errors.push('BASIC must be greater than 0');
+  var fg = Math.round(sum * 100) / 100;
+  if (!errors.length && !(fg > 0)) errors.push('Fixed gross must be greater than 0');
+  values.FIXED_GROSS_PM_AS_SOURCE_INR = fg;
+  return { errors: errors, values: values, fixedGross: fg };
+}
+
+/** Pure. PAYROLL_RATE_PROFILE values from the dialog's rate section {payBasis, rate, monthlyGross, otMethod}. */
+function emp_rateValues(method, rate) {
+  var errors = [], r = rate || {}, values = {};
+  var basis = emp_str_(r.payBasis).toUpperCase();
+  if (EMP_PAY_BASES.indexOf(basis) < 0) errors.push('PAY_BASIS must be DAILY_RATE or MONTHLY_GROSS_PRORATED');
+  if (method === 'PUNE_STAFF' && basis && basis !== 'MONTHLY_GROSS_PRORATED') errors.push('This category requires MONTHLY_GROSS_PRORATED');
+  var rateAmt = emp_num_(r.rate), gross = emp_num_(r.monthlyGross);
+  if (basis === 'DAILY_RATE') {
+    if (isNaN(rateAmt) || !(rateAmt > 0)) errors.push('Daily rate must be a number greater than 0');
+    values.RATE_AMOUNT_INR = rateAmt; values.MONTHLY_GROSS_INR = '';
+  } else if (basis === 'MONTHLY_GROSS_PRORATED') {
+    if (isNaN(gross) || !(gross > 0)) errors.push('Monthly gross must be a number greater than 0');
+    values.MONTHLY_GROSS_INR = gross; values.RATE_AMOUNT_INR = '';
+  }
+  var ot = emp_str_(r.otMethod).toUpperCase();
+  if (!ot) ot = basis === 'DAILY_RATE' ? EMP_OT_METHODS[0] : (method === 'PUNE_STAFF' ? EMP_OT_METHODS[1] : EMP_OT_METHODS[2]);
+  if (EMP_OT_METHODS.indexOf(ot) < 0) errors.push('OT_METHOD must be one of ' + EMP_OT_METHODS.join(', '));
+  values.PAY_BASIS = basis; values.OT_METHOD = ot;
+  return { errors: errors, values: values };
+}
+
+/** Pure. Statutory IDs from the dialog: {fields:{UAN,ESI_NO,PAN,BANK_NAME,BANK_ACCOUNT,IFSC}} of the non-blank ones, errors, warnings. */
+function emp_idValues(ids) {
+  var i = ids || {}, out = { fields: {}, errors: [], warnings: [] };
+  var map = { UAN: 'uan', ESI_NO: 'esiNo', PAN: 'pan', BANK_NAME: 'bankName', BANK_ACCOUNT: 'bankAccount', IFSC: 'ifsc' };
+  Object.keys(map).forEach(function (f) {
+    var v = emp_str_(i[map[f]]);
+    if (v) out.fields[f] = (f === 'PAN' || f === 'IFSC') ? v.toUpperCase() : v;
+  });
+  if (out.fields.PAN && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(out.fields.PAN)) out.errors.push('PAN looks wrong (expected 5 letters, 4 digits, 1 letter)');
+  if (out.fields.IFSC && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(out.fields.IFSC)) out.errors.push('IFSC looks wrong (expected 4 letters, 0, 6 characters)');
+  if (out.fields.UAN && !/^\d{12}$/.test(out.fields.UAN)) out.warnings.push('UAN is normally 12 digits');
+  if (out.fields.ESI_NO && !/^\d{10}$|^\d{17}$/.test(out.fields.ESI_NO)) out.warnings.push('ESI number is normally 10 or 17 digits');
+  if (out.fields.BANK_ACCOUNT && !/^\d{6,20}$/.test(out.fields.BANK_ACCOUNT)) out.warnings.push('Bank account is normally 6-20 digits');
+  return out;
+}
+
+/**
+ * Pure. Validates the whole dialog payload. ctx = {mode:'ADD'|'UPDATE', category: config entry of the chosen category (or
+ * null), master: existing EMPLOYEE_MASTER rows of the EMP_ID, latestPay: the latest existing row of the pay tab for the
+ * EMP_ID (or null), payRows: all rows of the EMP_ID in the pay tab, minPeriod}. Returns
+ * {errors, warnings, mode, empId, master:{...}, pay:null|{kind:'SALARY'|'RATE', values, effectiveFrom, unchanged}, ids:{fields}}.
+ */
+function empValidateInput(input, ctx) {
+  var errors = [], warnings = [], inp = input || {};
+  var mode = emp_str_(inp.mode).toUpperCase() === 'UPDATE' ? 'UPDATE' : 'ADD';
+  var empId = emp_str_(inp.empId);
+  if (!EMP_ID_PATTERN.test(empId)) errors.push('EMP_ID must be 2-25 letters / digits / . _ - (got "' + empId + '")');
+  var existing = ctx.master || [];
+  if (mode === 'ADD' && existing.length) errors.push('EMP_ID ' + empId + ' already exists in EMPLOYEE_MASTER (use Update; a re-hire needs a new EMP_ID)');
+  if (mode === 'UPDATE' && !existing.length) errors.push('EMP_ID ' + empId + ' is not in EMPLOYEE_MASTER (use Add)');
+  var name = emp_str_(inp.name), email = emp_str_(inp.email);
+  if (!name) errors.push('Name is required');
+  if (name.length > 120) errors.push('Name is too long');
+  if (email && !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)) errors.push('Email address is not valid');
+  var cat = ctx.category;
+  if (!cat || !cat.active) errors.push('Category "' + emp_str_(inp.category) + '" is not an active category of PAYROLL_CATEGORY_CONFIG');
+  var doj = emp_isoDate_(inp.doj);
+  if (mode === 'ADD' && !doj) errors.push('Date of joining is required (a real date)');
+  if (mode === 'UPDATE' && emp_str_(inp.doj) && !doj) errors.push('Date of joining is not a real date');
+  var master = { EMP_ID: empId, EMPLOYEE_NAME: name, EMAIL_ID: email, PAYROLL_CATEGORY: cat ? cat.code : emp_str_(inp.category),
+    DEPARTMENT: emp_str_(inp.department), DESIGNATION: emp_str_(inp.designation), DOJ_ISO: doj };
+  var site = emp_str_(inp.site).toUpperCase();
+  if (cat && site && site !== cat.site) warnings.push('Site ' + site + ' differs from the category site ' + cat.site + ' (the category site is used)');
+
+  // pay section
+  var pay = null;
+  var oldCat = existing.length ? emp_str_(existing[0].PAYROLL_CATEGORY) : '';
+  var catChanged = mode === 'UPDATE' && cat && oldCat && oldCat !== cat.code;
+  var wantsPay = mode === 'ADD' || !!inp.salary || !!inp.rate || catChanged;
+  if (cat && cat.active && wantsPay) {
+    var salaryKind = cat.rateSource !== 'RATE_PROFILE';
+    var block = salaryKind ? inp.salary : inp.rate;
+    if (!block) {
+      errors.push((salaryKind ? 'The salary structure' : 'The rate profile') + ' section is required' + (catChanged ? ' when the category changes' : ' for a new employee'));
+    } else {
+      var res = salaryKind ? emp_salaryValues(cat.method, block) : emp_rateValues(cat.method, block);
+      res.errors.forEach(function (e) { errors.push(e); });
+      var em = emp_str_(inp.effectiveMonth);
+      if (em && !/^\d{4}-(0[1-9]|1[0-2])$/.test(em)) errors.push('Effective month must be YYYY-MM');
+      var month = em || (mode === 'ADD' && doj ? doj.slice(0, 7) : '');
+      if (mode === 'UPDATE' && !em) errors.push('Choose the effective month of the salary revision');
+      if (mode === 'ADD' && !month) errors.push('Effective month cannot be derived (date of joining missing)');
+      if (mode === 'UPDATE' && em && ctx.minPeriod && em < ctx.minPeriod) errors.push('Effective month ' + em + ' is earlier than MIN_PERIOD ' + ctx.minPeriod);
+      var effectiveFrom = month ? month + '-01' : '';
+      if (effectiveFrom && (ctx.payRows || []).some(function (r) { return engine_dateLo_(r.EFFECTIVE_FROM) === effectiveFrom; })) {
+        errors.push('A row effective from ' + effectiveFrom + ' already exists for ' + empId + ' - choose a later effective month');
+      }
+      if (!res.errors.length) {
+        pay = { kind: salaryKind ? 'SALARY' : 'RATE', values: res.values, effectiveFrom: effectiveFrom, unchanged: false };
+        // an update whose numbers equal the latest row is not a revision
+        if (mode === 'UPDATE' && !catChanged && ctx.latestPay) {
+          var same = Object.keys(res.values).every(function (col) {
+            var a = ctx.latestPay[col], b = res.values[col];
+            if (b === '' || b == null) return a === '' || a == null || Number(a) === 0;
+            return String(a).trim().toUpperCase() === String(b).trim().toUpperCase() || (isFinite(Number(a)) && Number(a) === Number(b));
+          });
+          if (same) pay.unchanged = true;
+        }
+      }
+    }
+  }
+  var ids = emp_idValues(inp.ids);
+  ids.errors.forEach(function (e) { errors.push(e); });
+  ids.warnings.forEach(function (w) { warnings.push(w); });
+  return { errors: errors, warnings: warnings, mode: mode, empId: empId, master: master, pay: pay, ids: ids.fields, catChanged: !!catChanged };
+}
+
+/**
+ * Pure. Validates an exit. ctx = {master: rows of the EMP_ID}. Returns {errors, lwd (ISO), row (the master row to update)}.
+ * The last working day cannot be before the date of joining; an already-exited employee may have the date corrected.
+ */
+function empValidateExit(empId, lastWorkingDay, ctx) {
+  var errors = [], rows = (ctx && ctx.master) || [], id = emp_str_(empId);
+  var lwd = emp_isoDate_(lastWorkingDay);
+  if (!id) errors.push('EMP_ID is required');
+  if (!lwd) errors.push('Last working day must be a real date');
+  var target = null;
+  if (id) {
+    if (!rows.length) errors.push('EMP_ID ' + id + ' is not in EMPLOYEE_MASTER');
+    else {
+      var active = rows.filter(function (r) { return emp_str_(r.STATUS_AS_SOURCE).toLowerCase() === 'active'; });
+      if (active.length > 1) errors.push('EMP_ID ' + id + ' has more than one Active row in EMPLOYEE_MASTER - resolve the duplicate first');
+      else if (active.length === 1) target = active[0];
+      else {
+        var leaver = rows.filter(function (r) { return emp_str_(masterLastWorkingDay_(r)) !== ''; });
+        target = leaver[0] || null;
+        if (!target) errors.push('EMP_ID ' + id + ' is not Active (nothing to exit)');
+      }
+    }
+  }
+  if (target && lwd) {
+    var doj = typeof parseDoj === 'function' ? parseDoj(target.DOJ_AS_SOURCE) : '';
+    if (doj && lwd < doj) errors.push('Last working day ' + lwd + ' is before the date of joining ' + doj);
+  }
+  return { errors: errors, lwd: lwd, row: target };
+}
+
+// ================================================================ sheet-touching
+
+/** Throws unless the runner is HR_APPROVER_EMAIL or OWNER_APPROVER_EMAIL. Returns the email. */
+function emp_requireUser_() {
+  var user = approval_userEmail_();
+  if (!user) throw new Error('Cannot determine your Google account email - nothing was saved');
+  var ctl = readControlMap();
+  if (!registerUserAllowed(user, ctl.HR_APPROVER_EMAIL, ctl.OWNER_APPROVER_EMAIL, '')) {
+    throw new Error('Not allowed: ' + user + ' is not HR_APPROVER_EMAIL or OWNER_APPROVER_EMAIL');
+  }
+  return user;
+}
+
+function emp_masterRows_(empId) {
+  var want = emp_str_(empId).toLowerCase();
+  return readObjects(TABS.EMPLOYEE_MASTER).filter(function (r) { return emp_str_(r.EMP_ID).toLowerCase() === want; });
+}
+
+function emp_requireColumns_(tab, cols) {
+  var headers = getHeaders(resolveSheet_(tab));
+  var missing = cols.filter(function (c) { return headers.indexOf(c) < 0; });
+  if (missing.length) throw new Error(tab + ' lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup > Run setup)');
+  return headers;
+}
+
+/** Latest row of an EMP_ID in a pay tab by EFFECTIVE_FROM (blank = oldest), ties later row. */
+function emp_latestPay_(rows) {
+  var best = null;
+  (rows || []).forEach(function (r, i) {
+    var from = engine_dateLo_(r.EFFECTIVE_FROM) || '0000-00-00';
+    if (!best || from > best.from || (from === best.from && i >= best.i)) best = { from: from, i: i, row: r };
+  });
+  return best ? best.row : null;
+}
+
+function emp_payRowsOf_(tab, empId) {
+  var want = emp_str_(empId).toLowerCase();
+  if (!getSheet(tab)) return [];
+  return readObjects(tab).filter(function (r) { return emp_str_(r.EMP_ID).toLowerCase() === want; });
+}
+
+/** Refresh the daily-form rosters after a joiner / leaver; never fails the save. Returns a short note. */
+function emp_refreshRosters_() {
+  try {
+    var r = refreshAttendanceFormRosters();
+    return { ok: true, updated: (r.updated || []).length, added: (r.added || []).length, removed: (r.removed || []).length };
+  } catch (e) {
+    return { ok: false, note: 'form rosters not refreshed (run HR OS > Setup > Refresh form rosters): ' + String(e && e.message ? e.message : e) };
+  }
+}
+
+/** Upserts the statutory IDs of one employee into EMPLOYEE_STATUTORY_IDS (the only tab that holds them). Returns fields written. */
+function emp_writeStatutoryIds_(empId, fields) {
+  var names = Object.keys(fields);
+  if (!names.length) return 0;
+  var sheet = resolveSheet_(TABS.EMPLOYEE_STATUTORY_IDS);
+  emp_requireColumns_(TABS.EMPLOYEE_STATUTORY_IDS, HROS_STATUTORY_ID_HEADERS);
+  var text = HROS_STATUTORY_ID_HEADERS;
+  var hit = readObjects(sheet).filter(function (r) { return emp_str_(r.EMP_ID).toLowerCase() === emp_str_(empId).toLowerCase(); })[0];
+  if (hit) updateRows(sheet, [{ row: hit._row, values: fields }], { textHeaders: text });
+  else { var o = { EMP_ID: empId }; names.forEach(function (n) { o[n] = fields[n]; }); appendObjects(sheet, [o], { textHeaders: text }); }
+  return names.length;
+}
+
+/**
+ * Save the dialog: Add (new EMP_ID) or Update. Nothing is written when validation fails. payload: see empValidateInput
+ * (mode, empId, name, email, doj, category, department, designation, site, effectiveMonth, salary | rate, ids).
+ */
+function empSave(payload) {
+  var user = emp_requireUser_();
+  var inp = payload || {};
+  var mode = emp_str_(inp.mode).toUpperCase() === 'UPDATE' ? 'UPDATE' : 'ADD';
+  var empId = emp_str_(inp.empId);
+  var cat = categoryEntry(inp.category);
+  var masterRows = emp_masterRows_(empId);
+  var payTab = cat && cat.rateSource === 'RATE_PROFILE' ? TABS.PAYROLL_RATE_PROFILE : TABS.SALARY_STRUCTURE;
+  var payRows = emp_payRowsOf_(payTab, empId);
+  var v = empValidateInput(inp, { mode: mode, category: cat, master: masterRows, payRows: payRows, latestPay: emp_latestPay_(payRows),
+    minPeriod: getMinPeriod() });
+  if (v.errors.length) throw new Error('Employee not saved - fix these first: ' + v.errors.join('; '));
+  // a salary revision must not start in a LOCKED period of the category
+  if (v.pay && !v.pay.unchanged && mode === 'UPDATE' && isLocked(v.pay.effectiveFrom.slice(0, 7), cat.code)) {
+    throw new Error('Employee not saved - ' + v.pay.effectiveFrom.slice(0, 7) + ' x ' + cat.code + ' is LOCKED; choose a later effective month');
+  }
+  var masterHeaders = emp_requireColumns_(TABS.EMPLOYEE_MASTER, ['EMP_ID', 'EMPLOYEE_NAME', 'PAYROLL_CATEGORY', 'STATUS_AS_SOURCE']);
+  if (Object.keys(v.ids).length) {
+    if (!getSheet(TABS.EMPLOYEE_STATUTORY_IDS)) throw new Error('Tab EMPLOYEE_STATUTORY_IDS is missing (run HR OS > Setup > Run setup); nothing was saved');
+    emp_requireColumns_(TABS.EMPLOYEE_STATUTORY_IDS, HROS_STATUTORY_ID_HEADERS);
+  }
+  if (v.pay && !v.pay.unchanged) emp_requireColumns_(payTab, ['EMP_ID', 'EFFECTIVE_FROM', 'VERSION_STATE', 'HR_APPROVED_BY']);
+  var has = function (h) { return masterHeaders.indexOf(h) >= 0; };
+  var today = nowIso_().slice(0, 10);
+  var res = { ok: true, mode: mode, empId: empId, category: cat.code, changed: [], salary: null, statutoryFieldsWritten: 0,
+    warnings: v.warnings, pendingHrApproval: false };
+
+  // 1. EMPLOYEE_MASTER
+  if (mode === 'ADD') {
+    var row = { EMP_ID: empId, EMPLOYEE_NAME: v.master.EMPLOYEE_NAME, PAYROLL_CATEGORY: cat.code, STATUS_AS_SOURCE: 'Active' };
+    var opt = { EMAIL_ID: v.master.EMAIL_ID, DOJ_AS_SOURCE: emp_dojText_(v.master.DOJ_ISO), DEPARTMENT: v.master.DEPARTMENT,
+      DESIGNATION: v.master.DESIGNATION, PLANT_TO_VERIFY: cat.site, DUPLICATE_FLAG: 'NONE', VALIDATION_STATE: 'PENDING_HR_APPROVAL',
+      SOURCE_TAB: EMP_DIALOG_SOURCE, SOURCE_SNAPSHOT_DATE: today, REVIEW_NOTE: 'added by ' + user };
+    Object.keys(opt).forEach(function (k) { if (has(k)) row[k] = opt[k]; });
+    appendObjects(TABS.EMPLOYEE_MASTER, [row], { textHeaders: ['EMP_ID', 'DOJ_AS_SOURCE', 'LAST_WORKING_DAY', 'SOURCE_SNAPSHOT_DATE'] });
+    res.changed = ['NEW_EMPLOYEE'];
+    res.pendingHrApproval = true;
+  } else {
+    var cur = masterRows.filter(function (r) { return emp_str_(r.STATUS_AS_SOURCE).toLowerCase() === 'active'; })[0] || masterRows[0];
+    var vals = {};
+    var set = function (col, val, old) { if (has(col) && emp_str_(val) !== '' && emp_str_(val) !== emp_str_(old)) { vals[col] = val; res.changed.push(col); } };
+    set('EMPLOYEE_NAME', v.master.EMPLOYEE_NAME, cur.EMPLOYEE_NAME);
+    set('EMAIL_ID', v.master.EMAIL_ID, cur.EMAIL_ID);
+    set('DEPARTMENT', v.master.DEPARTMENT, cur.DEPARTMENT);
+    set('DESIGNATION', v.master.DESIGNATION, cur.DESIGNATION);
+    set('PAYROLL_CATEGORY', cat.code, cur.PAYROLL_CATEGORY);
+    if (v.master.DOJ_ISO) set('DOJ_AS_SOURCE', emp_dojText_(v.master.DOJ_ISO), cur.DOJ_AS_SOURCE);
+    if (v.pay && !v.pay.unchanged && has('VALIDATION_STATE')) { vals.VALIDATION_STATE = 'PENDING_HR_APPROVAL'; res.pendingHrApproval = true; }
+    if (Object.keys(vals).length) updateRows(TABS.EMPLOYEE_MASTER, [{ row: cur._row, values: vals }], { textHeaders: ['DOJ_AS_SOURCE'] });
+  }
+
+  // 2. new effective-dated pay row (older rows are never touched)
+  if (v.pay && v.pay.unchanged) res.salary = { added: false, note: 'numbers equal the latest row - no new row' };
+  else if (v.pay) {
+    var pr = Object.assign({ EMP_ID: empId, PAYROLL_CATEGORY: cat.code, EFFECTIVE_FROM: v.pay.effectiveFrom, EFFECTIVE_TO: '',
+      VERSION_STATE: 'PENDING', HR_APPROVED_BY: '', HR_APPROVED_AT: '' }, v.pay.values);
+    var ph = getHeaders(resolveSheet_(payTab));
+    if (v.pay.kind === 'SALARY') {
+      pr.SOURCE_TAB = EMP_DIALOG_SOURCE; pr.SOURCE_PAYROLL_MONTH = ''; pr.EMPLOYMENT_STATUS_AT_SOURCE = 'Active';
+      pr.VALIDATION_NOTE = 'added by ' + user + ' via the employee dialog; HR must approve';
+    } else {
+      pr.ATTENDANCE_REQUIRED = 'YES'; pr.WORKING_DAYS_REQUIRED = 'YES'; pr.PRESENT_DAYS_REQUIRED = 'YES'; pr.WORKED_DAYS_REQUIRED = 'YES';
+      pr.NOTE = 'added by ' + user + ' via the employee dialog; HR must approve';
+    }
+    var clean = {};
+    Object.keys(pr).forEach(function (k) { if (ph.indexOf(k) >= 0) clean[k] = pr[k]; });
+    appendObjects(payTab, [clean], { textHeaders: ['EFFECTIVE_FROM', 'EFFECTIVE_TO'] });
+    res.salary = { added: true, tab: payTab, effectiveFrom: v.pay.effectiveFrom, versionState: 'PENDING' };
+    res.pendingHrApproval = true;
+  }
+
+  // 3. statutory IDs: only ever into EMPLOYEE_STATUTORY_IDS (values are never returned, logged or audited)
+  res.statutoryFieldsWritten = emp_writeStatutoryIds_(empId, v.ids);
+
+  res.rosterRefresh = emp_refreshRosters_();
+  audit(mode === 'ADD' ? 'EMPLOYEE_ADD' : 'EMPLOYEE_UPDATE', '', cat.code, { by: user, empId: empId, changed: res.changed,
+    salaryRow: res.salary && res.salary.added ? 'PENDING effective ' + res.salary.effectiveFrom : 'none',
+    statutoryFields: res.statutoryFieldsWritten, pendingHrApproval: res.pendingHrApproval });
+  return res;
+}
+
+/**
+ * Mark an employee's exit: LAST_WORKING_DAY is set and STATUS_AS_SOURCE becomes Non-Active. The roster keeps the employee
+ * for every period up to the month of the last working day (leaver rule), then drops him; there is no automatic
+ * proration - HR enters the days worked in the register.
+ */
+function empMarkExit(empId, lastWorkingDay) {
+  var user = emp_requireUser_();
+  var v = empValidateExit(empId, lastWorkingDay, { master: emp_masterRows_(empId) });
+  if (v.errors.length) throw new Error('Exit not saved - ' + v.errors.join('; '));
+  emp_requireColumns_(TABS.EMPLOYEE_MASTER, ['STATUS_AS_SOURCE', 'LAST_WORKING_DAY']);
+  var prev = emp_str_(masterLastWorkingDay_(v.row));
+  updateRows(TABS.EMPLOYEE_MASTER, [{ row: v.row._row, values: { STATUS_AS_SOURCE: 'Non-Active', LAST_WORKING_DAY: v.lwd } }],
+    { textHeaders: ['LAST_WORKING_DAY'] });
+  var res = { ok: true, empId: emp_str_(empId), lastWorkingDay: v.lwd, status: 'Non-Active', onRosterThrough: v.lwd.slice(0, 7),
+    previousLastWorkingDay: prev, note: 'The employee stays on the roster for periods up to ' + v.lwd.slice(0, 7) +
+      '; days worked are entered in the register (no automatic proration).' };
+  res.rosterRefresh = emp_refreshRosters_();
+  audit('EMPLOYEE_EXIT', '', emp_str_(v.row.PAYROLL_CATEGORY), { by: user, empId: res.empId, lastWorkingDay: v.lwd, previous: prev });
+  return res;
+}
+
+/** Page data: active categories, departments already in use, the runner. No employee data. */
+function empLoad() {
+  var user = emp_requireUser_();
+  var depts = {};
+  readObjects(TABS.EMPLOYEE_MASTER).forEach(function (r) { var d = emp_str_(r.DEPARTMENT); if (d) depts[d] = true; });
+  return { user: user, minPeriod: getMinPeriod(), today: nowIso_().slice(0, 10), otMethods: EMP_OT_METHODS, payBases: EMP_PAY_BASES,
+    departments: Object.keys(depts).sort().slice(0, 200),
+    categories: categoryList().map(function (e) {
+      return { code: e.code, name: e.displayName, site: e.site, method: e.method, rateSource: e.rateSource };
+    }) };
+}
+
+/**
+ * Lookup for the dialog (update / exit): master fields, latest pay row values and, for the statutory IDs, only whether a
+ * value is on file (never the value itself).
+ */
+function empLookup(empId) {
+  emp_requireUser_();
+  var rows = emp_masterRows_(empId);
+  if (!rows.length) return { exists: false };
+  var cur = rows.filter(function (r) { return emp_str_(r.STATUS_AS_SOURCE).toLowerCase() === 'active'; })[0] || rows[0];
+  var cat = categoryEntry(cur.PAYROLL_CATEGORY);
+  var out = { exists: true, name: emp_str_(cur.EMPLOYEE_NAME), email: emp_str_(cur.EMAIL_ID), category: emp_str_(cur.PAYROLL_CATEGORY),
+    status: emp_str_(cur.STATUS_AS_SOURCE), department: emp_str_(cur.DEPARTMENT), designation: emp_str_(cur.DESIGNATION),
+    doj: typeof parseDoj === 'function' ? parseDoj(cur.DOJ_AS_SOURCE) : '', lastWorkingDay: toIsoDate(masterLastWorkingDay_(cur)),
+    duplicates: rows.length > 1, idsOnFile: {} };
+  var payTab = cat && cat.rateSource === 'RATE_PROFILE' ? TABS.PAYROLL_RATE_PROFILE : TABS.SALARY_STRUCTURE;
+  var latest = emp_latestPay_(emp_payRowsOf_(payTab, empId));
+  if (latest) {
+    out.pay = { kind: payTab === TABS.SALARY_STRUCTURE ? 'SALARY' : 'RATE', effectiveFrom: engine_dateLo_(latest.EFFECTIVE_FROM),
+      versionState: emp_str_(latest.VERSION_STATE), approved: payTab === TABS.SALARY_STRUCTURE ? emp_str_(latest.HR_APPROVED_BY) !== '' : calc_isRateApproved(latest), values: {} };
+    var cols = payTab === TABS.SALARY_STRUCTURE
+      ? Object.keys(EMP_SALARY_COLUMNS).map(function (k) { return [k, EMP_SALARY_COLUMNS[k]]; }).concat([['heat', 'HEAT_MASTER_INR'], ['vda', 'VDA_MASTER_INR'], ['production', 'PRODUCTION_MASTER_INR']])
+      : [['payBasis', 'PAY_BASIS'], ['rate', 'RATE_AMOUNT_INR'], ['monthlyGross', 'MONTHLY_GROSS_INR'], ['otMethod', 'OT_METHOD']];
+    cols.forEach(function (c) { out.pay.values[c[0]] = latest[c[1]] === undefined ? '' : latest[c[1]]; });
+  }
+  if (getSheet(TABS.EMPLOYEE_STATUTORY_IDS)) {
+    var hit = readObjects(TABS.EMPLOYEE_STATUTORY_IDS).filter(function (r) { return emp_str_(r.EMP_ID).toLowerCase() === emp_str_(empId).toLowerCase(); })[0];
+    if (hit) HROS_STATUTORY_ID_HEADERS.slice(1).forEach(function (f) { out.idsOnFile[f] = emp_str_(hit[f]) !== ''; });
+  }
+  return out;
+}
+
+// ================================================================ dialog page
+
+function empPageHtml_() {
+  return [
+    '<!DOCTYPE html><html><head><base target="_top"><meta charset="utf-8"><title>Employees</title>',
+    '<style>',
+    'body{font-family:Arial,Helvetica,sans-serif;margin:16px;color:#202124;font-size:13px}h2{margin:0 0 8px}',
+    'fieldset{margin:10px 0;border:1px solid #c9ced6;border-radius:4px}legend{font-weight:bold}',
+    'label{display:inline-block;min-width:150px;margin:3px 0}input,select{padding:3px;margin:2px 8px 2px 0}',
+    'input.w{width:230px}input.n{width:110px}.note{color:#5f6368;font-size:12px}.hidden{display:none}',
+    '#msg{margin-top:12px;white-space:pre-wrap}.err{color:#b00020}.ok{color:#1b7f3b}button{padding:6px 14px;margin-right:8px}',
+    '</style></head><body>',
+    '<h2>Employees</h2>',
+    '<div><label><input type="radio" name="mode" value="ADD" checked> Add employee</label>',
+    '<label><input type="radio" name="mode" value="UPDATE"> Update employee / salary revision</label>',
+    '<label><input type="radio" name="mode" value="EXIT"> Mark employee exit</label></div>',
+    '<div>Employee code <input id="empId" class="n" autocomplete="off"> <button id="lookup" type="button">Load</button>',
+    ' <span class="note" id="loaded"></span></div>',
+    '<div id="exitBox" class="hidden"><fieldset><legend>Exit</legend><label>Last working day</label><input id="lwd" type="date">',
+    '<div class="note">Status becomes Non-Active; the employee stays on the roster for periods up to that month. Days worked are entered in the register (no automatic proration).</div></fieldset></div>',
+    '<div id="mainBox">',
+    '<fieldset><legend>Employee</legend>',
+    '<label>Name</label><input id="name" class="w"><label>Email</label><input id="email" class="w"><br>',
+    '<label>Date of joining</label><input id="doj" type="date"><label>Category</label><select id="category"></select> <span class="note" id="siteNote"></span><br>',
+    '<label>Department</label><input id="department" class="w" list="depts"><datalist id="depts"></datalist>',
+    '<label>Designation</label><input id="designation" class="w"></fieldset>',
+    '<fieldset id="salBox"><legend>Salary structure (per month, INR)</legend><div id="salFields"></div>',
+    '<div id="workerFields"><label>Heat allowance</label><select id="heat"><option value="0">No</option><option value="150">Yes (150)</option></select>',
+    '<label>VDA master</label><input id="vda" class="n" type="number" min="0" step="any">',
+    '<label>Production master</label><input id="production" class="n" type="number" min="0" step="any"></div>',
+    '<div><b>Fixed gross (auto sum): <span id="fg">0</span></b></div></fieldset>',
+    '<fieldset id="rateBox"><legend>Rate profile</legend>',
+    '<label>Pay basis</label><select id="payBasis"><option value="DAILY_RATE">DAILY_RATE</option><option value="MONTHLY_GROSS_PRORATED">MONTHLY_GROSS_PRORATED</option></select>',
+    '<label>Daily rate</label><input id="rate" class="n" type="number" min="0" step="any">',
+    '<label>Monthly gross</label><input id="monthlyGross" class="n" type="number" min="0" step="any"><br>',
+    '<label>OT method</label><select id="otMethod"><option value="">(default for the basis)</option></select></fieldset>',
+    '<div><label>Effective from month</label><input id="effectiveMonth" type="month"> <span class="note">Add: blank = month of joining. Revision: required; older rows are kept.</span></div>',
+    '<fieldset><legend>Statutory IDs (optional; stored only in the hidden EMPLOYEE_STATUTORY_IDS tab; blank = unchanged)</legend>',
+    '<label>UAN</label><input id="uan" class="w" autocomplete="off"><label>ESI number</label><input id="esiNo" class="w" autocomplete="off"><br>',
+    '<label>PAN</label><input id="pan" class="w" autocomplete="off"><label>Bank name</label><input id="bankName" class="w" autocomplete="off"><br>',
+    '<label>Bank account</label><input id="bankAccount" class="w" autocomplete="off"><label>IFSC</label><input id="ifsc" class="w" autocomplete="off">',
+    '<div class="note" id="idsNote"></div></fieldset></div>',
+    '<p><button id="save" type="button">Save</button><span class="note">New pay rows stay PENDING (employee on HOLD) until HR runs Payroll &gt; Approve salary structure.</span></p>',
+    '<div id="msg"></div>',
+    '<script>',
+    'var LOADED_CAT="",CFG=null,STAFF=["BASIC","HRA","CONVEYANCE","EDUCATION","MEDICAL","PRO_DEV","COMMUNICATION","UNIFORM","WASHING"],WORKER=["BASIC","HRA","CONVEYANCE","EDUCATION","WASHING"];',
+    'function $(i){return document.getElementById(i);}',
+    'function say(t,c){var m=$("msg");m.className=c||"";m.textContent=t;}',
+    'function fail(e){say(String(e&&e.message?e.message:e),"err");$("save").disabled=false;}',
+    'function mode(){return document.querySelector("input[name=mode]:checked").value;}',
+    'function cat(){var c=$("category").value;for(var i=0;i<CFG.categories.length;i++)if(CFG.categories[i].code===c)return CFG.categories[i];return null;}',
+    'function buildSal(){var c=cat(),w=c&&c.method==="PERMANENT_WORKER",keys=w?WORKER:STAFF,h="";keys.forEach(function(k){h+="<label>"+k+"</label><input class=\\"n sal\\" id=\\"s_"+k+"\\" data-k=\\""+k+"\\" type=\\"number\\" min=\\"0\\" step=\\"any\\"> ";});',
+    ' $("salFields").innerHTML=h;$("workerFields").className=w?"":"hidden";Array.prototype.forEach.call(document.querySelectorAll(".sal,#vda,#production,#heat"),function(i){i.oninput=sum;i.onchange=sum;});sum();}',
+    'function sum(){var t=0;Array.prototype.forEach.call(document.querySelectorAll(".sal"),function(i){t+=Number(i.value)||0;});',
+    ' var c=cat();if(c&&c.method==="PERMANENT_WORKER"){t+=(Number($("heat").value)||0)+(Number($("vda").value)||0)+(Number($("production").value)||0);}$("fg").textContent=Math.round(t*100)/100;}',
+    'function layout(){var m=mode(),ex=m==="EXIT";$("exitBox").className=ex?"":"hidden";$("mainBox").className=ex?"hidden":"";var c=cat();',
+    ' $("salBox").className=c&&c.rateSource==="RATE_PROFILE"?"hidden":"";$("rateBox").className=c&&c.rateSource==="RATE_PROFILE"?"":"hidden";',
+    ' $("siteNote").textContent=c?("Site: "+c.site+" | calc: "+c.method):"";$("empId").readOnly=false;}',
+    'function fill(d){$("loaded").textContent=d.exists?("Found: "+d.status+(d.duplicates?" (duplicate rows!)":"")):"Not found";if(!d.exists)return;',
+    ' LOADED_CAT=d.category;$("name").value=d.name;$("email").value=d.email;$("category").value=d.category;$("department").value=d.department;$("designation").value=d.designation;$("doj").value=d.doj||"";$("lwd").value=d.lastWorkingDay||"";',
+    ' layout();buildSal();if(d.pay){var v=d.pay.values;for(var k in v){var e=$("s_"+k)||$(k);if(e)e.value=v[k];}sum();$("loaded").textContent+=" | latest pay row from "+d.pay.effectiveFrom+" ("+(d.pay.approved?"approved":"PENDING")+")";}',
+    ' var on=[];for(var f in d.idsOnFile)if(d.idsOnFile[f])on.push(f);$("idsNote").textContent=on.length?("On file: "+on.join(", ")+" (leave blank to keep)"):"";}',
+    'function payload(){var p={mode:mode(),empId:$("empId").value,name:$("name").value,email:$("email").value,doj:$("doj").value,category:$("category").value,department:$("department").value,designation:$("designation").value,site:cat()?cat().site:"",effectiveMonth:$("effectiveMonth").value,',
+    ' ids:{uan:$("uan").value,esiNo:$("esiNo").value,pan:$("pan").value,bankName:$("bankName").value,bankAccount:$("bankAccount").value,ifsc:$("ifsc").value}};',
+    ' var c=cat(),sendPay=p.mode==="ADD"||!!$("effectiveMonth").value||(LOADED_CAT!==""&&$("category").value!==LOADED_CAT);',
+    ' if(sendPay){if(c&&c.rateSource==="RATE_PROFILE"){p.rate={payBasis:$("payBasis").value,rate:$("rate").value,monthlyGross:$("monthlyGross").value,otMethod:$("otMethod").value};}',
+    ' else{var s={};Array.prototype.forEach.call(document.querySelectorAll(".sal"),function(i){s[i.getAttribute("data-k")]=i.value;});s.heat=$("heat").value;s.vda=$("vda").value;s.production=$("production").value;p.salary=s;}}return p;}',
+    'Array.prototype.forEach.call(document.querySelectorAll("input[name=mode]"),function(r){r.onchange=layout;});',
+    '$("category").onchange=function(){layout();buildSal();};',
+    '$("lookup").onclick=function(){say("Loading...");google.script.run.withSuccessHandler(function(d){say("");fill(d);}).withFailureHandler(fail).empApiLookup($("empId").value);};',
+    '$("save").onclick=function(){$("save").disabled=true;say("Saving...");',
+    ' if(mode()==="EXIT"){google.script.run.withSuccessHandler(function(r){$("save").disabled=false;say("Exit saved for "+r.empId+": last working day "+r.lastWorkingDay+" ("+r.status+").\\n"+r.note+(r.rosterRefresh&&!r.rosterRefresh.ok?"\\n"+r.rosterRefresh.note:""),"ok");}).withFailureHandler(fail).empApiExit({empId:$("empId").value,lastWorkingDay:$("lwd").value});return;}',
+    ' google.script.run.withSuccessHandler(function(r){$("save").disabled=false;var t=(r.mode==="ADD"?"Added ":"Updated ")+r.empId+" ("+r.category+").";',
+    '  if(r.salary)t+="\\nPay row: "+(r.salary.added?"added, effective "+r.salary.effectiveFrom+", PENDING HR approval":r.salary.note);',
+    '  if(r.statutoryFieldsWritten)t+="\\nStatutory IDs saved ("+r.statutoryFieldsWritten+" field(s)) in the hidden tab.";',
+    '  if(r.pendingHrApproval)t+="\\nThe employee is on HOLD until HR approves the salary structure (Payroll > Approve salary structure).";',
+    '  if(r.warnings&&r.warnings.length)t+="\\nWarnings: "+r.warnings.join("; ");',
+    '  if(r.rosterRefresh&&!r.rosterRefresh.ok)t+="\\n"+r.rosterRefresh.note;say(t,"ok");}).withFailureHandler(fail).empApiSave(payload());};',
+    'google.script.run.withSuccessHandler(function(d){CFG=d;var s=$("category");d.categories.forEach(function(c){var o=document.createElement("option");o.value=c.code;o.textContent=c.name+" ("+c.code+")";s.appendChild(o);});',
+    ' var dl=$("depts");d.departments.forEach(function(x){var o=document.createElement("option");o.value=x;dl.appendChild(o);});',
+    ' var ot=$("otMethod");d.otMethods.forEach(function(x){var o=document.createElement("option");o.value=x;o.textContent=x;ot.appendChild(o);});layout();buildSal();',
+    ' if(window.EMP_START_MODE){var r=document.querySelector("input[name=mode][value="+window.EMP_START_MODE+"]");if(r){r.checked=true;layout();}}}).withFailureHandler(fail).empApiLoad();',
+    '</script></body></html>'
+  ].join('\n');
+}
+
+/** Menu entry: the employee dialog (mode ADD, UPDATE or EXIT preselected). */
+function empOpenDialog(startMode) {
+  emp_requireUser_();
+  var html = empPageHtml_();
+  var mode = /^(ADD|UPDATE|EXIT)$/.test(String(startMode)) ? startMode : 'ADD';
+  html = html.replace('<script>', '<script>window.EMP_START_MODE=' + JSON.stringify(mode) + ';');
+  var out = HtmlService.createHtmlOutput(html).setWidth(900).setHeight(720);
+  SpreadsheetApp.getUi().showModalDialog(out, mode === 'EXIT' ? 'Mark employee exit' : 'Add or update employee');
+  return null;
+}
+
+/** google.script.run: page data (categories, departments). */
+function empApiLoad() { return JSON.parse(JSON.stringify(empLoad())); }
+/** google.script.run: lookup (never returns statutory ID values). */
+function empApiLookup(empId) { return JSON.parse(JSON.stringify(empLookup(empId))); }
+
+function emp_locked_(fn) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try { return JSON.parse(JSON.stringify(fn())); } finally { lock.releaseLock(); }
+}
+/** google.script.run: save, serialised with the script lock. The result never contains statutory ID values. */
+function empApiSave(payload) { return emp_locked_(function () { return empSave(payload); }); }
+/** google.script.run: exit. */
+function empApiExit(payload) { return emp_locked_(function () { return empMarkExit((payload || {}).empId, (payload || {}).lastWorkingDay); }); }
 
 // ===== 20_Feeds.gs =====
 /**
@@ -2795,6 +3526,9 @@ function feeds_lockedPops_(period) {
   return locked;
 }
 
+/** (population, empId) -> true when that employee is frozen by a lock (held-and-unlocked employees of a locked run stay open). */
+function feeds_lockedFn_(period) { return lockScope_(period).isLocked; }
+
 function feeds_toast_(msg) {
   try { SpreadsheetApp.getActiveSpreadsheet().toast(msg, 'HR OS', 5); } catch (e) { /* not in UI context */ }
 }
@@ -2920,17 +3654,17 @@ function syncOtFromForm(period) {
   var res = mapOtRows(header, rows, period, roster, {}, { firstRow: 2, enteredAt: nowIso_(),
     windowStart: win.start, windowEnd: win.end });
   if (res.missingColumns.length) throw new Error('OT source is missing required column(s): ' + res.missingColumns.join(', '));
-  var locked = feeds_lockedPops_(period);
+  var isLockedEmp = feeds_lockedFn_(period);
   var lockedSkipped = 0;
   function open(o) {
     var pop = popOf[String(o.EMP_ID).toUpperCase()];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   }
   var fresh = res.valid.concat(res.exceptions).filter(open);
   var existing = readObjects(TABS.INPUT_OT).filter(function (r) {
     var pop = popOf[String(r.EMP_ID).toUpperCase()];
-    return !(pop && locked[pop]);
+    return !(pop && isLockedEmp(pop, r.EMP_ID));
   });
   var plan = feeds_planOtResync(existing, fresh, period);
   var stamp = nowIso_();
@@ -2973,12 +3707,12 @@ function feeds_syncForm_(period, tab, target, mapper, name, action) {
     if (excKeys[o.SOURCE_REF + '|' + o.REMARKS]) { res.skippedExisting++; return false; }
     return true;
   });
-  var locked = feeds_lockedPops_(period), popOf = {};
+  var isLockedEmp = feeds_lockedFn_(period), popOf = {};
   roster.forEach(function (r) { popOf[r.EMP_ID.toUpperCase()] = r.PAYROLL_CATEGORY; });
   var lockedSkipped = 0;
   function open(o) {
     var pop = popOf[o.EMP_ID];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   }
   var toWrite = res.valid.concat(res.exceptions).filter(open);
@@ -3442,16 +4176,16 @@ function syncLeaveFromSource(period) {
   var res = mapLeaveRows(block.header, block.rows, period, roster, { firstRow: 2, enteredAt: nowIso_(), sourceLabel: src.label,
     holidays: holidays, weeklyOffBySite: { NASHIK: getWeeklyOff(SITE_NASHIK), PUNE: getWeeklyOff(SITE_PUNE) } });
   if (res.missingColumns.length) throw new Error('Leave source is missing required column(s): ' + res.missingColumns.join(', '));
-  var locked = feeds_lockedPops_(period), lockedSkipped = 0;
+  var isLockedEmp = feeds_lockedFn_(period), lockedSkipped = 0;
   var open = function (o) {
     var pop = popOf[String(o.EMP_ID).toUpperCase()];
-    if (pop && locked[pop]) { lockedSkipped++; return false; }
+    if (pop && isLockedEmp(pop, o.EMP_ID)) { lockedSkipped++; return false; }
     return true;
   };
   var fresh = res.valid.concat(res.exceptions).filter(open);
   var existing = readObjects(TABS.INPUT_LEAVE).filter(function (r) {
     var pop = popOf[String(r.EMP_ID).toUpperCase()];
-    return !(pop && locked[pop]);
+    return !(pop && isLockedEmp(pop, r.EMP_ID));
   });
   var plan = leave_planResync(existing, fresh, period);
   var stamp = nowIso_();
@@ -5890,12 +6624,15 @@ function reopenPeriod(period, population) {
 // ================================================================ approval gates for master data (R11 / R27 / PROCESS_FLOW 1.0)
 
 /**
- * Pure. Which effective SALARY_STRUCTURE rows of a population still need the HR stamp for the period.
- * roster = engine roster entries ({EMP_ID, PAYROLL_CATEGORY}); rows = SALARY_STRUCTURE row objects ({_row, ...}).
- * Returns {population, period, employees, withEffectiveRow, alreadyApproved, toStamp:[{row, empId}], withoutRow:[ids]}.
+ * Pure. Which effective pay-structure rows of a population still need the HR stamp for the period.
+ * roster = engine roster entries ({EMP_ID, PAYROLL_CATEGORY}); rows = row objects ({_row, ...}); rateBased = the category
+ * reads PAYROLL_RATE_PROFILE (RATE_SOURCE) instead of SALARY_STRUCTURE. A SALARY_STRUCTURE row is pending while
+ * HR_APPROVED_BY is blank; a rate-profile row while its VERSION_STATE is not an approved state (blank = approved).
+ * Returns {population, period, employees, withEffectiveRow, alreadyApproved, toStamp:[{row, empId, effectiveFrom, versionState}],
+ * withoutRow:[ids]}.
  */
-function salaryApprovalPlan(salaryRows, roster, period, population) {
-  var pick = engine_pickSalary(salaryRows, period);
+function salaryApprovalPlan(salaryRows, roster, period, population, rateBased) {
+  var pick = rateBased ? engine_pickRate(salaryRows, period) : engine_pickSalary(salaryRows, period);
   var ids = [], seen = {};
   (roster || []).forEach(function (e) {
     var id = engine_id_(e.EMP_ID);
@@ -5908,8 +6645,9 @@ function salaryApprovalPlan(salaryRows, roster, period, population) {
     var r = pick[id];
     if (!r) { plan.withoutRow.push(id); return; }
     plan.withEffectiveRow++;
-    if (engine_id_(r.HR_APPROVED_BY) !== '') plan.alreadyApproved++;
-    else plan.toStamp.push({ row: r._row, empId: id });
+    var approved = rateBased ? calc_isRateApproved(r) : engine_id_(r.HR_APPROVED_BY) !== '';
+    if (approved) plan.alreadyApproved++;
+    else plan.toStamp.push({ row: r._row, empId: id, effectiveFrom: engine_dateLo_(r.EFFECTIVE_FROM), versionState: engine_id_(r.VERSION_STATE) });
   });
   return plan;
 }
@@ -5931,20 +6669,30 @@ function approval_requireStampColumns_(tab, cols) {
   if (missing.length) throw new Error(tab + ' lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup)');
 }
 
-/** Read-only counts for the HR confirmation dialog. */
+/** Tab that holds the pay structure of an active category (RATE_SOURCE) and whether it is the rate-profile kind. */
+function approval_payTab_(population) {
+  var e = categoryEntry(population);
+  if (!e || !e.active) throw new Error('Unknown population "' + population + '"');
+  return e.rateSource === 'RATE_PROFILE' ? { tab: TABS.PAYROLL_RATE_PROFILE, rateBased: true }
+    : { tab: TABS.SALARY_STRUCTURE, rateBased: false };
+}
+
+/** Read-only counts and the list of pending rows (empId, effective from) for the HR confirmation dialog. */
 function planSalaryStructureApproval(period, population) {
   guardPeriod_(period);
-  if (population !== POP.STAFF && population !== POP.PERMANENT_WORKER) {
-    throw new Error('SALARY_STRUCTURE approval is for STAFF and PERMANENT_WORKER (got "' + population + '")');
-  }
+  var pt = approval_payTab_(population);
   var roster = engine_rosterFromMaster(readObjects(TABS.EMPLOYEE_MASTER), period);
-  var plan = salaryApprovalPlan(readObjects('SALARY_STRUCTURE'), roster.all, period, population);
+  var plan = salaryApprovalPlan(readObjects(pt.tab), roster.all, period, population, pt.rateBased);
+  plan.tab = pt.tab;
   return plan;
 }
 
 /**
- * HR approves the SALARY_STRUCTURE rows effective for the period of one population (active employees only).
- * Runner must be HR_APPROVER_EMAIL. Stamps HR_APPROVED_BY / HR_APPROVED_AT on rows that are still blank; audited.
+ * HR approves the pending pay-structure rows effective for the period of one category (active employees only): the
+ * SALARY_STRUCTURE row (HR_APPROVED_BY / HR_APPROVED_AT) or the PAYROLL_RATE_PROFILE row (VERSION_STATE APPROVED +
+ * HR_APPROVED_BY / HR_APPROVED_AT). Rows added later through the employee dialog (new joiners, revisions) are approved the
+ * same way; a revision effective from a later month is approved by running this for that month. Runner must be
+ * HR_APPROVER_EMAIL; audited; idempotent. The employee's VALIDATION_STATE PENDING_HR_APPROVAL becomes HR_APPROVED.
  */
 function approveSalaryStructure(period, population) {
   var plan = planSalaryStructureApproval(period, population);
@@ -5955,16 +6703,40 @@ function approveSalaryStructure(period, population) {
     audit('SALARY_APPROVE', period, population, { result: 'REFUSED', reason: 'USER_NOT_HR_APPROVER', user: user });
     return { ok: false, reason: 'USER_NOT_HR_APPROVER' };
   }
-  approval_requireStampColumns_('SALARY_STRUCTURE', ['HR_APPROVED_BY', 'HR_APPROVED_AT']);
+  var rateBased = plan.tab === TABS.PAYROLL_RATE_PROFILE;
+  approval_requireStampColumns_(plan.tab, rateBased ? ['VERSION_STATE', 'HR_APPROVED_BY', 'HR_APPROVED_AT'] : ['HR_APPROVED_BY', 'HR_APPROVED_AT']);
   var now = nowIso_();
-  updateRows('SALARY_STRUCTURE', plan.toStamp.map(function (t) {
-    return { row: t.row, values: { HR_APPROVED_BY: user, HR_APPROVED_AT: now } };
+  updateRows(plan.tab, plan.toStamp.map(function (t) {
+    var v = { HR_APPROVED_BY: user, HR_APPROVED_AT: now };
+    if (rateBased) v.VERSION_STATE = 'APPROVED';
+    else if (t.versionState.toUpperCase() === 'PENDING') v.VERSION_STATE = 'APPROVED';
+    return { row: t.row, values: v };
   }));
+  approval_signOffMaster_(plan.toStamp.map(function (t) { return t.empId; }), user, now);
   var res = { ok: true, reason: 'OK', period: period, population: population, stamped: plan.toStamp.length,
     alreadyApproved: plan.alreadyApproved, employeesWithoutStructure: plan.withoutRow };
   audit('SALARY_APPROVE', period, population, { result: 'APPROVED', user: user, stamped: res.stamped,
-    alreadyApproved: res.alreadyApproved, withoutStructure: plan.withoutRow.length });
+    alreadyApproved: res.alreadyApproved, withoutStructure: plan.withoutRow.length,
+    empIds: plan.toStamp.map(function (t) { return t.empId; }) });
   return res;
+}
+
+/** EMPLOYEE_MASTER.VALIDATION_STATE PENDING_HR_APPROVAL -> HR_APPROVED (+ HR_SIGNOFF_BY / _AT when the columns exist). */
+function approval_signOffMaster_(empIds, user, now) {
+  if (!empIds.length || !getSheet(TABS.EMPLOYEE_MASTER)) return;
+  var want = {};
+  empIds.forEach(function (id) { want[id] = true; });
+  var headers = getHeaders(resolveSheet_(TABS.EMPLOYEE_MASTER));
+  if (headers.indexOf('VALIDATION_STATE') < 0) return;
+  var ups = [];
+  readObjects(TABS.EMPLOYEE_MASTER).forEach(function (r) {
+    if (!want[engine_id_(r.EMP_ID)] || engine_id_(r.VALIDATION_STATE).toUpperCase() !== 'PENDING_HR_APPROVAL') return;
+    var v = { VALIDATION_STATE: 'HR_APPROVED' };
+    if (headers.indexOf('HR_SIGNOFF_BY') >= 0) v.HR_SIGNOFF_BY = user;
+    if (headers.indexOf('HR_SIGNOFF_AT') >= 0) v.HR_SIGNOFF_AT = now;
+    ups.push({ row: r._row, values: v });
+  });
+  updateRows(TABS.EMPLOYEE_MASTER, ups);
 }
 
 /** Read-only counts for the Accounts confirmation dialog. */
@@ -6109,8 +6881,9 @@ function lockPeriod(period, population) {
   var pc = approval_pcRow_(period, population);
   var status = String(pc.STATUS || '').trim().toUpperCase();
   var re = approval_recomputeHash_(period, population);
+  // supplementary (top-up) rows share PAYROLL_DRAFT but are locked by supplementaryLock, never by this function
   var draftRows = readObjects(TABS.PAYROLL_DRAFT).filter(function (r) {
-    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population;
+    return normalizePeriod(r.PERIOD) === period && String(r.POPULATION).trim() === population && engine_runType_(r.RUN_ID) === 'NORMAL';
   });
   var payable = engine_payableRows_(draftRows);
   var heldRows = draftRows.filter(engine_isHeldRow_);
@@ -6144,6 +6917,274 @@ function lockPeriod(period, population) {
   audit('LOCK', period, population, { result: 'LOCKED', lockId: lockId, rows: rows.length, user: user, hash: re.hash,
     heldNotLocked: held.map(function (h) { return h.EMP_ID; }) });
   return { ok: true, status: PERIOD_STATUS.LOCKED, reason: 'OK', lockId: lockId, rows: rows.length, held: held };
+}
+
+// ===== 42_Supplementary.gs =====
+/**
+ * 42_Supplementary.gs - supplementary (top-up) run for employees that were HELD in a locked run.
+ *
+ * After a period x population is LOCKED, employees that were held (FLAGS HOLD in the locked run's draft) and are not in
+ * PAYROLL_LOCKED can still be fixed (register, attendance approval, feeds, salary approval, ...). "Run top-up for released
+ * employees" recalculates the population, takes ONLY those held EMP_IDs that no longer have any HOLD issue, writes their rows
+ * to PAYROLL_DRAFT with RUN_ID SUPP-<period>-<population>-<timestamp> (RUN type SUPPLEMENTARY) and records the set in
+ * PAYROLL_SUPPLEMENTARY (SUPP_ID, EMP_IDS, HASH, STATUS, HR_*, ACCOUNTS_*, LOCK_ID). HR then Accounts approve that set (its
+ * own hash: any change of the inputs resets it to DRAFT), then Accounts / owner lock it under a NEW LOCK_ID into
+ * PAYROLL_LOCKED. An EMP_ID already locked for the period x population is never locked again. Payslips and emails work per
+ * LOCK_ID (generatePayslips(period, population, lockId)).
+ */
+var SUPP_OPEN_STATUSES = ['DRAFT', 'HR_APPROVED', 'ACCOUNTS_APPROVED'];
+
+// ---------------------------------------------------------------- pure
+
+function supp_id_(v) { return String(v == null ? '' : v).trim(); }
+
+function suppIdFor(period, population, date) {
+  return ENGINE_SUPP_PREFIX + period + '-' + population + '-' + Utilities.formatDate(date || new Date(), HROS_TZ, 'yyyyMMddHHmmss');
+}
+
+/** LOCK_ID of a supplementary lock: the normal pattern plus -SUPP (-SUPP2 ... when the id is taken). */
+function suppLockIdFor(period, population, date, takenIds) {
+  var base = lockIdFor(period, population, date) + '-SUPP', id = base, n = 1;
+  var taken = {};
+  (takenIds || []).forEach(function (t) { taken[supp_id_(t)] = true; });
+  while (taken[id]) { n++; id = base + n; }
+  return id;
+}
+
+/**
+ * Employees that were held in the locked run and are not locked yet: draftRows = PAYROLL_DRAFT rows, lockedRows =
+ * PAYROLL_LOCKED rows (any period / population; filtered here). Supplementary draft rows are ignored.
+ */
+function suppCandidates(draftRows, lockedRows, period, population) {
+  var locked = {};
+  (lockedRows || []).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) === period && supp_id_(r.POPULATION) === population) locked[supp_id_(r.EMP_ID)] = true;
+  });
+  var out = [], seen = {};
+  (draftRows || []).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) !== period || supp_id_(r.POPULATION) !== population) return;
+    if (engine_runType_(r.RUN_ID) !== 'NORMAL' || !engine_isHeldRow_(r)) return;
+    var id = supp_id_(r.EMP_ID);
+    if (!id || locked[id] || seen[id]) return;
+    seen[id] = true; out.push(id);
+  });
+  return out.sort();
+}
+
+/**
+ * Splits the candidates by the fresh calculation: released = still on the roster, no HOLD and no blocker (a numeric
+ * NET_PAY); stillHeld = with their HOLD codes. results = engine_calcPopulation(...).results.
+ */
+function suppPartition(candidates, results) {
+  var by = {};
+  (results || []).forEach(function (res) { by[supp_id_((res.row || {}).EMP_ID)] = res; });
+  var released = [], stillHeld = [];
+  (candidates || []).forEach(function (id) {
+    var res = by[id];
+    if (!res) { stillHeld.push({ empId: id, codes: ['NOT_ON_ROSTER'] }); return; }
+    var codes = (res.exceptions || []).filter(function (e) { return e.severity === 'HOLD' || e.severity === 'BLOCKER'; })
+      .map(function (e) { return e.code; });
+    var net = res.row ? res.row.NET_PAY : null;
+    if (res.held || codes.length || typeof net !== 'number') stillHeld.push({ empId: id, codes: codes.length ? codes : ['NO_NET_PAY'] });
+    else released.push(id);
+  });
+  return { released: released, stillHeld: stillHeld };
+}
+
+/** The payable rows of a calculation for the given EMP_IDs (the rows the supplementary hash and lock are made of). */
+function suppRowsFor(calcRows, empIds) {
+  var want = {};
+  (empIds || []).forEach(function (id) { want[supp_id_(id)] = true; });
+  return engine_payableRows_(calcRows).filter(function (r) { return want[supp_id_(r.EMP_ID)]; });
+}
+
+function suppEmpList_(text) {
+  return String(text == null ? '' : text).split(',').map(supp_id_).filter(function (x) { return x; });
+}
+
+// ---------------------------------------------------------------- sheet-touching
+
+function supp_requireSheet_() {
+  var sheet = getSheet(TABS.PAYROLL_SUPPLEMENTARY);
+  if (!sheet) throw new Error('Tab PAYROLL_SUPPLEMENTARY is missing (run HR OS > Setup > Run setup)');
+  var headers = getHeaders(sheet);
+  var missing = HROS_SUPPLEMENTARY_HEADERS.filter(function (h) { return headers.indexOf(h) < 0; });
+  if (missing.length) throw new Error('PAYROLL_SUPPLEMENTARY lacks column(s) ' + missing.join(', ') + ' (run HR OS > Setup)');
+  return sheet;
+}
+
+/** The non-locked, non-superseded supplementary set of a period x population (the latest one), or null. */
+function supp_openSet_(period, population) {
+  var rows = readObjects(TABS.PAYROLL_SUPPLEMENTARY).filter(function (r) {
+    return normalizePeriod(r.PERIOD) === period && supp_id_(r.POPULATION) === population &&
+      SUPP_OPEN_STATUSES.indexOf(supp_id_(r.STATUS).toUpperCase()) >= 0;
+  });
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+function supp_draftRowsOf_(suppId) {
+  return readObjects(TABS.PAYROLL_DRAFT).filter(function (r) { return supp_id_(r.RUN_ID) === suppId; });
+}
+
+function supp_resetValues_() {
+  return { STATUS: 'DRAFT', HR_APPROVED_BY: '', HR_APPROVED_AT: '', ACCOUNTS_APPROVED_BY: '', ACCOUNTS_APPROVED_AT: '' };
+}
+
+/**
+ * Menu "Payroll > Run top-up for released employees": recalculates a LOCKED period x population and writes the released
+ * held employees as a SUPPLEMENTARY draft set (status DRAFT, needs HR then Accounts approval and its own lock). A set
+ * that is still open (not locked) is superseded by the new one (approvals cleared).
+ */
+function supplementaryRun(period, population) {
+  guardPeriod_(period);
+  if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
+  supp_requireSheet_();
+  var pc = approval_pcRow_(period, population);
+  if (supp_id_(pc.STATUS).toUpperCase() !== PERIOD_STATUS.LOCKED) {
+    throw new Error(period + ' x ' + population + ' is ' + (supp_id_(pc.STATUS) || 'not set') + ', not LOCKED - use the normal draft, a top-up is only for a locked run');
+  }
+  var user = approval_userEmail_();
+  var draftRows = readObjects(TABS.PAYROLL_DRAFT);
+  var lockedRows = getSheet(TABS.PAYROLL_LOCKED) ? readObjects(TABS.PAYROLL_LOCKED) : [];
+  var cands = suppCandidates(draftRows, lockedRows, period, population);
+  if (!cands.length) return { ok: false, reason: 'NO_HELD_EMPLOYEES', message: 'No employee was held in the locked run, or all of them are already locked' };
+  var src = engine_readSources_(period);
+  var now = new Date();
+  var suppId = suppIdFor(period, population, now), n = 1;
+  var usedIds = {};
+  readObjects(TABS.PAYROLL_SUPPLEMENTARY).forEach(function (r) { usedIds[supp_id_(r.SUPP_ID)] = true; });
+  var baseId = suppId;
+  while (usedIds[suppId]) { n++; suppId = baseId + '-' + n; }
+  var calc = engine_calcPopulation(src, population, suppId, nowIso_());
+  var part = suppPartition(cands, calc.results);
+  if (!part.released.length) {
+    audit('SUPP_DRAFT', period, population, { result: 'NOTHING_RELEASED', by: user, stillHeld: part.stillHeld });
+    return { ok: false, reason: 'NO_RELEASED_EMPLOYEES', stillHeld: part.stillHeld };
+  }
+  var rows = suppRowsFor(calc.rows, part.released);
+  var hash = hashRows(rows, OUTPUT_COLUMNS, engine_sha256Hex_);
+  var superseded = [];
+  var old = supp_openSet_(period, population);
+  if (old) {
+    updateRows(TABS.PAYROLL_SUPPLEMENTARY, [{ row: old._row, values: { STATUS: 'SUPERSEDED' } }]);
+    superseded.push(supp_id_(old.SUPP_ID));
+  }
+  var draft = ensureSheet(TABS.PAYROLL_DRAFT);
+  ensureHeaders(draft, OUTPUT_COLUMNS);
+  appendObjects(draft, rows.map(function (r) {
+    var o = {};
+    OUTPUT_COLUMNS.forEach(function (c) { o[c] = r[c] === undefined || r[c] === null ? '' : r[c]; });
+    return o;
+  }));
+  appendObjects(TABS.PAYROLL_SUPPLEMENTARY, [{ PERIOD: period, POPULATION: population, SUPP_ID: suppId, EMP_IDS: part.released.join(','),
+    HASH: hash, STATUS: 'DRAFT', CREATED_BY: user, CREATED_AT: nowIso_() }], { textHeaders: ['SUPP_ID', 'EMP_IDS', 'HASH', 'LOCK_ID'] });
+  audit('SUPP_DRAFT', period, population, { result: 'DRAFT', suppId: suppId, by: user, empIds: part.released, stillHeld: part.stillHeld,
+    superseded: superseded, hash: hash });
+  return { ok: true, suppId: suppId, empIds: part.released, stillHeld: part.stillHeld, rows: rows.length, hash: hash,
+    superseded: superseded, totalNet: engine_sum_(rows, 'NET_PAY') };
+}
+
+/** Recomputes (no writes) the payable rows of the set's EMP_IDs from fresh sources and their hash. */
+function supp_recompute_(period, population, empIds) {
+  var src = engine_readSources_(period);
+  var calc = engine_calcPopulation(src, population, '', nowIso_());
+  var rows = suppRowsFor(calc.rows, empIds);
+  return { hash: hashRows(rows, OUTPUT_COLUMNS, engine_sha256Hex_), rows: rows, held: calc.held };
+}
+
+function supp_alreadyLocked_(period, population, empIds) {
+  if (!getSheet(TABS.PAYROLL_LOCKED)) return [];
+  var locked = {};
+  readObjects(TABS.PAYROLL_LOCKED).forEach(function (r) {
+    if (normalizePeriod(r.PERIOD) === period && supp_id_(r.POPULATION) === population) locked[supp_id_(r.EMP_ID)] = true;
+  });
+  return empIds.filter(function (id) { return locked[id]; });
+}
+
+function supp_approve_(action, period, population) {
+  guardPeriod_(period);
+  if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
+  supp_requireSheet_();
+  var isHr = action === 'HR';
+  var auditName = isHr ? 'SUPP_HR_APPROVE' : 'SUPP_ACCOUNTS_APPROVE';
+  var supp = supp_openSet_(period, population);
+  if (!supp) return { ok: false, reason: 'NO_OPEN_SUPPLEMENTARY', message: 'Run the top-up first' };
+  var user = approval_userEmail_();
+  var status = supp_id_(supp.STATUS).toUpperCase();
+  var ids = suppEmpList_(supp.EMP_IDS);
+  var locked = supp_alreadyLocked_(period, population, ids);
+  if (locked.length) {
+    audit(auditName, period, population, { result: 'REFUSED', reason: 'EMP_ALREADY_LOCKED', empIds: locked, suppId: supp.SUPP_ID });
+    return { ok: false, status: status, reason: 'EMP_ALREADY_LOCKED', alreadyLocked: locked };
+  }
+  var re = supp_recompute_(period, population, ids);
+  var d = approvalDecision({ action: action, status: status, userEmail: user,
+    approverEmail: getControl(isHr ? 'HR_APPROVER_EMAIL' : 'ACCOUNTS_APPROVER_EMAIL', ''), readinessRows: [],
+    storedHash: supp.HASH, currentHash: re.hash });
+  if (d.ok) {
+    var vals = { STATUS: d.newStatus };
+    vals[isHr ? 'HR_APPROVED_BY' : 'ACCOUNTS_APPROVED_BY'] = user;
+    vals[isHr ? 'HR_APPROVED_AT' : 'ACCOUNTS_APPROVED_AT'] = nowIso_();
+    updateRows(TABS.PAYROLL_SUPPLEMENTARY, [{ row: supp._row, values: vals }]);
+    audit(auditName, period, population, { result: 'APPROVED', user: user, suppId: supp.SUPP_ID, status: d.newStatus, hash: re.hash });
+    return { ok: true, status: d.newStatus, suppId: supp_id_(supp.SUPP_ID), reason: 'OK' };
+  }
+  if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
+    if (status !== 'DRAFT') {
+      updateRows(TABS.PAYROLL_SUPPLEMENTARY, [{ row: supp._row, values: supp_resetValues_() }]);
+      audit('SUPP_STATUS_RESET', period, population, { from: status, to: 'DRAFT', reason: d.reason, user: user, suppId: supp.SUPP_ID });
+    }
+    audit(auditName, period, population, { result: 'REFUSED', reason: d.reason, user: user, note: 'run the top-up again' });
+    return { ok: false, status: 'DRAFT', reason: d.reason, message: 'Inputs changed since the top-up was calculated: run it again' };
+  }
+  audit(auditName, period, population, { result: 'REFUSED', reason: d.reason, user: user, status: status });
+  return { ok: false, status: status, reason: d.reason };
+}
+
+function supplementaryHrApprove(period, population) { return supp_approve_('HR', period, population); }
+function supplementaryAccountsApprove(period, population) { return supp_approve_('ACCOUNTS', period, population); }
+
+/**
+ * Locks the ACCOUNTS_APPROVED supplementary set under a new LOCK_ID (Accounts approver or owner). The rows go to
+ * PAYROLL_LOCKED; an EMP_ID that is already locked for the period x population refuses the lock (EMP_ALREADY_LOCKED).
+ */
+function supplementaryLock(period, population) {
+  guardPeriod_(period);
+  if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
+  supp_requireSheet_();
+  var supp = supp_openSet_(period, population);
+  if (!supp) return { ok: false, reason: 'NO_OPEN_SUPPLEMENTARY', message: 'Run the top-up first' };
+  var user = approval_userEmail_();
+  var status = supp_id_(supp.STATUS).toUpperCase();
+  var ids = suppEmpList_(supp.EMP_IDS);
+  var overlap = supp_alreadyLocked_(period, population, ids);
+  var re = supp_recompute_(period, population, ids);
+  var sheetRows = supp_draftRowsOf_(supp_id_(supp.SUPP_ID));
+  var payable = engine_payableRows_(sheetRows);
+  var d = lockDecision({ status: status, userEmail: user, accountsEmail: getControl('ACCOUNTS_APPROVER_EMAIL', ''),
+    ownerEmail: approval_ownerEmail_(), storedHash: supp.HASH, currentHash: re.hash,
+    draftSheetHash: hashRows(payable, OUTPUT_COLUMNS, engine_sha256Hex_), draftRowCount: payable.length, alreadyLockedEmpIds: overlap });
+  if (!d.ok) {
+    if (d.reason === 'INPUTS_OR_DRAFT_CHANGED') {
+      updateRows(TABS.PAYROLL_SUPPLEMENTARY, [{ row: supp._row, values: supp_resetValues_() }]);
+      audit('SUPP_STATUS_RESET', period, population, { from: status, to: 'DRAFT', reason: d.reason, user: user, suppId: supp.SUPP_ID });
+    }
+    audit('SUPP_LOCK', period, population, { result: 'REFUSED', reason: d.reason, user: user, suppId: supp.SUPP_ID, alreadyLocked: overlap });
+    return { ok: false, status: d.newStatus, reason: d.reason, alreadyLocked: overlap };
+  }
+  var sheet = ensureSheet(TABS.PAYROLL_LOCKED);
+  ensureHeaders(sheet, ['LOCK_ID'].concat(OUTPUT_COLUMNS));
+  var taken = readObjects(sheet).map(function (r) { return r.LOCK_ID; });
+  readObjects(TABS.PAYROLL_PERIOD_CATEGORY).forEach(function (r) { taken.push(r.LOCK_ID); });
+  var lockId = suppLockIdFor(period, population, new Date(), taken);
+  var rows = buildLockRows(payable, lockId, period, population);
+  appendObjects(sheet, rows);
+  if (!isSheetProtected(sheet)) protectSheet(sheet, 'HR OS PAYROLL_LOCKED (append-only, owner edit)');
+  updateRows(TABS.PAYROLL_SUPPLEMENTARY, [{ row: supp._row, values: { STATUS: 'LOCKED', LOCK_ID: lockId, LOCKED_AT: nowIso_() } }],
+    { textHeaders: ['LOCK_ID'] });
+  audit('SUPP_LOCK', period, population, { result: 'LOCKED', lockId: lockId, suppId: supp.SUPP_ID, rows: rows.length, user: user, hash: re.hash });
+  return { ok: true, status: 'LOCKED', lockId: lockId, suppId: supp_id_(supp.SUPP_ID), rows: rows.length, empIds: ids,
+    note: 'Generate payslips for this LOCK_ID: HR OS > Payslips > Generate payslips (enter the LOCK_ID)' };
 }
 
 // ===== 50_Payslips.gs =====
@@ -6721,6 +7762,9 @@ function onOpen() {
       .addItem('Create attendance forms', 'menuCreateForms')
       .addItem('Refresh form rosters', 'menuRefreshRosters')
       .addItem('Install triggers', 'menuInstallTriggers'))
+    .addSubMenu(ui.createMenu('Employees')
+      .addItem('Add or update employee', 'menuEmployeeDialog')
+      .addItem('Mark employee exit', 'menuEmployeeExit'))
     .addSubMenu(ui.createMenu('Month')
       .addItem('Prepare month...', 'menuPrepareMonth')
       .addItem('Open monthly attendance register', 'menuOpenRegister')
@@ -6747,7 +7791,12 @@ function onOpen() {
       .addItem('HR approve (population)', 'menuHrApprove')
       .addItem('Accounts approve (population)', 'menuAccountsApprove')
       .addItem('Lock period (population)', 'menuLock')
-      .addItem('Reopen (owner only, before lock)', 'menuReopen'))
+      .addItem('Reopen (owner only, before lock)', 'menuReopen')
+      .addSeparator()
+      .addItem('Run top-up for released employees...', 'menuSuppRun')
+      .addItem('Top-up: HR approve...', 'menuSuppHrApprove')
+      .addItem('Top-up: Accounts approve...', 'menuSuppAccountsApprove')
+      .addItem('Top-up: lock...', 'menuSuppLock'))
     .addSubMenu(ui.createMenu('Payslips')
       .addItem('Generate payslips (locked only)', 'menuGeneratePayslips')
       .addItem('Queue emails', 'menuQueueEmails')
@@ -6865,8 +7914,9 @@ function menuApproveSalary() {
     var p = askPeriod_('Approve salary structure'); if (!p) return null;
     var pop = askPopulation_('Approve salary structure'); if (!pop) return null;
     var plan = planSalaryStructureApproval(p, pop);
-    var text = 'Period ' + p + ', ' + pop + ': ' + plan.employees + ' active employee(s), ' + plan.withEffectiveRow +
-      ' with an effective SALARY_STRUCTURE row.\n' + plan.toStamp.length + ' row(s) will be stamped HR-approved, ' +
+    var list = plan.toStamp.slice(0, 40).map(function (t) { return t.empId + ' (from ' + (t.effectiveFrom || '?') + ')'; }).join(', ');
+    var text = 'Period ' + p + ', ' + pop + ' (' + plan.tab + '): ' + plan.employees + ' active employee(s), ' + plan.withEffectiveRow +
+      ' with an effective row.\n' + plan.toStamp.length + ' pending row(s) will be stamped HR-approved' + (list ? ': ' + list : '') + '; ' +
       plan.alreadyApproved + ' already approved' + (plan.withoutRow.length ? ', ' + plan.withoutRow.length + ' employee(s) have NO structure (' + plan.withoutRow.slice(0, 15).join(', ') + ')' : '') +
       '.\nYou must be logged in as HR_APPROVER_EMAIL. Stamp now?';
     if (!confirm_('Approve salary structure', text)) return 'Cancelled - nothing was stamped.';
@@ -6895,9 +7945,25 @@ function menuApproveCategory() {
     return approveCategoryConfig();
   });
 }
-function menuGeneratePayslips() { popAction_('Generate payslips', 'generatePayslips', 8); }
-function menuQueueEmails() { run_('Queue emails', function () { var p = askPeriod_('Queue emails'); return p && callStage_('queuePayslipEmails', 8, [p]); }); }
-function menuSendEmails() { run_('Send queued emails', function () { var p = askPeriod_('Send queued emails'); return p && callStage_('sendQueuedEmails', 8, [p]); }); }
+function menuEmployeeDialog() { run_('Add or update employee', function () { return empOpenDialog('ADD'); }); }
+function menuEmployeeExit() { run_('Mark employee exit', function () { return empOpenDialog('EXIT'); }); }
+function menuSuppRun() { popAction_('Run top-up', 'supplementaryRun', 9); }
+function menuSuppHrApprove() { popAction_('Top-up: HR approve', 'supplementaryHrApprove', 9); }
+function menuSuppAccountsApprove() { popAction_('Top-up: Accounts approve', 'supplementaryAccountsApprove', 9); }
+function menuSuppLock() { popAction_('Top-up: lock', 'supplementaryLock', 9); }
+/** Period, population and an optional LOCK_ID (blank = the population's main lock; a top-up lock id for a supplementary set). */
+function lockAction_(title, fn) {
+  run_(title, function () {
+    var p = askPeriod_(title); if (!p) return null;
+    var pop = askPopulation_(title); if (!pop) return null;
+    var lid = ask_(title, 'LOCK_ID (blank = the main lock of ' + p + ' x ' + pop + '; enter a top-up LOCK_ID for a supplementary set)');
+    if (lid === null) return null;
+    return callStage_(fn, 8, [p, pop, lid || undefined]);
+  });
+}
+function menuGeneratePayslips() { lockAction_('Generate payslips', 'generatePayslips'); }
+function menuQueueEmails() { lockAction_('Queue emails', 'queuePayslipEmails'); }
+function menuSendEmails() { lockAction_('Send queued emails', 'sendQueuedEmails'); }
 
 // ===== 99_Audit.gs =====
 /**

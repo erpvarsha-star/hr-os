@@ -140,15 +140,25 @@ function ensureHeaders(sheet, wanted) {
   return { written: [], added: missing };
 }
 
-/** Warning-style protection that only the owner can edit through. Never removes existing protections. */
-function protectSheet(sheet, description) {
+/**
+ * Protection that only the script owner (effective user) can edit through, plus the optional extra editors (approver
+ * emails: a script run by a non-editor cannot write a protected tab). Never removes existing protections.
+ */
+function protectSheet(sheet, description, extraEditorEmails) {
   var protection = sheet.protect().setDescription(description || 'HR OS protected');
   try {
     var me = Session.getEffectiveUser();
     protection.addEditor(me);
+    var keep = {};
+    keep[String(me.getEmail()).toLowerCase()] = true;
+    (extraEditorEmails || []).forEach(function (e) {
+      var em = String(e == null ? '' : e).trim();
+      if (!em) return;
+      try { protection.addEditor(em); keep[em.toLowerCase()] = true; } catch (e1) { /* not a valid Google account: skip */ }
+    });
     var editors = protection.getEditors();
     for (var i = 0; i < editors.length; i++) {
-      if (editors[i].getEmail() !== me.getEmail()) protection.removeEditor(editors[i]);
+      if (!keep[String(editors[i].getEmail()).toLowerCase()]) protection.removeEditor(editors[i]);
     }
     if (protection.canDomainEdit()) protection.setDomainEdit(false);
   } catch (e) {

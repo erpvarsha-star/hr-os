@@ -150,8 +150,8 @@ const SpreadsheetApp = {
 const Session = { getActiveUser: me, getEffectiveUser: me };
 const LockService = { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) };
 
-const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '12_Register.gs', '13_RegisterPage.gs',
-  '20_Feeds.gs', '21_Leave.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '50_Payslips.gs',
+const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '12_Register.gs', '13_RegisterPage.gs', '14_Employees.gs',
+  '20_Feeds.gs', '21_Leave.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '42_Supplementary.gs', '50_Payslips.gs',
   '51_Email.gs', '90_Menu.gs', '99_Audit.gs'];
 const c = loadGs(FILES, Object.assign({ Utilities, SpreadsheetApp, HtmlService, Session, LockService }, env.google));
 
@@ -334,8 +334,15 @@ test('2. setup twice: the second run changes nothing (only one more SETUP audit 
   assert.equal(env.sheets.PAYROLL_LOCKED.protections.length, 1, 'protection not duplicated');
 });
 
-test('3. owner sets PAYSLIP_FOLDER_ID, prepareMonth adds 4 period rows + 9 feed rows (idempotent), HR enters working days', () => {
+test('3. owner sets PAYSLIP_FOLDER_ID and signs off the category config, prepareMonth adds 4 period rows + 9 feed rows (idempotent), HR enters working days', () => {
   c.setControl('PAYSLIP_FOLDER_ID', 'PRIVATE_FOLDER', 'private folder');
+  assert.equal(rowsOf('PAYROLL_CATEGORY_CONFIG').length, 4, 'setup seeded the four built-in categories');
+  assert.ok(rowsOf('PAYROLL_CATEGORY_CONFIG').every((r) => r.APPROVED_BY === ''), 'unsigned until the owner approves');
+  env.user = HR;
+  assert.equal(plain(c.approveCategoryConfig()).reason, 'USER_NOT_OWNER');
+  env.user = 'yash.munot@gmail.com';
+  assert.equal(plain(c.approveCategoryConfig()).stamped, 4);
+  env.user = HR;
   const r = plain(c.prepareMonth(P));
   assert.deepEqual([r.periodRowsAdded, r.feedRowsAdded], [4, 9]);
   assert.deepEqual(plain(c.prepareMonth(P)), Object.assign({}, r, { periodRowsAdded: 0, feedRowsAdded: 0 }));
@@ -455,7 +462,7 @@ test('5b. approval gates: unsigned SALARY_STRUCTURE / STATUTORY_CONFIG block; HR
   assert.deepEqual(plain(c.approveStatutoryConfig(P)), { ok: false, reason: 'USER_NOT_ACCOUNTS_APPROVER' });
   assert.ok(rowsOf('SALARY_STRUCTURE').every((r) => r.HR_APPROVED_BY === ''));
   assert.ok(rowsOf('STATUTORY_CONFIG').every((r) => r.APPROVED_BY === ''));
-  assert.throws(() => c.approveSalaryStructure(P, 'CONSULTANT'), /STAFF and PERMANENT_WORKER/);
+  assert.throws(() => c.approveSalaryStructure(P, 'NOPE'), /Unknown population/);
   // counts (what the menu shows) then stamp: only the rows effective for September (the October raise stays unsigned)
   const plan = plain(c.planSalaryStructureApproval(P, 'STAFF'));
   assert.deepEqual([plan.employees, plan.withEffectiveRow, plan.toStamp.length, plan.alreadyApproved, plan.withoutRow], [3, 2, 2, 0, ['T-S3']]);

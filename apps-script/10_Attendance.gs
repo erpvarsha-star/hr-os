@@ -353,7 +353,9 @@ function periodPopulationsOpen_(period) {
   var st = getPeriodStatusMap(period);
   var open = [], locked = [];
   populationList().forEach(function (p) { (st[p] === PERIOD_STATUS.LOCKED ? locked : open).push(p); });
-  return { open: open, locked: locked, status: st };
+  var scope = lockScope_(period);
+  // isLocked(pop, empId): the population is LOCKED and the employee is not a held-and-unlocked one (see lockScope_)
+  return { open: open, locked: locked, status: st, scope: scope, isLocked: scope.isLocked };
 }
 
 /**
@@ -361,10 +363,12 @@ function periodPopulationsOpen_(period) {
  * With a period, employees whose DOJ is after the period end are left out (roster.joinersExcluded); an ambiguous or
  * unparseable DOJ keeps the employee in with DOJ_WARN set (roster.dojWarnings).
  */
-function buildRoster(period) {
+function buildRoster(period, opts) {
   var rows = readObjects(TABS.EMPLOYEE_MASTER), seen = {}, roster = [], duplicates = [], excluded = [], warnings = [];
   var end = period ? periodEnd(period) : '';
-  var start = period ? periodStart(period) : '';
+  // without a period, opts.asOf (ISO date, e.g. today or the date of a daily response) keeps leavers whose last working day
+  // is on / after it (still working their notice); without either, only Active employees are listed
+  var start = period ? periodStart(period) : String((opts && opts.asOf) || '');
   rows.forEach(function (r) {
     var active = String(r.STATUS_AS_SOURCE || '').trim().toLowerCase() === 'active';
     var pop = String(r.PAYROLL_CATEGORY || '').trim();
@@ -423,7 +427,7 @@ function refreshAttendanceWorkingDays_(period) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var cat = String(r.PAYROLL_CATEGORY || '').trim();
-    if (pp.locked.indexOf(cat) >= 0) return;
+    if (pp.isLocked(cat, r.EMP_ID)) return;
     var want = wd[cat];
     if (want === undefined || want === null || want === '') return;
     var have = r.WORKING_DAYS;
@@ -441,7 +445,7 @@ function prepareMonthlyAttendance(period) {
   var roster = buildRoster(period), wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
   var rows = [], skipped = 0;
   roster.forEach(function (e) {
-    if (pp.locked.indexOf(e.PAYROLL_CATEGORY) >= 0) { skipped++; return; }
+    if (pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID)) { skipped++; return; }
     if (existing[e.EMP_ID]) return;
     rows.push({ PAYROLL_MONTH: period, EMP_ID: e.EMP_ID, PAYROLL_CATEGORY: e.PAYROLL_CATEGORY,
       WORKING_DAYS: wd[e.PAYROLL_CATEGORY] === undefined ? '' : wd[e.PAYROLL_CATEGORY],
@@ -465,7 +469,7 @@ function generateMonthlyAttendance(period) {
     return toIsoDate(r.DATE).slice(0, 7) === period;
   });
   if (!daily.length) throw new Error('No ATTENDANCE_DAILY rows for ' + period + ' - use prepareMonthlyAttendance for monthly entry');
-  var roster = buildRoster(period).filter(function (e) { return pp.locked.indexOf(e.PAYROLL_CATEGORY) < 0; });
+  var roster = buildRoster(period).filter(function (e) { return !pp.isLocked(e.PAYROLL_CATEGORY, e.EMP_ID); });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var records = aggregateDaily(daily, period, roster, holidays, getWeeklyOff(SITE_NASHIK));
   var wd = workingDaysFor_(period), existing = existingAttendanceByEmp_(period);
@@ -517,7 +521,10 @@ function generateMonthlyAttendance(period) {
 function approveAttendance(period, population) {
   guardPeriod_(period);
   if (!isKnownPopulation(population)) throw new Error('Unknown population "' + population + '"');
-  assertNotLocked(period, population);
+  // a LOCKED population refuses attendance approval, except for employees that were held in the locked run and are not
+  // locked yet (they are approved so that a supplementary run can pay them)
+  var scope = lockScope_(period), lockedPop = !!scope.pops[population];
+  if (lockedPop && !Object.keys(scope.open).length) assertNotLocked(period, population);
   var user = '';
   try { user = Session.getActiveUser().getEmail(); } catch (e) { user = ''; }
   if (!user) throw new Error('Cannot determine active user email - approval refused');
@@ -537,6 +544,7 @@ function approveAttendance(period, population) {
   }
   readObjects(TABS.INPUT_ATTENDANCE).forEach(function (r) {
     if (normalizePeriod(r.PAYROLL_MONTH) !== period || String(r.PAYROLL_CATEGORY).trim() !== population) return;
+    if (scope.isLocked(population, r.EMP_ID)) return;
     if (String(r.APPROVAL_STATUS || '').trim().toUpperCase() === 'APPROVED') return;
     var problems = validateAttendanceRowForApproval(r);
     if (openDispute[String(r.EMP_ID).trim()]) problems.push('attendance dispute open (daily vs register): see ATTENDANCE_COMPARISON');
@@ -584,14 +592,14 @@ function ingestAttendanceResponse_(parsed, site) {
   if (!date) throw new Error('Response has no valid date');
   var period = date.slice(0, 7);
   guardPeriod_(period);
-  var roster = buildRoster();
+  var roster = buildRoster(undefined, { asOf: date });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var rows = normalizeAttendanceResponse(parsed, roster, holidays, site, getWeeklyOff(site));
-  var st = getPeriodStatusMap(period);
+  var scope = lockScope_(period);
   var popOf = {};
   roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });
   rows = rows.map(function (r) {
-    if (r.STATUS === 'VALID' && st[popOf[r.EMP_ID]] === PERIOD_STATUS.LOCKED) {
+    if (r.STATUS === 'VALID' && scope.isLocked(popOf[r.EMP_ID], r.EMP_ID)) {
       r.STATUS = 'REJECTED'; r.REJECT_REASON = 'PERIOD_LOCKED';
     }
     return r;
