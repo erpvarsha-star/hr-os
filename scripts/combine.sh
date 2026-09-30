@@ -6,7 +6,10 @@ mkdir -p deploy
 # The version line is the date plus the git short hash of HEAD at combine time, i.e. the commit BEFORE the one that
 # contains the combined file. That is acceptable: it still identifies the source the file was built from.
 VERSION="$(date +%Y-%m-%d) $(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-{ echo "var HROS_VERSION = '$VERSION';"
-  echo "// VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)"
-  for f in $(ls apps-script/*.gs | sort); do echo; echo "// ===== $(basename "$f") ====="; cat "$f"; done; } > deploy/HR_OS.gs
+BODY="$(mktemp)"
+{ echo "// VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)"
+  for f in $(ls apps-script/*.gs | sort); do echo; echo "// ===== $(basename "$f") ====="; cat "$f"; done; } > "$BODY"
+# Keep the existing stamp when the code is unchanged, so the owner's About check does not report a false mismatch.
+if [ -f deploy/HR_OS.gs ] && tail -n +2 deploy/HR_OS.gs | cmp -s - "$BODY"; then rm -f "$BODY"; else
+  { echo "var HROS_VERSION = '$VERSION';"; cat "$BODY"; } > deploy/HR_OS.gs; rm -f "$BODY"; fi
 cp apps-script/appsscript.json deploy/appsscript.json

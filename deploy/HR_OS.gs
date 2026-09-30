@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-09-30 4e645c6';
+var HROS_VERSION = '2026-09-30 6781643';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
