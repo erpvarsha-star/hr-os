@@ -251,7 +251,7 @@ function seedWorld() {
     L({ 'Submission Type': 'Apply For Leave', 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-08', 'Leave End Date': '2026-09-09', 'Approval Decision': '', 'Case No': '3001', Timestamp: '2026-09-01 09:00:00' }),
     L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-08', 'Leave End Date': '2026-09-09', 'Approval Decision': 'Approved  ', 'Approved Number of days': 2, 'Case No': '3001', Timestamp: '2026-09-02 09:00:00' }),
     L({ 'Submission Type': APP, 'Employee ID': 'T-S2', 'Leave Type': 'casual Leave (CL)', 'Leave Start Date': '2026-09-21', 'Leave End Date': '2026-09-21' }),
-    L({ 'Submission Type': APP, 'Employee ID': 'T-S2', 'Leave Type': 'MEdical Leave (SL)', 'Leave Start Date': '2026-09-22', 'Leave End Date': '2026-09-22', 'Leave Start Date Half': 'First Half' }),
+    L({ 'Submission Type': APP, 'Employee ID': 'T-S2', 'Leave Type': 'MEdical Leave (SL)', 'Leave Start Date': '2026-09-22', 'Leave End Date': '2026-09-22', 'Leave Start Date Half': 'Second Half' }),
     L({ 'Submission Type': APP, 'Employee ID': 'T-W1', 'Leave Type': 'Outdoor Duty (OD)', 'Leave Start Date': '2026-09-02', 'Leave End Date': '2026-09-03' }),
     L({ 'Submission Type': APP, 'Employee ID': 'T-W1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-24', 'Leave End Date': '2026-09-24' }),
     L({ 'Submission Type': APP, 'Employee ID': 'T-W2', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-09-23', 'Leave End Date': '2026-09-23' }),
@@ -261,8 +261,9 @@ function seedWorld() {
     L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-07-01', 'Leave End Date': '2026-07-02' }), // history
     L({ 'Submission Type': APP, 'Employee ID': 'T-S1', 'Leave Type': 'Earned Leave (EL)', 'Leave Start Date': '2026-03-10', 'Leave End Date': '2026-03-05' }), // old bad row must not block September
     L({ 'Submission Type': '', 'Employee ID': '', 'Approval Decision': '' })]);
-  mkLeave('Leave Databse Staff', [['Leave database 2026'], ['Employee ID', 'Name', 'EL Available', 'CL Available', 'SL Available', 'Total Available'],
-    ['T-S1', 'x', 12, 4.5, 6, 22.5], ['T-S2', 'x', 3, 1, 0, 4]]);
+  // real layout: EMP CODE in row 1, the EL/CL/SL Available labels in row 3 (further right), sub headers in row 4, data from row 5
+  mkLeave('Leave Databse Staff', [['EMP CODE', 'EMP NAME', 'DOJ'], [], ['', '', '', 'EL Available', 'CL Available', 'SL Available', 'Total Available'],
+    ['', '', '', 'EL', 'CL', 'SL', 'TOTAL'], ['T-S1', 'x', '', 12, 4.5, 6, 22.5], ['T-S2', 'x', '', 3, 1, 0, 4]]);
   mkLeave('Leave Dadabase PW', [['Employee', 'Blocks by payroll cycle'], ['T-W1', 'x']]); // layout not identifiable: worker balances stay blank
   leaveBefore = JSON.stringify(Object.keys(leaveSheets).map((k) => leaveSheets[k].data));
   put('CANTEEN_FORM_RESPONSES', ['Timestamp', 'Payroll Month', 'Employee ID', 'Deduction Amount (INR)', 'Submission Type'], [
@@ -599,16 +600,16 @@ test('9. payslips: STAFF + PERMANENT_WORKER generated with rates from salary str
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /BASIC_RATE: 8,000/.test(t) && /VDA_RATE: 2,575/.test(t) && /HEAT_ALLOWANCE_RATE: 150/.test(t) && /PRODUCTION_ALLOWANCE_RATE: 8,500/.test(t)));
   texts.forEach((t) => assert.ok(!/\{\{/.test(t)));
   // leave balances come read-only from the leave spreadsheet's yearly balance tab (staff); the worker tab layout is not identifiable -> blank + audit note
-  assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /EL_AVAILABLE: 12\b/.test(t) && /CL_AVAILABLE: 4.5/.test(t) && /SL_AVAILABLE: 6\b/.test(t)));
-  assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && /EL_AVAILABLE: 3\b/.test(t) && /CL_AVAILABLE: 1\b/.test(t) && /SL_AVAILABLE: 0\b/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /EL_AVAILABLE: 12\.0/.test(t) && /CL_AVAILABLE: 4\.5/.test(t) && /SL_AVAILABLE: 6\.0/.test(t)));
+  assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && /EL_AVAILABLE: 3\.0/.test(t) && /CL_AVAILABLE: 1\.0/.test(t) && /SL_AVAILABLE: 0\.0/.test(t)));
   texts.filter((t) => /EMP_ID: T-W/.test(t)).forEach((t) => assert.ok(!/(EL_AVAILABLE|CL_AVAILABLE|SL_AVAILABLE): \S/.test(t), 'worker balances left blank, not guessed'));
   assert.match(audits(), /leaveBalancesMatched.*could not identify .*Leave Dadabase PW/);
   // identity printed from EMPLOYEE_STATUTORY_IDS (T-S2 has no row there -> blank)
   assert.ok(texts.some((t) => /EMP_ID: T-S1/.test(t) && /UAN: 100000000001/.test(t) && /PAN: FAKEPAN01A/.test(t) && /ESI_NO: FAKEESI01/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /UAN: 100000000002/.test(t) && /PAN: FAKEPAN02B/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-S2/.test(t) && !/UAN: \S/.test(t) && !/PAN: \S/.test(t)));
-  // production pay on the worker slips: 90% -> 8,500 paid; offset token 0
-  assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /PRODUCTION_ALLOWANCE: 8,500/.test(t) && /PRODUCTION_ALLOWANCE_OFFSET: 0/.test(t)));
+  // production pay on the worker slips: 90% -> 8,500 paid; offset token blank (zero line)
+  assert.ok(texts.some((t) => /EMP_ID: T-W1/.test(t) && /PRODUCTION_ALLOWANCE: 8,500\.00/.test(t) && /PRODUCTION_ALLOWANCE_OFFSET:[ ]*(\n|$)/.test(t)));
   assert.ok(texts.some((t) => /EMP_ID: T-W2/.test(t) && /PRODUCTION_ALLOWANCE: 3,000/.test(t)));
   // identity data is never written to any other tab or to the audit log
   Object.values(env.sheets).filter((sh) => sh.name !== 'EMPLOYEE_STATUTORY_IDS').forEach((sh) => {

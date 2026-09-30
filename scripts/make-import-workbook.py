@@ -608,6 +608,11 @@ SCHEMA = json.loads(r"""{
    "one-time catch-up: Aug salary paid OT to 25-Aug"
   ],
   [
+   "LEAVE_WINDOW_START_2026-09",
+   "2026-08-26",
+   "one-time catch-up: Aug payroll counted leave to 25-Aug; default leave window = calendar month"
+  ],
+  [
    "OWNER_APPROVER_EMAIL",
    "yash.munot@gmail.com",
    "confirm owner email (owner approval of attendance disputes)"

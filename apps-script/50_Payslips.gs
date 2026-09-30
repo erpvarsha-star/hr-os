@@ -13,27 +13,45 @@ var PAYSLIP_CONTINUE_FN = 'continuePayslips_';
 
 // ---------------------------------------------------------------- pure formatting
 
-/** 1234567 -> '12,34,567' (Indian grouping, 0 decimals, half away from zero). Blank -> '0'. Non-numeric throws. */
+/** 1234567.5 -> '12,34,567.50' (Indian grouping, always 2 decimals, half away from zero). Blank -> '0.00'. Non-numeric throws. */
 function payslipMoney(v) {
-  if (v === '' || v == null) return '0';
+  if (v === '' || v == null) return '0.00';
   var n = Number(v);
   if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric money value "' + v + '"');
-  var neg = n < 0;
-  var s = String(Math.floor(Math.abs(n) + 0.5));
+  var cents = Math.floor(Math.abs(n) * 100 + 0.5 + 1e-9);
+  var s = String(Math.floor(cents / 100)), p = cents % 100;
   if (s.length > 3) {
     var last3 = s.slice(-3), rest = s.slice(0, -3);
     s = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + ',' + last3;
   }
-  return (neg && s !== '0' ? '-' : '') + s;
+  return (n < 0 && cents !== 0 ? '-' : '') + s + '.' + pad2_(p);
 }
 
-/** Days / hours: up to 1 decimal, no trailing zero. Blank -> '0'. */
+/** Earning / deduction LINE: payslipMoney, but BLANK when the value is zero (or blank). Totals use payslipMoney (always shown). */
+function payslipMoneyLine(v) {
+  var t = payslipMoney(v);
+  return t === '0.00' ? '' : t;
+}
+
+/** Days / hours: always 1 decimal ('31.0', '0.5', '-12.0'). Blank -> '0.0'. */
 function payslipDays(v) {
-  if (v === '' || v == null) return '0';
+  if (v === '' || v == null) return '0.0';
   var n = Number(v);
   if (typeof v === 'boolean' || !isFinite(n)) throw new Error('Non-numeric days value "' + v + '"');
   var r = Math.round(Math.abs(n) * 10) / 10;
-  return (n < 0 && r !== 0 ? '-' : '') + String(r);
+  return (n < 0 && r !== 0 ? '-' : '') + r.toFixed(1);
+}
+
+/**
+ * DOJ -> 'DD-MMM-YYYY' (05-Jun-2005). Date and ISO exact; numeric text is read DAY-FIRST (dd/mm/yyyy); d-Mon-yy and
+ * d-Mon-yyyy accepted. Unparseable -> '' (never garbage).
+ */
+function payslipDoj(v) {
+  var iso = parseDojDayFirst_(v);
+  if (!iso) return '';
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  var mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][+m[2] - 1];
+  return m[3] + '-' + mon + '-' + m[1];
 }
 
 /** '2026-09' -> 'September 2026'. */
@@ -43,7 +61,18 @@ function payslipPeriodLabel(period) {
 
 // ---------------------------------------------------------------- token maps
 
+/** Always-shown money (totals, gross, net). */
 function pslM_(col) { return function (row) { return payslipMoney(row[col]); }; }
+/** Earning / deduction line: blank when zero. */
+function pslL_(col) { return function (row) { return payslipMoneyLine(row[col]); }; }
+/** Sum of several locked-row columns as a line (blank when zero). */
+function pslSumL_(cols) {
+  return function (row) {
+    var t = 0;
+    cols.forEach(function (c) { var n = Number(row[c] === '' || row[c] == null ? 0 : row[c]); if (!isFinite(n)) throw new Error('Non-numeric money value in ' + c); t += n; });
+    return payslipMoneyLine(t);
+  };
+}
 function pslD_(col) { return function (row) { return payslipDays(row[col]); }; }
 function pslBlank_() { return ''; }
 function pslEmp_(empCol, rowCol) {
@@ -74,7 +103,6 @@ function pslBal_(type) {
 var PAYSLIP_IDENTITY_TOKENS = { UAN: 'UAN', ESI_NO: 'ESI_NO', PAN: 'PAN', BANK_NAME: 'BANK_NAME', BANK_ACCOUNT: 'BANK_ACCOUNT',
   ACCOUNT_NO: 'BANK_ACCOUNT', IFSC: 'IFSC' };
 function pslIdent_(field) { return function (row, emp, sal, ident) { return ident && ident[field] ? String(ident[field]) : ''; }; }
-function pslZero_() { return '0'; }
 
 /**
  * *_RATE tokens show the employee's fixed monthly structure effective for the period (SALARY_STRUCTURE, picked with
@@ -91,9 +119,12 @@ var PAYSLIP_RATE_COLUMNS = {
 function pslRate_(col) {
   return function (row, emp, sal) {
     if (!sal) throw new Error('No SALARY_STRUCTURE row effective for ' + row.PERIOD + ' (' + col + ')');
-    return payslipMoney(sal[col]);
+    return payslipMoneyLine(sal[col]);
   };
 }
+
+/** Locked-row columns folded into the OTHER_ALLOWANCE token (earnings with no template line of their own). */
+var PAYSLIP_OTHER_ALLOWANCE_COLS = ['OTHER_ALLOWANCE', 'PRODUCTION_INCENTIVE', 'OT_EXTRA_WORK'];
 
 function pslCommonMap_() {
   var m = {
@@ -102,20 +133,22 @@ function pslCommonMap_() {
     EMP_ID: function (row, emp) { return String((emp && emp.EMP_ID) || row.EMP_ID || ''); },
     DEPARTMENT: pslEmp_('DEPARTMENT', 'DEPARTMENT'),
     DESIGNATION: pslEmp_('DESIGNATION', 'DESIGNATION'),
-    DOJ: pslEmp_('DOJ_AS_SOURCE'),
+    DOJ: function (row, emp) { return payslipDoj(emp && emp.DOJ_AS_SOURCE); },
     PRESENT_DAYS: pslD_('PRESENT_DAYS'), EL_DAYS: pslD_('EL'), CL_DAYS: pslD_('CL'), SL_DAYS: pslD_('SL'),
     PH_DAYS: pslD_('PH_DAYS'), DAYS_PAYABLE: pslD_('WORKED_PAYABLE_DAYS'),
     BASIC_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.BASIC_RATE), HRA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HRA_RATE),
     CONVEYANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.CONVEYANCE_RATE),
     EDUCATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.EDUCATION_RATE), WASHING_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.WASHING_RATE),
-    BASIC: pslM_('BASIC'), HRA: pslM_('HRA'), CONVEYANCE: pslM_('CONVEYANCE'), EDUCATION: pslM_('EDUCATION'),
-    WASHING: pslM_('WASHING'), ARREARS: pslM_('ARREARS'),
-    OT_HOURS: pslD_('OT_HOURS'), OT_AMOUNT: pslM_('OT_AMOUNT'),
-    DISPATCH_INCENTIVE: pslM_('DISPATCH_INCENTIVE'), OTHER_ALLOWANCE: pslM_('OTHER_ALLOWANCE'),
+    BASIC: pslL_('BASIC'), HRA: pslL_('HRA'), CONVEYANCE: pslL_('CONVEYANCE'), EDUCATION: pslL_('EDUCATION'),
+    WASHING: pslL_('WASHING'), ARREARS: pslL_('ARREARS'),
+    OT_HOURS: pslD_('OT_HOURS'), OT_AMOUNT: pslL_('OT_AMOUNT'),
+    DISPATCH_INCENTIVE: pslL_('DISPATCH_INCENTIVE'),
+    // earnings that have no line of their own on the slip are folded in so the printed lines add up to the gross (item below)
+    OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS),
     GROSS_EARNINGS: pslM_('TOTAL_EARNINGS'),
-    PF_EMPLOYEE: pslM_('PF_EMPLOYEE'), ESI_EMPLOYEE: pslM_('ESI_EMPLOYEE'), PROF_TAX: pslM_('PT'),
-    MLWF: pslM_('MLWF'), SALARY_ADVANCE: pslM_('ADVANCE'), SOCIETY: pslM_('SOCIETY'), CANTEEN: pslM_('CANTEEN'),
-    OTHER_DEDUCTION: pslM_('OTHER_DEDUCTION'), TOTAL_DEDUCTIONS: pslM_('TOTAL_DEDUCTIONS'),
+    PF_EMPLOYEE: pslL_('PF_EMPLOYEE'), ESI_EMPLOYEE: pslL_('ESI_EMPLOYEE'), PROF_TAX: pslL_('PT'),
+    MLWF: pslL_('MLWF'), SALARY_ADVANCE: pslL_('ADVANCE'), SOCIETY: pslL_('SOCIETY'), CANTEEN: pslL_('CANTEEN'),
+    OTHER_DEDUCTION: pslL_('OTHER_DEDUCTION'), TOTAL_DEDUCTIONS: pslM_('TOTAL_DEDUCTIONS'),
     NET_PAY: pslM_('NET_PAY'),
     NET_PAY_WORDS: function (row) { return amountToIndianWords(Number(row.NET_PAY || 0)); }
   };
@@ -131,8 +164,10 @@ var PAYSLIP_TOKEN_MAP_STAFF = pslExtend_(pslCommonMap_(), {
   MEDICAL_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.MEDICAL_RATE), PRO_DEV_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRO_DEV_RATE),
   COMMUNICATION_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.COMMUNICATION_RATE),
   UNIFORM_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.UNIFORM_RATE),
-  MEDICAL: pslM_('MEDICAL'), PRO_DEV: pslM_('PRO_DEV'), COMMUNICATION: pslM_('COMMUNICATION'),
-  UNIFORM: pslM_('UNIFORM'), TDS: pslM_('TDS')
+  MEDICAL: pslL_('MEDICAL'), PRO_DEV: pslL_('PRO_DEV'), COMMUNICATION: pslL_('COMMUNICATION'),
+  UNIFORM: pslL_('UNIFORM'), TDS: pslL_('TDS'),
+  // the STAFF template has no LEAVE_ENCASHMENT line: it is printed inside OTHER_ALLOWANCE
+  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS.concat(['LEAVE_ENCASHMENT']))
 });
 
 var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
@@ -140,8 +175,9 @@ var PAYSLIP_TOKEN_MAP_WORKER = pslExtend_(pslCommonMap_(), {
   HEAT_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.HEAT_ALLOWANCE_RATE),
   VDA_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.VDA_RATE),
   PRODUCTION_ALLOWANCE_RATE: pslRate_(PAYSLIP_RATE_COLUMNS.PRODUCTION_ALLOWANCE_RATE),
-  HEAT_ALLOWANCE: pslM_('HEAT'), VDA: pslM_('VDA'), PRODUCTION_ALLOWANCE: pslM_('PRODUCTION_ALLOWANCE'),
-  PRODUCTION_ALLOWANCE_OFFSET: pslZero_, LEAVE_ENCASHMENT: pslM_('LEAVE_ENCASHMENT')
+  HEAT_ALLOWANCE: pslL_('HEAT'), VDA: pslL_('VDA'), PRODUCTION_ALLOWANCE: pslL_('PRODUCTION_ALLOWANCE'),
+  PRODUCTION_ALLOWANCE_OFFSET: pslL_('EFFICIENCY_DEDUCTION'), LEAVE_ENCASHMENT: pslL_('LEAVE_ENCASHMENT'),
+  OTHER_ALLOWANCE: pslSumL_(PAYSLIP_OTHER_ALLOWANCE_COLS)
 });
 
 /** Template key (STAFF | WORKER) of a category: PAYROLL_CATEGORY_CONFIG.PAYSLIP_TEMPLATE_KEY, else the built-in default. */

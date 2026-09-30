@@ -158,6 +158,7 @@ var HROS_CONTROL_DEFAULTS = [
   ['OT_SOURCE_SPREADSHEET_ID', '', 'Blank = read the OT form responses from a local tab of this spreadsheet; set only to read an external response spreadsheet'],
   ['OT_SOURCE_TAB', 'OT_FORM_RESPONSES', 'OT form-response tab (local; falls back to Overtime_Form if absent). With an external ID: the tab there (default Form Responses 1)'],
   ['OT_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug salary paid OT to 25-Aug'],
+  ['LEAVE_WINDOW_START_2026-09', '2026-08-26', 'one-time catch-up: Aug payroll counted leave to 25-Aug; default leave window = calendar month'],
   ['OWNER_APPROVER_EMAIL', 'yash.munot@gmail.com', 'confirm owner email (owner approval of attendance disputes)'],
   ['REGISTER_ENTRY_EMAILS', '', 'Extra people (comma separated) who may submit the monthly attendance register; HR_APPROVER_EMAIL and OWNER_APPROVER_EMAIL always may'],
   ['LEAVE_SOURCE_SPREADSHEET_ID', '1pwVE0XKqAhAKHbyqtlF9GzfuGnidnZuw2zKbtMjUz9Q', 'Leave application spreadsheet (read-only; give the script runner view access). Blank = read a local tab of this spreadsheet'],

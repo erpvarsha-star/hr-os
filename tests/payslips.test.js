@@ -130,18 +130,31 @@ test('templateTokenCheck fails closed on unknown token', () => {
 
 test('Indian money and days formatting', () => {
   const c = load(null);
-  assert.equal(c.payslipMoney(123456), '1,23,456');
-  assert.equal(c.payslipMoney(1234567), '12,34,567');
-  assert.equal(c.payslipMoney(999), '999');
-  assert.equal(c.payslipMoney(1000), '1,000');
-  assert.equal(c.payslipMoney(0), '0');
-  assert.equal(c.payslipMoney(''), '0');
-  assert.equal(c.payslipMoney(-12345.5), '-12,346');
-  assert.equal(c.payslipMoney(1234.4), '1,234');
+  assert.equal(c.payslipMoney(123456), '1,23,456.00');
+  assert.equal(c.payslipMoney(123456.5), '1,23,456.50');
+  assert.equal(c.payslipMoney(1234567), '12,34,567.00');
+  assert.equal(c.payslipMoney(999), '999.00');
+  assert.equal(c.payslipMoney(1000), '1,000.00');
+  assert.equal(c.payslipMoney(0), '0.00');
+  assert.equal(c.payslipMoney(''), '0.00');
+  assert.equal(c.payslipMoney(-12345.5), '-12,345.50');
+  assert.equal(c.payslipMoney(1234.4), '1,234.40');
+  assert.equal(c.payslipMoney(0.005), '0.01');
+  assert.equal(c.payslipMoney(1.005), '1.01', 'float guard, half away from zero');
+  assert.equal(c.payslipMoney(-0.001), '0.00');
+  assert.equal(c.payslipMoney(99999999.99), '9,99,99,999.99');
   assert.throws(() => c.payslipMoney('abc'));
+  assert.equal(c.payslipMoneyLine(0), '');
+  assert.equal(c.payslipMoneyLine(''), '');
+  assert.equal(c.payslipMoneyLine(null), '');
+  assert.equal(c.payslipMoneyLine(0.001), '');
+  assert.equal(c.payslipMoneyLine(1500), '1,500.00');
   assert.equal(c.payslipDays(25.5), '25.5');
-  assert.equal(c.payslipDays(30), '30');
+  assert.equal(c.payslipDays(30), '30.0');
   assert.equal(c.payslipDays(2.25), '2.3');
+  assert.equal(c.payslipDays(0), '0.0');
+  assert.equal(c.payslipDays(-12), '-12.0');
+  assert.equal(c.payslipDays(''), '0.0');
   assert.equal(c.payslipPeriodLabel('2026-09'), 'September 2026');
 });
 
@@ -161,49 +174,49 @@ test('replacements for a staff locked row', () => {
   assert.equal(r.PAYROLL_PERIOD, 'September 2026');
   assert.equal(r.EMP_NAME, 'Asha Patil');
   assert.equal(r.EMP_ID, 'VFL1');
-  assert.equal(r.DOJ, '01/04/2019');
+  assert.equal(r.DOJ, '01-Apr-2019', 'DOJ dd/mm/yyyy read day-first, printed DD-MMM-YYYY');
   assert.equal(r.DEPARTMENT, 'Accounts');
-  assert.equal(r.BASIC, '1,23,456');
-  assert.equal(r.GROSS_EARNINGS, '12,34,567');
+  assert.equal(r.BASIC, '1,23,456.00');
+  assert.equal(r.GROSS_EARNINGS, '12,34,567.00');
   assert.equal(r.PRESENT_DAYS, '25.5');
-  assert.equal(r.WEEKLY_OFF_DAYS, '4');
+  assert.equal(r.WEEKLY_OFF_DAYS, '4.0');
   assert.equal(r.DAYS_PAYABLE, '30.5');
-  assert.equal(r.PROF_TAX, '200');
-  assert.equal(r.SALARY_ADVANCE, '0');
-  assert.equal(r.TDS, '250');
+  assert.equal(r.PROF_TAX, '200.00');
+  assert.equal(r.SALARY_ADVANCE, '', 'zero deduction line is blank');
+  assert.equal(r.TDS, '250.00');
   assert.equal(r.OT_HOURS, '2.5');
   assert.equal(r.NET_PAY_WORDS, 'One Lakh Rupees Only');
   assert.equal(r.WORKING_DAYS, undefined);
   // *_RATE tokens = fixed monthly structure (SALARY_STRUCTURE), not earned amounts
-  assert.equal(r.BASIC_RATE, '12,600');
-  assert.equal(r.HRA_RATE, '7,560');
-  assert.equal(r.CONVEYANCE_RATE, '1,890');
-  assert.equal(r.EDUCATION_RATE, '1,800');
-  assert.equal(r.WASHING_RATE, '2,835');
-  assert.equal(r.MEDICAL_RATE, '1,500');
-  assert.equal(r.PRO_DEV_RATE, '945');
-  assert.equal(r.COMMUNICATION_RATE, '630');
-  assert.equal(r.UNIFORM_RATE, '1,260');
+  assert.equal(r.BASIC_RATE, '12,600.00');
+  assert.equal(r.HRA_RATE, '7,560.00');
+  assert.equal(r.CONVEYANCE_RATE, '1,890.00');
+  assert.equal(r.EDUCATION_RATE, '1,800.00');
+  assert.equal(r.WASHING_RATE, '2,835.00');
+  assert.equal(r.MEDICAL_RATE, '1,500.00');
+  assert.equal(r.PRO_DEV_RATE, '945.00');
+  assert.equal(r.COMMUNICATION_RATE, '630.00');
+  assert.equal(r.UNIFORM_RATE, '1,260.00');
   assert.equal(r.HEAT_ALLOWANCE_RATE, undefined);
 });
 
 test('replacements for a worker locked row (no employee master row falls back to locked identity)', () => {
   const c = load(null);
   const r = plain(c.buildReplacements('PERMANENT_WORKER', workerRow, { EMP_ID: 'VFL2', EMPLOYEE_NAME: 'Ravi', DEPARTMENT: 'Forge', DESIGNATION: 'Operator', DOJ_AS_SOURCE: new Date(2020, 0, 5) }, salWorker));
-  assert.equal(r.WORKING_DAYS, '27');
-  assert.equal(r.HEAT_ALLOWANCE, '156');
-  assert.equal(r.VDA, '2,575');
-  assert.equal(r.PRODUCTION_ALLOWANCE_OFFSET, '0', 'no efficiency deduction any more; token stays mapped');
-  assert.equal(r.PRODUCTION_ALLOWANCE, '0', 'production pay printed = slab amount paid (80% -> 0)');
-  assert.equal(r.LEAVE_ENCASHMENT, '300');
-  assert.equal(r.NET_PAY, '40,458');
-  assert.equal(r.BASIC_RATE, '8,000');
-  assert.equal(r.HEAT_ALLOWANCE_RATE, '150');
-  assert.equal(r.VDA_RATE, '2,575');
-  assert.equal(r.PRODUCTION_ALLOWANCE_RATE, '8,500');
+  assert.equal(r.WORKING_DAYS, '27.0');
+  assert.equal(r.HEAT_ALLOWANCE, '156.00');
+  assert.equal(r.VDA, '2,575.00');
+  assert.equal(r.PRODUCTION_ALLOWANCE_OFFSET, '', 'EFFICIENCY_DEDUCTION is 0: zero line blank');
+  assert.equal(r.PRODUCTION_ALLOWANCE, '', 'production pay = slab amount paid (80% -> 0): zero line blank');
+  assert.equal(r.LEAVE_ENCASHMENT, '300.00');
+  assert.equal(r.NET_PAY, '40,458.00');
+  assert.equal(r.BASIC_RATE, '8,000.00');
+  assert.equal(r.HEAT_ALLOWANCE_RATE, '150.00');
+  assert.equal(r.VDA_RATE, '2,575.00');
+  assert.equal(r.PRODUCTION_ALLOWANCE_RATE, '8,500.00');
   assert.equal(r.MEDICAL_RATE, undefined);
   assert.equal(r.NET_PAY_WORDS, 'Forty Thousand Four Hundred Fifty Eight Rupees Only');
-  assert.equal(r.DOJ, '2020-01-05');
+  assert.equal(r.DOJ, '05-Jan-2020', 'Date cell');
   assert.equal(r.WEEKLY_OFF_DAYS, undefined);
   assert.equal(c.payslipFileName('VFL2', P), 'VFL2_2026-09_Payslip.pdf');
 });
@@ -387,7 +400,7 @@ test('generatePayslips: RATE tokens come from effective-dated SALARY_STRUCTURE; 
   assert.equal(r.failed.length, 1);
   assert.equal(r.failed[0].empId, 'NOSAL');
   assert.match(r.failed[0].error, /No SALARY_STRUCTURE/);
-  assert.deepEqual(seen, ['12,600']);
+  assert.deepEqual(seen, ['12,600.00']);
   const reg = w.sheets.PAYSLIP_REGISTER.objs();
   assert.deepEqual(reg.map((x) => [x.EMP_ID, x.STATUS]), [['VFL1', 'GENERATED'], ['NOSAL', 'FAILED']]);
   assert.equal(g.calls.created.length, 1);
@@ -439,7 +452,7 @@ test('identity tokens: printed from EMPLOYEE_STATUTORY_IDS; missing employee -> 
   // worker: same tokens, deduction offset token is 0
   const wk = plain(c.buildReplacements('PERMANENT_WORKER', workerRow, { EMP_ID: 'VFL2' }, salWorker, { UAN: '7' }));
   assert.equal(wk.UAN, '7');
-  assert.equal(wk.PRODUCTION_ALLOWANCE_OFFSET, '0');
+  assert.equal(wk.PRODUCTION_ALLOWANCE_OFFSET, '');
   // generatePayslips: identity read per batch, only counts are reported, nothing written to any tab / audit
   const w = world();
   idsTab(w, [{ id: 'VFL1', bank: 'Test Bank', ifsc: 'TEST0001', acct: '111122223333', uan: '100200300400', pan: 'ABCDE1234F', esi: '5555' }]);
@@ -450,5 +463,100 @@ test('identity tokens: printed from EMPLOYEE_STATUTORY_IDS; missing employee -> 
   assert.equal(res.identityMatched, '1 of 1');
   Object.keys(w.sheets).filter((n) => n !== 'EMPLOYEE_STATUTORY_IDS').forEach((n) => {
     ['100200300400', 'ABCDE1234F', '111122223333', 'TEST0001', 'Test Bank'].forEach((secret) => assert.ok(!JSON.stringify(w.sheets[n].data).includes(secret), n + ' must not contain identity data'));
+  });
+});
+
+// ---------------------------------------------------------------- review fixes: DOJ, blank zero lines, folded earnings, footing, offset
+test('DOJ prints DD-MMM-YYYY: Date, ISO, dd/mm/yyyy (day-first), d-Mon-yy and d-Mon-yyyy accepted; unparseable -> blank', () => {
+  const c = load(null);
+  const doj = (v) => plain(c.buildReplacements('STAFF', staffRow, { DOJ_AS_SOURCE: v }, salStaff)).DOJ;
+  assert.equal(doj('05/06/2005'), '05-Jun-2005', 'day first, not May-6');
+  assert.equal(doj('31/12/2019'), '31-Dec-2019');
+  assert.equal(doj('5-Jun-05'), '05-Jun-2005');
+  assert.equal(doj('05-Jun-2005'), '05-Jun-2005');
+  assert.equal(doj('12-Sep-98'), '12-Sep-1998', '2-digit year above the current one -> 19xx');
+  assert.equal(doj('12 sept 2021'), '12-Sep-2021');
+  assert.equal(doj('2020-01-05'), '05-Jan-2020');
+  assert.equal(doj(new Date(2020, 0, 5)), '05-Jan-2020');
+  assert.equal(doj('31/04/2020'), '', 'not a real date');
+  assert.equal(doj('garbage'), '');
+  assert.equal(doj(''), '');
+  assert.equal(doj(undefined), '');
+});
+
+test('zero-valued earning / deduction lines print BLANK; gross, total deductions, net (and words) are always shown', () => {
+  const c = load(null);
+  const row = Object.assign({}, staffRow, { ARREARS: 0, OT_AMOUNT: 0, ADVANCE: 0, TDS: 0, OTHER_DEDUCTION: 0, MLWF: 0, ESI_EMPLOYEE: 0, TOTAL_EARNINGS: 0, TOTAL_DEDUCTIONS: 0, NET_PAY: 0 });
+  const r = plain(c.buildReplacements('STAFF', row, emp1, Object.assign({}, salStaff, { UNIFORM_PM_INR: 0 })));
+  ['ARREARS', 'OT_AMOUNT', 'SALARY_ADVANCE', 'TDS', 'OTHER_DEDUCTION', 'MLWF', 'ESI_EMPLOYEE', 'DISPATCH_INCENTIVE', 'OTHER_ALLOWANCE', 'UNIFORM_RATE'].forEach((t) => assert.equal(r[t], '', t));
+  assert.deepEqual([r.GROSS_EARNINGS, r.TOTAL_DEDUCTIONS, r.NET_PAY], ['0.00', '0.00', '0.00']);
+  assert.equal(r.NET_PAY_WORDS, 'Zero Rupees Only');
+  assert.equal(r.BASIC, '1,23,456.00');
+});
+
+test('earnings with no template line are folded into OTHER_ALLOWANCE; STAFF also folds LEAVE_ENCASHMENT; worker keeps its encashment line', () => {
+  const c = load(null);
+  const extra = { OTHER_ALLOWANCE: 100, PRODUCTION_INCENTIVE: 250.5, OT_EXTRA_WORK: 40, LEAVE_ENCASHMENT: 1000 };
+  const s = plain(c.buildReplacements('STAFF', Object.assign({}, staffRow, extra), emp1, salStaff));
+  assert.equal(s.OTHER_ALLOWANCE, '1,390.50');
+  const w = plain(c.buildReplacements('PERMANENT_WORKER', Object.assign({}, workerRow, extra), { EMP_ID: 'VFL2' }, salWorker));
+  assert.equal(w.OTHER_ALLOWANCE, '390.50');
+  assert.equal(w.LEAVE_ENCASHMENT, '1,000.00');
+  assert.equal(plain(c.buildReplacements('STAFF', Object.assign({}, staffRow, { PRODUCTION_INCENTIVE: 5 }), emp1, salStaff)).OTHER_ALLOWANCE, '5.00');
+  assert.throws(() => c.buildReplacements('STAFF', Object.assign({}, staffRow, { OT_EXTRA_WORK: 'x' }), emp1, salStaff));
+});
+
+test('PRODUCTION_ALLOWANCE_OFFSET follows EFFICIENCY_DEDUCTION (0 today -> blank line)', () => {
+  const c = load(null);
+  const off = (v) => plain(c.buildReplacements('PERMANENT_WORKER', Object.assign({}, workerRow, { EFFICIENCY_DEDUCTION: v }), { EMP_ID: 'VFL2' }, salWorker)).PRODUCTION_ALLOWANCE_OFFSET;
+  assert.equal(off(0), '');
+  assert.equal(off(1250), '1,250.00');
+});
+
+const salStaffFull = { BASIC_PM_INR: 12600, HRA_PM_INR: 7560, CONVEYANCE_PM_INR: 1890, EDUCATION_PM_INR: 1890, MEDICAL_PM_INR: 1890, PRO_DEV_PM_INR: 945,
+  COMMUNICATION_PM_INR: 630, UNIFORM_PM_INR: 1260, WASHING_PM_INR: 2835, FIXED_GROSS_PM_AS_SOURCE_INR: 31500 };
+const salWorkerFull = { BASIC_PM_INR: 15000, HRA_PM_INR: 7000, CONVEYANCE_PM_INR: 2500, WASHING_PM_INR: 2130, EDUCATION_PM_INR: 2000, HEAT_MASTER_INR: 150,
+  VDA_MASTER_INR: 2790, PRODUCTION_MASTER_INR: 8500, FIXED_GROSS_PM_AS_SOURCE_INR: 39000 };
+const CFG_ROWS = [
+  ['PF_WAGE_CEILING', 15000], ['PF_EMPLOYEE_RATE', 0.12], ['PF_MAX_EMPLOYEE', 1800], ['ESI_EMPLOYEE_RATE', 0.0075],
+  ['ESI_EXEMPT_ABOVE', 21000], ['ESI_EMPLOYER_RATE', 0.0325], ['WORKER_VDA_RATE', 103], ['WORKER_HEAT_RATE', 5.78],
+  ['PT_SLABS', '[{"min":0,"max":7500,"pt":0},{"min":7500.01,"max":10000,"pt":175},{"min":10000.01,"max":null,"pt":200}]'],
+  ['MLWF_EMPLOYEE_RATE', 25], ['PT_FEB_AMOUNT', 300], ['MLWF_MONTHS', '6,12'], ['STAFF_OT_MULTIPLIER', 2],
+  ['WORKER_OT_MULTIPLIER', 2], ['STAFF_PF_WAGE_COMPONENTS', 'BASIC,CONVEYANCE,EDUCATION,MEDICAL'],
+  ['STAFF_COMPONENT_PCTS', '{"BASIC":0.40,"HRA":0.24,"CONVEYANCE":0.06,"MEDICAL":0.06,"EDUCATION":0.06,"PRO_DEV":0.03,"COMMUNICATION":0.02,"UNIFORM":0.04,"WASHING":0.09}'],
+  ['EMPLOYER_PF_RATE_STAFF', 0.1301], ['EMPLOYER_PF_RATE_WORKER', 0.1301], ['BONUS_RATE_STAFF', 0.0833],
+  ['GRATUITY_RATE_STAFF', 0.0483], ['BONUS_RATE_WORKER', 0.18], ['GRATUITY_RATE_WORKER', 0.0481],
+].map(([KEY, VALUE]) => ({ KEY, VALUE, EFFECTIVE_FROM: '2026-09', EFFECTIVE_TO: '', VERSION: 1 }));
+const cents = (t) => (t === '' ? 0 : Math.round(parseFloat(t.replace(/,/g, '')) * 100));
+
+test('printed earnings lines sum to TOTAL_EARNINGS (gross) for BOTH templates, with every extra earning non-zero', () => {
+  const c = load(null);
+  const cfg = plain(c.resolveStatutory(CFG_ROWS, '2026-09')).values;
+  const eff = [[81, 4500], [82, 5000], [83, 6500], [84, 7500], [85, 8500], [90, 8500]].map(([p, a]) => ({ EFFICIENCY_PERCENT_EXACT: p, INCENTIVE_SLAB_INR: a, IMPLEMENTATION_STATE: 'X' }));
+  const adj = { ARREARS: 700, DISPATCH_INCENTIVE: 300, OTHER_ALLOWANCE: 240, LEAVE_ENCASHMENT: 1100, OT_EXTRA_WORK: 410, PRODUCTION_INCENTIVE: 520, TDS: 0, OTHER_DEDUCTION: 50, PENALTY: 0, CANTEEN_EXTRA: 0 };
+  const att = { PRESENT_DAYS: 30, PHYSICAL_PRESENT_DAYS: 30, WEEK_OFF: 0, PH: 0, EL_AVAILED: 0, CL_AVAILED: 0, SL_AVAILED: 0, PAID_LEAVE_OTHER: 0, ABSENT_LWP_DAYS: 0 };
+  const base = { period: '2026-09', workingDays: 30, otHours: 12.5, canteen: 0, society: 0, advance: 0, cfg, ptExemptSet: new Set(), efficiencyConfig: eff, adjustments: adj, attendance: att };
+  const staffRes = plain(c.calcStaff(Object.assign({ population: 'STAFF', emp: { EMP_ID: 'VFL1' }, salary: salStaffFull }, base)));
+  const workerRes = plain(c.calcWorker(Object.assign({ population: 'PERMANENT_WORKER', emp: { EMP_ID: 'VFL2' }, salary: salWorkerFull, efficiencyPct: 90 }, base)));
+  const lines = {
+    STAFF: ['BASIC', 'HRA', 'CONVEYANCE', 'EDUCATION', 'WASHING', 'MEDICAL', 'PRO_DEV', 'COMMUNICATION', 'UNIFORM', 'ARREARS', 'OT_AMOUNT', 'DISPATCH_INCENTIVE', 'OTHER_ALLOWANCE'],
+    PERMANENT_WORKER: ['BASIC', 'HRA', 'CONVEYANCE', 'EDUCATION', 'WASHING', 'HEAT_ALLOWANCE', 'VDA', 'PRODUCTION_ALLOWANCE', 'ARREARS', 'OT_AMOUNT', 'DISPATCH_INCENTIVE', 'OTHER_ALLOWANCE', 'LEAVE_ENCASHMENT'],
+  };
+  [['STAFF', staffRes, salStaffFull], ['PERMANENT_WORKER', workerRes, salWorkerFull]].forEach(([pop, res, sal]) => {
+    assert.ok(!res.exceptions.some((e) => e.severity === 'BLOCKER'), pop + ' calc blocked: ' + JSON.stringify(res.exceptions));
+    const row = Object.assign({ PERIOD: '2026-09', POPULATION: pop, EMP_ID: 'X' }, res.row);
+    const r = plain(c.buildReplacements(pop, row, { EMP_ID: 'X' }, sal));
+    const printed = lines[pop].reduce((t, k) => t + cents(r[k]), 0);
+    assert.ok(cents(r.GROSS_EARNINGS) > 0);
+    // STAFF total is stored to 2dp (exact). The WORKER total is a whole rupee (roundSheets) while OT_AMOUNT is 2dp: paise-level difference only.
+    const tol = pop === 'STAFF' ? 0 : 50;
+    assert.ok(Math.abs(printed - cents(r.GROSS_EARNINGS)) <= tol, `${pop}: printed earnings ${printed} vs TOTAL_EARNINGS ${r.GROSS_EARNINGS}`);
+    const noExtras = lines[pop].filter((k) => k !== 'OTHER_ALLOWANCE' && k !== 'LEAVE_ENCASHMENT' && k !== 'OT_AMOUNT').reduce((t, k) => t + cents(r[k]), 0);
+    assert.ok(printed > noExtras, 'extras are printed');
+    // every extra really printed somewhere
+    assert.ok(cents(r.OTHER_ALLOWANCE) >= (pop === 'STAFF' ? 240 + 520 + 410 + 1100 : 240 + 520 + 410) * 100);
+    // deductions foot as well
+    const ded = ['PF_EMPLOYEE', 'ESI_EMPLOYEE', 'PROF_TAX', 'MLWF', 'SALARY_ADVANCE', 'SOCIETY', 'CANTEEN', 'OTHER_DEDUCTION', 'TDS', 'PRODUCTION_ALLOWANCE_OFFSET'].reduce((t, k) => t + cents(r[k] === undefined ? '' : r[k]), 0);
+    assert.equal(ded, cents(r.TOTAL_DEDUCTIONS), pop + ' deductions');
   });
 });
