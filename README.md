@@ -1,5 +1,7 @@
 # VFL HR OS — Monthly Payroll
 
+> **New to this? Follow [DEPLOY_STEPS.md](DEPLOY_STEPS.md)** - the plain-English, step-by-step deploy guide for the owner.
+
 ## Clean rebuild (the deploy procedure)
 
 The live sheet is rebuilt clean: only the Google-Form response tabs are kept, everything else comes from one import workbook.

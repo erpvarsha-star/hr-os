@@ -68,3 +68,15 @@ test('a configured 5th category gets its PAYROLL_<CODE> tab on setup', () => {
   assert.deepEqual(env.sheets.PAYROLL_CONTRACT_NSK.data[0], plain(env.c.HROS_OUTPUT_COLUMNS));
   assert.equal(env.sheets.PAYROLL_STAFF, undefined, 'only configured categories');
 });
+
+test('setup removes an empty _TEMP tab, but keeps one that holds data', () => {
+  const env = emptyWorld();
+  env.put('_TEMP', [], []);
+  env.sheets._TEMP.data = [];
+  env.c.hrosSetup();
+  assert.equal(env.sheets._TEMP, undefined, 'empty _TEMP removed');
+  const env2 = emptyWorld();
+  env2.put('_TEMP', ['note'], [{ note: 'keep me' }]);
+  env2.c.hrosSetup();
+  assert.ok(env2.sheets._TEMP, 'non-empty _TEMP kept');
+});

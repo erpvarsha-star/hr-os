@@ -298,6 +298,15 @@ function hrosSetup() {
     }
   });
 
+  // 7b. remove the placeholder tab left by the clean-up script (only if it exists, is empty and is not the last tab)
+  try {
+    var tmp = ss.getSheetByName('_TEMP');
+    if (tmp && ss.getSheets().length > 1 && tmp.getLastRow() <= 1 && tmp.getLastColumn() <= 1 && typeof ss.deleteSheet === 'function') {
+      ss.deleteSheet(tmp);
+      log.notes.push('removed empty _TEMP tab');
+    }
+  } catch (e3) { log.notes.push('could not remove _TEMP: ' + String(e3 && e3.message ? e3.message : e3)); }
+
   // 8. tab order, then hide the sensitive tabs (the first tab is activated so no hidden tab is the active one)
   var otTab = String(ctl.OT_SOURCE_TAB || '').trim();
   log.notes = log.notes.concat(hrosOrderTabs_(ss, hrosTabOrder_(ss.getSheets().map(function (s) { return s.getName(); }), otTab)));

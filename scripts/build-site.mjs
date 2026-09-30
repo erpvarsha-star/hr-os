@@ -79,12 +79,15 @@ const page = (title, active, body) => `<!doctype html><html lang="en"><head><met
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <meta name="robots" content="noindex,nofollow"><style>${css}</style></head><body>
 <header><div class="wrap"><b>VFL HR OS</b><nav>
+<a href="/deploy/" class="${active === "deploy" ? "on" : ""}">Deploy steps</a>
 <a href="/" class="${active === "runbook" ? "on" : ""}">Runbook</a>
 <a href="/code/" class="${active === "code" ? "on" : ""}">Apps Script files</a>
 <a href="/design/" class="${active === "design" ? "on" : ""}">Design spec</a></nav></div></header>
 <main><div class="wrap">${body}</div></main></body></html>`;
 
 writeFileSync(join(out, "index.html"), page("HR OS Runbook", "runbook", md(readFileSync(join(root, "README.md"), "utf8"))));
+mkdirSync(join(out, "deploy"));
+writeFileSync(join(out, "deploy", "index.html"), page("HR OS Deploy steps", "deploy", md(readFileSync(join(root, "DEPLOY_STEPS.md"), "utf8").replace("](README.md)", "](/)"))));
 mkdirSync(join(out, "design"));
 writeFileSync(join(out, "design", "index.html"), page("HR OS Design", "design", md(readFileSync(join(root, "DESIGN.md"), "utf8"))));
 

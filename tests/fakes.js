@@ -56,6 +56,7 @@ function makeEnv(opts = {}) {
     getSheetByName: (n) => env.sheets[n] || null,
     insertSheet: (n) => (env.sheets[n] = makeSheet(n)),
     getSheets: () => Object.values(env.sheets),
+    deleteSheet: (sh) => { delete env.sheets[sh.getName()]; },
     setActiveSheet: (sh) => { env.active = sh; return sh; },
     moveActiveSheet: (pos) => { // 1-based position among all tabs (tab order = insertion order of env.sheets)
       const names = Object.keys(env.sheets).filter((n) => env.sheets[n] !== env.active), me = env.active.getName();
