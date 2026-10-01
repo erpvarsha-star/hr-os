@@ -25,7 +25,7 @@ var ORGTABS_GROUPS = [
   { key: 'ATTENDANCE', label: 'Attendance', color: '#00ACC1',
     tabs: ['INPUT_ATTENDANCE', 'ATTENDANCE_DAILY', 'ATTENDANCE_COMPARISON'] },
   { key: 'INPUTS', label: 'Monthly inputs', color: '#43A047',
-    tabs: ['INPUT_LEAVE', 'INPUT_OT', 'INPUT_CANTEEN', 'INPUT_EFFICIENCY', 'INPUT_ADVANCE', 'INPUT_SOCIETY', 'INPUT_ADJUSTMENTS'] },
+    tabs: ['INPUT_LEAVE', 'ADVANCE_LEDGER', 'INPUT_OT', 'INPUT_CANTEEN', 'INPUT_EFFICIENCY', 'INPUT_ADVANCE', 'INPUT_SOCIETY', 'INPUT_ADJUSTMENTS'] },
   { key: 'FORMS', label: 'Form responses (raw, do not edit)', color: '#FB8C00',
     tabs: ['ATT_FORM_VFL_RAW', 'ATT_FORM_PUNE_RAW', 'ATT_MONTHLY_VFL_RAW', 'ATT_MONTHLY_PUNE_RAW', 'OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'] },
   { key: 'PAYROLL', label: 'Payroll run', color: '#8E24AA',
@@ -34,7 +34,7 @@ var ORGTABS_GROUPS = [
   { key: 'PAYSLIPS', label: 'Payslips', color: '#EC407A',
     tabs: ['PAYSLIP_REGISTER', 'PAYSLIP_EMAIL_LOG'] },
   { key: 'AUDIT', label: 'Locked & audit', color: '#C62828',
-    tabs: ['PAYROLL_LOCKED', 'AUDIT_LOG', 'TELEGRAM_CHATS'] }
+    tabs: ['PAYROLL_LOCKED', 'AUDIT_LOG', 'TELEGRAM_CHATS', 'CORRECTIONS_LOG'] }
 ];
 var ORGTABS_UNKNOWN_LABEL = 'Not recognised - review/delete by hand';
 var ORGTABS_EXTRA_MARK = '@EXTRA_CATEGORY_TABS';

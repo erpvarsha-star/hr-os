@@ -91,6 +91,9 @@ function lockPeriod(period, population) {
   var held = heldRows.map(function (r) { return { EMP_ID: String(r.EMP_ID).trim(), flags: String(r.FLAGS || '') }; });
   audit('LOCK', period, population, { result: 'LOCKED', lockId: lockId, rows: rows.length, user: user, hash: re.hash,
     heldNotLocked: held.map(function (h) { return h.EMP_ID; }) });
+  // advance ledger: decrement OUTSTANDING_BALANCE_INR for the employees just locked (22_Advance.gs); never allowed
+  // to fail or slow the lock (advanceApplyLockRecoveries_ wraps its own body too; this is an extra guard)
+  try { advanceApplyLockRecoveries_(period, population, rows.map(function (r) { return r.EMP_ID; })); } catch (eAdv) { /* ignore */ }
   // alert HR (61_Notify.gs); never allowed to fail the lock
   try { stageNotifySafe_('LOCKED', { period: period, population: population, rows: rows, held: held }); } catch (eNotify) { /* ignore */ }
   return { ok: true, status: PERIOD_STATUS.LOCKED, reason: 'OK', lockId: lockId, rows: rows.length, held: held };

@@ -30,7 +30,7 @@ test('setup creates every tab with exact headers, seeds, hides + protects the se
     assert.equal(env.sheets[n].hidden, true, n + ' hidden');
     assert.equal(env.sheets[n].protections.length, 1, n + ' protected');
   });
-  assert.deepEqual(env.sheets.EMPLOYEE_STATUTORY_IDS.protections[0].editors.sort(), ['hr@varshaforgings.com', 'owner@varshaforgings.com', 'yash.munot@gmail.com'].sort().filter((x, i, a) => a.indexOf(x) === i).concat([]).sort());
+  assert.deepEqual(env.sheets.EMPLOYEE_STATUTORY_IDS.protections[0].editors.sort(), ['hr@varshaforgings.com', 'owner@varshaforgings.com', 'accounts@varshaforgings.com', 'yash.munot@gmail.com'].sort().filter((x, i, a) => a.indexOf(x) === i).concat([]).sort());
   assert.equal(env.sheets.PAYROLL_CONTROL.hidden, false);
   assert.equal(env.sheets.EMPLOYEE_MASTER.hidden, false);
   assert.ok(log.hidden.includes('EMPLOYEE_STATUTORY_IDS') && log.hidden.includes('PAYROLL_LOCKED'));

@@ -281,6 +281,19 @@ SCHEMA = json.loads(r"""{
    "NORMALIZER_VERSION",
    "ENTERED_AT"
   ],
+  "ADVANCE_LEDGER": [
+   "EMP_ID",
+   "LOAN_ID",
+   "OPENING_AMOUNT_INR",
+   "MONTHLY_INSTALMENT_INR",
+   "OPENING_DATE",
+   "SOURCE",
+   "SOURCE_REF",
+   "OUTSTANDING_BALANCE_INR",
+   "STATUS",
+   "CLOSED_AT",
+   "NOTE"
+  ],
   "ATTENDANCE_DAILY": [
    "PERIOD",
    "DATE",
@@ -553,6 +566,14 @@ SCHEMA = json.loads(r"""{
    "FIRST_SEEN",
    "EMAIL",
    "ACTIVE"
+  ],
+  "CORRECTIONS_LOG": [
+   "TIMESTAMP",
+   "SHEET",
+   "CELL",
+   "OLD_VALUE",
+   "NEW_VALUE",
+   "USER_EMAIL"
   ]
  },
  "control": [
@@ -675,6 +696,11 @@ SCHEMA = json.loads(r"""{
    "STAGE_NOTIFICATIONS",
    "Y",
    "Y = tell HR / Accounts / owner after calculate, approve and lock; N = off"
+  ],
+  [
+   "ADVANCE_FORM_SOURCE_TAB",
+   "Advance Loan Form Responses",
+   "VFPL Advance\\Loan Form response tab (local; owner links the form here). Used only to record NEW loans - HR OS tracks the running balance itself (22_Advance.gs)"
   ]
  ],
  "statutoryDefaults": [

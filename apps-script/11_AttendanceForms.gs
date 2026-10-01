@@ -145,11 +145,15 @@ var HROS_FORM_ROUTES = {
   OT_FORM_RESPONSES: 'OT'
 };
 
-/** Pure. otTabName = the local OT source tab currently in use (e.g. a renamed response tab), or '' when none. */
-function routeFormSubmit(sheetName, otTabName) {
+/**
+ * Pure. otTabName = the local OT source tab currently in use (e.g. a renamed response tab), or '' when none.
+ * advTabName = the local Advance/Loan source tab currently in use (22_Advance.gs), or '' when none.
+ */
+function routeFormSubmit(sheetName, otTabName, advTabName) {
   var n = String(sheetName == null ? '' : sheetName).trim();
   if (Object.prototype.hasOwnProperty.call(HROS_FORM_ROUTES, n)) return HROS_FORM_ROUTES[n];
   if (n && otTabName && n === String(otTabName).trim()) return 'OT';
+  if (n && advTabName && n === String(advTabName).trim()) return 'ADVANCE_LOAN';
   return null;
 }
 
@@ -161,7 +165,7 @@ function routeFormSubmit(sheetName, otTabName) {
 function hrosOnFormSubmit(e) {
   var sheet = e && e.range && e.range.getSheet ? e.range.getSheet() : null;
   var name = sheet ? sheet.getName() : '';
-  var route = routeFormSubmit(name, feeds_localOtTabName_());
+  var route = routeFormSubmit(name, feeds_localOtTabName_(), advance_sourceTabName_());
   if (!route) return null;
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -188,6 +192,7 @@ function hrosOnFormSubmit(e) {
       if (!otPeriod) { audit('OT_SUBMIT_SKIPPED', '', '', 'OT date not found or outside the payroll periods'); return null; }
       return syncOtFromForm(otPeriod);
     }
+    if (route === 'ADVANCE_LOAN') return syncAdvanceLoans();
     var period = feeds_periodFromNamedValues(e.namedValues);
     if (!period) { audit(route + '_SUBMIT_SKIPPED', '', '', 'Payroll Month not found in response'); return null; }
     if (route === 'CANTEEN') return syncCanteenFromForm(period);

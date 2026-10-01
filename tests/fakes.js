@@ -65,8 +65,8 @@ function makeSheet(name) {
 }
 
 const FILES = ['00_Config.gs', '01_SheetUtil.gs', '02_Setup.gs', '10_Attendance.gs', '11_AttendanceForms.gs', '12_Register.gs', '13_RegisterPage.gs', '14_Employees.gs',
-  '20_Feeds.gs', '21_Leave.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '42_Supplementary.gs', '50_Payslips.gs',
-  '51_Email.gs', '60_Status.gs', '61_Notify.gs', '62_Reminders.gs', '90_Menu.gs', '99_Audit.gs'];
+  '20_Feeds.gs', '21_Leave.gs', '22_Advance.gs', '30_Calc.gs', '31_Readiness.gs', '32_Engine.gs', '33_Comparison.gs', '40_Approval.gs', '41_Lock.gs', '42_Supplementary.gs', '50_Payslips.gs',
+  '51_Email.gs', '60_Status.gs', '61_Notify.gs', '62_Reminders.gs', '63_CorrectionsLog.gs', '90_Menu.gs', '99_Audit.gs'];
 
 /** A fresh world: sheets, fake SpreadsheetApp/Session/LockService/ScriptApp, and the whole code base in one context. */
 function makeEnv(opts = {}) {

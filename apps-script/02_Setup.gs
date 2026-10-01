@@ -62,6 +62,15 @@ var HROS_EMAIL_LOG_HEADERS = ['LOCK_ID', 'PERIOD', 'EMP_ID', 'TO_EMAIL', 'PDF_ID
 var HROS_AUDIT_HEADERS = ['Timestamp', 'Module', 'Status', 'User', 'Message'];
 /** Telegram chats that pressed Start; the owner types EMAIL to link a chat to a person (61_Notify.gs). */
 var TELEGRAM_CHAT_HEADERS = ['CHAT_ID', 'NAME', 'USERNAME', 'FIRST_SEEN', 'EMAIL', 'ACTIVE'];
+/** Running advance/loan ledger (22_Advance.gs): one row per loan, OUTSTANDING_BALANCE_INR decremented at lock time. */
+var HROS_ADVANCE_LEDGER_HEADERS = ['EMP_ID', 'LOAN_ID', 'OPENING_AMOUNT_INR', 'MONTHLY_INSTALMENT_INR', 'OPENING_DATE',
+  'SOURCE', 'SOURCE_REF', 'OUTSTANDING_BALANCE_INR', 'STATUS', 'CLOSED_AT', 'NOTE'];
+var HROS_ADVANCE_SOURCES = ['FORM', 'ONE_TIME_IMPORT', 'HR_MANUAL'];
+var HROS_ADVANCE_STATUSES = ['OPEN', 'CLOSED'];
+/** "Who overrode what" trail: every edit Sheets lets through on a protected system tab (63_CorrectionsLog.gs). */
+var CORRECTIONS_LOG_HEADERS = ['TIMESTAMP', 'SHEET', 'CELL', 'OLD_VALUE', 'NEW_VALUE', 'USER_EMAIL'];
+/** The three people allowed to edit a protected system-only tab (protectSheet unions these with whoever runs setup). */
+var HROS_PROTECT_SYSTEM_TABS = ['HR_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL', 'ACCOUNTS_APPROVER_EMAIL'];
 
 /** Form-response tabs created by Google Forms / code: never created here, only placed in the tab order when present. */
 var HROS_FORM_TABS_INPUT = ['OT_FORM_RESPONSES', 'CANTEEN_FORM_RESPONSES', 'EFFICIENCY_FORM_RESPONSES'];
@@ -92,7 +101,7 @@ function hrosTabSpecs_() {
     { name: TABS.SALARY_STRUCTURE, group: 'Masters', headers: HROS_SALARY_STRUCTURE_HEADERS },
     { name: TABS.PAYROLL_RATE_PROFILE, group: 'Masters', headers: HROS_RATE_PROFILE_HEADERS },
     { name: TABS.EMPLOYEE_STATUTORY_IDS, group: 'Masters', headers: HROS_STATUTORY_ID_HEADERS, hidden: true,
-      protect: ['HR_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] },
+      protect: HROS_PROTECT_SYSTEM_TABS },
     { name: TABS.INPUT_OT, group: 'Monthly inputs', headers: HROS_INPUT_OT_HEADERS },
     { name: TABS.INPUT_CANTEEN, group: 'Monthly inputs', headers: HROS_INPUT_CANTEEN_HEADERS },
     { name: TABS.INPUT_EFFICIENCY, group: 'Monthly inputs', headers: HROS_INPUT_EFFICIENCY_HEADERS },
@@ -103,33 +112,37 @@ function hrosTabSpecs_() {
     { name: TABS.INPUT_ADJUSTMENTS, group: 'Monthly inputs', headers: HROS_INPUT_ADJUSTMENTS_HEADERS,
       validations: [['ADJUSTMENT_TYPE', ADJUSTMENT_TYPES], ['APPROVAL_STATUS', APPROVAL_STATUSES]] },
     { name: TABS.INPUT_LEAVE, group: 'Monthly inputs', headers: HROS_INPUT_LEAVE_HEADERS },
-    { name: TABS.ATTENDANCE_DAILY, group: 'Attendance', headers: HROS_ATTENDANCE_DAILY_HEADERS },
+    { name: TABS.ADVANCE_LEDGER, group: 'Ledgers', headers: HROS_ADVANCE_LEDGER_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS,
+      validations: [['SOURCE', HROS_ADVANCE_SOURCES], ['STATUS', HROS_ADVANCE_STATUSES]] },
+    { name: TABS.ATTENDANCE_DAILY, group: 'Attendance', headers: HROS_ATTENDANCE_DAILY_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS },
     { name: TABS.INPUT_ATTENDANCE, group: 'Attendance', headers: HROS_INPUT_ATTENDANCE_HEADERS,
       validations: [['APPROVAL_STATUS', APPROVAL_STATUSES]] },
     { name: TABS.ATTENDANCE_COMPARISON, group: 'Attendance', headers: HROS_COMPARISON_HEADERS,
       validations: [['OWNER_DECISION', ['APPROVED', 'REJECTED']]] },
-    { name: TABS.PAYROLL_READINESS, group: 'Payroll', headers: HROS_READINESS_HEADERS },
-    { name: TABS.PAYROLL_DRAFT, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS }
+    { name: TABS.PAYROLL_READINESS, group: 'Payroll', headers: HROS_READINESS_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS },
+    { name: TABS.PAYROLL_DRAFT, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS, protect: HROS_PROTECT_SYSTEM_TABS }
   ];
   var seen = {};
   populationList().forEach(function (code) {
     var tab = populationTab(code);
     if (seen[tab]) return;
     seen[tab] = true;
-    specs.push({ name: tab, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS });
+    specs.push({ name: tab, group: 'Payroll', headers: HROS_OUTPUT_COLUMNS, protect: HROS_PROTECT_SYSTEM_TABS });
   });
-  specs.push({ name: TABS.PAYROLL_EXCEPTIONS, group: 'Payroll', headers: HROS_EXCEPTION_HEADERS });
-  specs.push({ name: TABS.PAYROLL_RECON, group: 'Payroll', headers: HROS_RECON_HEADERS });
+  specs.push({ name: TABS.PAYROLL_EXCEPTIONS, group: 'Payroll', headers: HROS_EXCEPTION_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
+  specs.push({ name: TABS.PAYROLL_RECON, group: 'Payroll', headers: HROS_RECON_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
   specs.push({ name: TABS.PAYROLL_SUPPLEMENTARY, group: 'Payroll', headers: HROS_SUPPLEMENTARY_HEADERS,
-    validations: [['STATUS', HROS_SUPP_STATUSES]] });
+    validations: [['STATUS', HROS_SUPP_STATUSES]], protect: HROS_PROTECT_SYSTEM_TABS });
   specs.push({ name: TABS.PAYROLL_LOCKED, group: 'Payroll', headers: ['LOCK_ID'].concat(HROS_OUTPUT_COLUMNS), hidden: true,
-    protect: ['ACCOUNTS_APPROVER_EMAIL', 'OWNER_APPROVER_EMAIL'] });
-  specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS });
-  specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS });
-  specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS });
+    protect: HROS_PROTECT_SYSTEM_TABS });
+  specs.push({ name: TABS.PAYSLIP_REGISTER, group: 'Payslips', headers: HROS_PAYSLIP_REGISTER_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
+  specs.push({ name: TABS.PAYSLIP_EMAIL_LOG, group: 'Payslips', headers: HROS_EMAIL_LOG_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
+  specs.push({ name: TABS.AUDIT_LOG, group: 'Audit', headers: HROS_AUDIT_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
   // Telegram chat registry (chat ids mapped to people by the owner): only the owner edits it
   specs.push({ name: TABS.TELEGRAM_CHATS, group: 'Audit', headers: TELEGRAM_CHAT_HEADERS, protect: ['OWNER_APPROVER_EMAIL'],
     validations: [['ACTIVE', yn]] });
+  // corrections trail for protected system tabs (63_CorrectionsLog.gs); never itself on the onEdit watch-list
+  specs.push({ name: TABS.CORRECTIONS_LOG, group: 'Audit', headers: CORRECTIONS_LOG_HEADERS, protect: HROS_PROTECT_SYSTEM_TABS });
   return specs;
 }
 
@@ -175,7 +188,8 @@ var HROS_CONTROL_DEFAULTS = [
   ['AUTO_FULL_ATTENDANCE_EMP_IDS', 'VFL1001', 'Employees marked present for every working day automatically - no register/form entry needed (comma separated EMP_IDs; a row entered by HR wins)'],
   ['ZERO_PAY_ALLOWED_EMP_IDS', 'VFL1001', 'Zero salary is intentional; do not hold (comma separated EMP_IDs; no payslip is generated for a zero row)'],
   ['DAILY_REMINDER_FROM', '2026-10-01', 'Daily attendance reminders (11:00) and escalation (14:00) are active from this date (YYYY-MM-DD)'],
-  ['STAGE_NOTIFICATIONS', 'Y', 'Y = tell HR / Accounts / owner after calculate, approve and lock; N = off']
+  ['STAGE_NOTIFICATIONS', 'Y', 'Y = tell HR / Accounts / owner after calculate, approve and lock; N = off'],
+  ['ADVANCE_FORM_SOURCE_TAB', 'Advance Loan Form Responses', 'VFPL Advance\\Loan Form response tab (local; owner links the form here). Used only to record NEW loans - HR OS tracks the running balance itself (22_Advance.gs)']
 ];
 
 var HROS_STATUTORY_DEFAULTS = [
@@ -388,6 +402,22 @@ function hrosSetup() {
       log.protectedTabs.push(sp.name);
     }
   });
+
+  // 7a. protect the dynamic form-response tabs too (created by Google Forms, never by hrosSetup, so they are not in
+  //     the registry above): the daily/monthly attendance raw tabs, OT / canteen / efficiency / advance-loan responses.
+  //     Google Forms writes responses as a system process, not subject to sheet edit protection, so this is safe.
+  (function protectFormTabs() {
+    var dyn = HROS_FORM_TABS_INPUT.concat(HROS_FORM_TABS_ATTENDANCE).concat([FEEDS_OT_TAB]);
+    var advTab = String(ctl.ADVANCE_FORM_SOURCE_TAB || '').trim();
+    if (advTab && dyn.indexOf(advTab) < 0) dyn.push(advTab);
+    dyn.forEach(function (name) {
+      var sheet = ss.getSheetByName(name);
+      if (!sheet || isSheetProtected(sheet)) return;
+      var emails = HROS_PROTECT_SYSTEM_TABS.map(function (k) { return String(ctl[k] == null ? '' : ctl[k]).trim(); }).filter(function (e) { return e; });
+      protectSheet(sheet, name + ' (HR OS: form response tab, restricted)', emails);
+      log.protectedTabs.push(name);
+    });
+  })();
 
   // 7b. remove the placeholder tab left by the clean-up script (only if it exists, is empty and is not the last tab)
   try {

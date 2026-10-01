@@ -29,6 +29,10 @@ function onOpen() {
       .addItem('Sync OT', 'menuSyncOt')
       .addItem('Sync canteen', 'menuSyncCanteen')
       .addItem('Sync efficiency', 'menuSyncEfficiency')
+      .addItem('Sync advance loans', 'menuSyncAdvanceLoans')
+      .addItem('Advance: import opening balances...', 'menuAdvanceImportOpening')
+      .addItem('Generate advance recoveries...', 'menuAdvanceGenerateRecoveries')
+      .addItem('Generate society carry-forward...', 'menuSocietyCarryforward')
       .addItem('Mark feed complete...', 'menuMarkFeed'))
     .addSubMenu(ui.createMenu('Payroll')
       .addItem('Approve salary structure (HR)...', 'menuApproveSalary')
@@ -150,6 +154,26 @@ function menuOwnerApproveDisputes() {
 function menuSyncOt() { run_('Sync OT', function () { var p = askPeriod_('Sync OT'); return p && callStage_('syncOtFromForm', 2, [p]); }); }
 function menuSyncCanteen() { run_('Sync canteen', function () { var p = askPeriod_('Sync canteen'); return p && callStage_('syncCanteenFromForm', 3, [p]); }); }
 function menuSyncEfficiency() { run_('Sync efficiency', function () { var p = askPeriod_('Sync efficiency'); return p && callStage_('syncEfficiencyFromForm', 3, [p]); }); }
+function menuSyncAdvanceLoans() { run_('Sync advance loans', syncAdvanceLoans); }
+function menuAdvanceGenerateRecoveries() { run_('Generate advance recoveries', function () { var p = askPeriod_('Generate advance recoveries'); return p && advanceGenerateRecoveries(p); }); }
+function menuSocietyCarryforward() { run_('Generate society carry-forward', function () { var p = askPeriod_('Generate society carry-forward'); return p && societyGenerateCarryforward(p); }); }
+function menuAdvanceImportOpening() {
+  run_('Advance: import opening balances', function () {
+    var text = ask_('Advance: import opening balances', 'Paste one employee per line: EMP_ID, outstanding amount[, monthly instalment]');
+    if (!text) return null;
+    var parsed = advance_parseImportText(text);
+    if (parsed.errors.length) return 'Could not parse:\n' + parsed.errors.join('\n');
+    var ledgerRows = readObjects(TABS.ADVANCE_LEDGER);
+    var plan = planAdvanceImport(parsed.rows, advance_openEmpSet_(ledgerRows), {});
+    if (!plan.ok) {
+      var lines = plan.errors.map(function (e) { return 'line ' + e.line + ' ' + e.empId + ': ' + e.reason; });
+      return 'Refused - fix these first:\n' + lines.join('\n');
+    }
+    var preview = plan.toAppend.map(function (v) { return v.empId + ': opening ' + v.outstanding + ', instalment ' + v.instalment; }).join('\n');
+    if (!confirm_('Advance: import opening balances', plan.toAppend.length + ' loan(s) will be imported:\n' + preview + '\n\nApply now?')) return 'Cancelled - nothing was imported.';
+    return advanceImportOpeningBalances(parsed.rows, {});
+  });
+}
 
 function menuCheckReadiness() { run_('Check readiness', function () { var p = askPeriod_('Check readiness'); return p && callStage_('checkReadiness', 4, [p]); }); }
 function menuCalculateDraft() { run_('Calculate draft', function () { var p = askPeriod_('Calculate draft'); return p && callStage_('calculateDraft', 5, [p]); }); }
