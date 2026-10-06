@@ -1,16 +1,20 @@
 /**
  * 62_Reminders.gs - time-driven alerts: daily attendance reminder (11:00) + escalation (14:00), month-end input digest
- * (11:05, day 1-10). Nothing here runs until the owner installs the triggers (HR OS > Alerts > Install reminder triggers).
- * Apps Script time triggers fire inside the hour asked for (atHour) within about +-15 minutes of nearMinute, not to the second.
+ * (11:05, day 1-10), and automatic Telegram chat registration (every 5 minutes, see telegramPollUpdatesTrigger_ in
+ * 61_Notify.gs) so a person who presses Start on the bot is recorded without the owner clicking anything. Nothing here
+ * runs until the owner installs the triggers (HR OS > Alerts > Install reminder triggers).
+ * Apps Script time triggers fire inside the hour asked for (atHour) within about +-15 minutes of nearMinute, not to the second;
+ * an everyMinutes(5) trigger fires roughly every 5 minutes, not on the clock's :00/:05/:10.
  */
 var REMINDER_HANDLERS = {
   dailyAttendanceReminder: { hour: 11, minute: 0 },
   dailyAttendanceEscalation: { hour: 14, minute: 0 },
-  inputDigest: { hour: 11, minute: 5 }
+  inputDigest: { hour: 11, minute: 5 },
+  telegramPollUpdatesTrigger_: { everyMinutes: 5 }
 };
 /**
  * Apps Script allows 20 triggers per user per script. The HR OS form-submit trigger keeps its own conservative cap
- * (ATT_MAX_TRIGGERS, which does not count these three); the reminder triggers are checked against the platform limit.
+ * (ATT_MAX_TRIGGERS, which does not count these four); the reminder/alert triggers are checked against the platform limit.
  */
 var HROS_PLATFORM_MAX_TRIGGERS = 20;
 var REMINDER_FROM_DEFAULT = '2026-10-01';
@@ -184,7 +188,11 @@ function installReminderTriggers() {
   var plan = planReminderTriggers(existing, HROS_PLATFORM_MAX_TRIGGERS);
   plan.create.forEach(function (name) {
     var h = REMINDER_HANDLERS[name];
-    ScriptApp.newTrigger(name).timeBased().everyDays(1).atHour(h.hour).nearMinute(h.minute).inTimezone(HROS_TZ).create();
+    if (h.everyMinutes) {
+      ScriptApp.newTrigger(name).timeBased().everyMinutes(h.everyMinutes).create();
+    } else {
+      ScriptApp.newTrigger(name).timeBased().everyDays(1).atHour(h.hour).nearMinute(h.minute).inTimezone(HROS_TZ).create();
+    }
   });
   var res = { created: plan.create, alreadyPresent: plan.present, totalTriggers: plan.total };
   audit('REMINDER_TRIGGERS_INSTALL', '', '', res);

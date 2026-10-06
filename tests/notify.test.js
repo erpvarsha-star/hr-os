@@ -32,7 +32,8 @@ function google() {
     getProjectTriggers: () => triggers.map((t) => ({ getHandlerFunction: () => t.handler, _t: t })),
     newTrigger: (handler) => {
       const t = { handler }; const b = {};
-      b.timeBased = () => b; b.everyDays = (n) => { t.every = n; return b; }; b.atHour = (h) => { t.hour = h; return b; }; b.nearMinute = (m) => { t.minute = m; return b; };
+      b.timeBased = () => b; b.everyDays = (n) => { t.every = n; return b; }; b.everyMinutes = (n) => { t.everyMinutes = n; return b; };
+      b.atHour = (h) => { t.hour = h; return b; }; b.nearMinute = (m) => { t.minute = m; return b; };
       b.inTimezone = (z) => { t.tz = z; return b; }; b.forSpreadsheet = () => b; b.onFormSubmit = () => { t.event = 'FORM_SUBMIT'; return b; };
       b.create = () => { triggers.push(t); return t; };
       return b;
@@ -70,13 +71,15 @@ test('notifyEmailList / notifyChatMap are pure and forgiving', () => {
     { CHAT_ID: 4, EMAIL: '', ACTIVE: 'Y' }, { CHAT_ID: 5, EMAIL: 'b@x.com', ACTIVE: 'n' }])), { 'a@x.com': ['1', '2'] });
 });
 
-test('telegramPlanUpdates: only private /start chats are recorded, known chats ignored, offset advances past every update', () => {
+test('telegramPlanUpdates: only private /start chats are recorded, known chats get a repeat reply (once) not a new row, offset advances past every update', () => {
   const { c } = makeEnv();
   const plan = plain(c.telegramPlanUpdates([startMsg(10, 111), startMsg(11, 111), startMsg(12, 222, { text: 'hello' }), startMsg(13, 333, { chat: { id: 333, type: 'group' } }),
-    startMsg(14, 444, { text: '/start@vfl_bot' }), startMsg(15, 555), { update_id: 16, edited_message: {} }], ['555'], 5));
+    startMsg(14, 444, { text: '/start@vfl_bot' }), startMsg(15, 555), startMsg(16, 555), { update_id: 17, edited_message: {} }], ['555'], 5));
   assert.deepEqual(plan.newChats.map((x) => x.chatId), ['111', '444']);
   assert.deepEqual(plan.newChats[0], { chatId: '111', name: 'Asha K', username: '@asha' });
-  assert.equal(plan.offset, 17);
+  assert.deepEqual(plan.replyTo, ['111', '444']);
+  assert.deepEqual(plan.repeatTo, ['555'], 'chat 555 was already known and sent /start twice: only one repeat reply');
+  assert.equal(plan.offset, 18);
   assert.equal(plain(c.telegramPlanUpdates([], [], 9)).offset, 9);
 });
 
@@ -172,17 +175,19 @@ test('telegramPollUpdates_: registers /start chats with a blank EMAIL, replies o
   const first = w.g.fetches.find((f) => f.method === 'getUpdates');
   assert.equal(first.payload.offset, undefined);
   assert.equal(first.opts.muteHttpExceptions, true);
-  // the same person presses Start again later: no new row, no second reply
+  // the same person presses Start again later: no new row, a short "you're already registered" reply instead
   w.g.tg.updates.push(startMsg(103, 111));
   r = plain(w.c.telegramPollUpdates_());
   assert.equal(r.newChats, 0);
   assert.equal(w.rowsOf('TELEGRAM_CHATS').length, 1);
-  assert.equal(w.g.fetches.filter((f) => f.method === 'sendMessage').length, 1);
+  const replies2 = w.g.fetches.filter((f) => f.method === 'sendMessage');
+  assert.equal(replies2.length, 2);
+  assert.deepEqual([replies2[1].payload.chat_id, replies2[1].payload.text], ['111', "You're registered. Ask the payroll owner to link your email in TELEGRAM_CHATS if alerts aren't reaching you yet."]);
   assert.equal(w.g.fetches.filter((f) => f.method === 'getUpdates').pop().payload.offset, 102, 'uses the stored offset');
   assert.equal(w.g.props.TELEGRAM_UPDATE_OFFSET, '104');
   // an unmapped chat never receives payroll data
   assert.equal(plain(w.c.notify_([HR], 'Payroll', 'x'))[0].channel, 'EMAIL');
-  assert.equal(w.g.fetches.filter((f) => f.method === 'sendMessage').length, 1, 'still only the registration reply');
+  assert.equal(w.g.fetches.filter((f) => f.method === 'sendMessage').length, 2, 'no extra reply from an ordinary notify_ send');
 });
 
 test('telegram menu actions are owner-only; test message reports the channel', () => {
@@ -192,6 +197,33 @@ test('telegram menu actions are owner-only; test message reports the channel', (
   assert.match(w.c.telegramSendTestToMe(), /Sent via EMAIL to hr@varshaforgings.com \(your chat is not linked yet/);
   link(w, 5, HR);
   assert.equal(w.c.telegramSendTestToMe(), 'Sent via TELEGRAM to ' + HR);
+});
+
+test('telegramPollUpdatesTrigger_: quiet no-op without a token, registers a new /start automatically, never throws', () => {
+  const w = world();
+  assert.doesNotThrow(() => w.c.telegramPollUpdatesTrigger_());
+  assert.equal(w.g.fetches.length, 0, 'no token yet: nothing is called, nothing is audited');
+  assert.equal(audits(w).length, 0);
+
+  w.g.props.TELEGRAM_BOT_TOKEN = TOKEN;
+  w.g.tg.updates = [startMsg(200, 999)];
+  w.c.telegramPollUpdatesTrigger_();
+  const rows = w.rowsOf('TELEGRAM_CHATS');
+  assert.equal(rows.length, 1, 'registered without any menu click');
+  assert.equal(rows[0].CHAT_ID, '999');
+  const replies = w.g.fetches.filter((f) => f.method === 'sendMessage');
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].payload.chat_id, '999');
+
+  // running it again for the same chat is idempotent: no duplicate row
+  w.g.tg.updates.push(startMsg(201, 999));
+  w.c.telegramPollUpdatesTrigger_();
+  assert.equal(w.rowsOf('TELEGRAM_CHATS').length, 1);
+
+  // a failure inside the polling logic is caught and audited, never thrown out of the trigger
+  w.g.tg.down = true;
+  assert.doesNotThrow(() => w.c.telegramPollUpdatesTrigger_());
+  assert.ok(audits(w).some((r) => r.Status === 'TELEGRAM_POLL_ERROR'), 'the failure is logged, not silently dropped');
 });
 
 // ---------------------------------------------------------------- reminders
@@ -270,49 +302,51 @@ test('the entry points are plain functions the time trigger can call (event argu
 
 test('planReminderTriggers: creates only the missing ones, counts foreign triggers, limit 20', () => {
   const { c } = makeEnv();
-  assert.deepEqual(plain(c.planReminderTriggers([{ handler: 'x' }])), { create: ['dailyAttendanceReminder', 'dailyAttendanceEscalation', 'inputDigest'], present: [], total: 4 });
-  assert.deepEqual(plain(c.planReminderTriggers([{ handler: 'inputDigest' }])).create, ['dailyAttendanceReminder', 'dailyAttendanceEscalation']);
-  const seventeen = Array.from({ length: 17 }, (_, i) => ({ handler: 'f' + i }));
-  assert.equal(c.planReminderTriggers(seventeen).create.length, 3, '17 + 3 = 20 is allowed');
-  assert.throws(() => c.planReminderTriggers(seventeen.concat([{ handler: 'f17' }])), /Trigger limit/);
-  assert.equal(c.planReminderTriggers(seventeen.concat([{ handler: 'f17' }, { handler: 'dailyAttendanceReminder' }, { handler: 'dailyAttendanceEscalation' }, { handler: 'inputDigest' }].slice(1))).create.length, 0, 'all present: no limit error');
+  assert.deepEqual(plain(c.planReminderTriggers([{ handler: 'x' }])),
+    { create: ['dailyAttendanceReminder', 'dailyAttendanceEscalation', 'inputDigest', 'telegramPollUpdatesTrigger_'], present: [], total: 5 });
+  assert.deepEqual(plain(c.planReminderTriggers([{ handler: 'inputDigest' }])).create, ['dailyAttendanceReminder', 'dailyAttendanceEscalation', 'telegramPollUpdatesTrigger_']);
+  const sixteen = Array.from({ length: 16 }, (_, i) => ({ handler: 'f' + i }));
+  assert.equal(c.planReminderTriggers(sixteen).create.length, 4, '16 + 4 = 20 is allowed');
+  assert.throws(() => c.planReminderTriggers(sixteen.concat([{ handler: 'f16' }])), /Trigger limit/);
+  assert.equal(c.planReminderTriggers(sixteen.concat([{ handler: 'f16' }, { handler: 'dailyAttendanceReminder' }, { handler: 'dailyAttendanceEscalation' }, { handler: 'inputDigest' }, { handler: 'telegramPollUpdatesTrigger_' }].slice(1))).create.length, 0, 'all present: no limit error');
   assert.equal(c.ATT_MAX_TRIGGERS, 5, 'the form-submit cap is unchanged');
 });
 
-test('installReminderTriggers: owner only, 11:00 / 14:00 / 11:05 daily in the script time zone, idempotent, foreign triggers untouched', () => {
+test('installReminderTriggers: owner only, 11:00 / 14:00 / 11:05 daily plus the 5-minute Telegram poll, idempotent, foreign triggers untouched', () => {
   const w = world({ user: HR });
   w.g.triggers.push({ handler: 'PHASE1_V2' });
   assert.throws(() => w.c.installReminderTriggers(), /Owner only/);
   assert.equal(w.g.triggers.length, 1);
   w.user = OWNER;
   const r = plain(w.c.installReminderTriggers());
-  assert.deepEqual(r.created, ['dailyAttendanceReminder', 'dailyAttendanceEscalation', 'inputDigest']);
-  const mine = w.g.triggers.filter((t) => t.handler !== 'PHASE1_V2').map((t) => [t.handler, t.every, t.hour, t.minute, t.tz]);
-  assert.deepEqual(mine, [['dailyAttendanceReminder', 1, 11, 0, 'Asia/Kolkata'], ['dailyAttendanceEscalation', 1, 14, 0, 'Asia/Kolkata'], ['inputDigest', 1, 11, 5, 'Asia/Kolkata']]);
+  assert.deepEqual(r.created, ['dailyAttendanceReminder', 'dailyAttendanceEscalation', 'inputDigest', 'telegramPollUpdatesTrigger_']);
+  const mine = w.g.triggers.filter((t) => t.handler !== 'PHASE1_V2').map((t) => [t.handler, t.every, t.hour, t.minute, t.tz, t.everyMinutes]);
+  assert.deepEqual(mine, [['dailyAttendanceReminder', 1, 11, 0, 'Asia/Kolkata', undefined], ['dailyAttendanceEscalation', 1, 14, 0, 'Asia/Kolkata', undefined],
+    ['inputDigest', 1, 11, 5, 'Asia/Kolkata', undefined], ['telegramPollUpdatesTrigger_', undefined, undefined, undefined, undefined, 5]]);
   const again = plain(w.c.installReminderTriggers());
-  assert.deepEqual([again.created.length, again.alreadyPresent.length], [0, 3]);
-  assert.equal(w.g.triggers.length, 4);
+  assert.deepEqual([again.created.length, again.alreadyPresent.length], [0, 4]);
+  assert.equal(w.g.triggers.length, 5);
   assert.ok(audits(w).some((x) => x.Status === 'REMINDER_TRIGGERS_INSTALL'));
 });
 
-test('removeReminderTriggers deletes only the three reminder triggers (never the form-submit or foreign ones)', () => {
+test('removeReminderTriggers deletes only the four reminder/alert triggers (never the form-submit or foreign ones)', () => {
   const w = world();
   w.g.triggers.push({ handler: 'PHASE1_V2' }, { handler: 'hrosOnFormSubmit' });
   w.c.installReminderTriggers();
-  assert.equal(w.g.triggers.length, 5);
+  assert.equal(w.g.triggers.length, 6);
   const r = plain(w.c.removeReminderTriggers());
-  assert.deepEqual(r.removed.sort(), ['dailyAttendanceEscalation', 'dailyAttendanceReminder', 'inputDigest']);
+  assert.deepEqual(r.removed.sort(), ['dailyAttendanceEscalation', 'dailyAttendanceReminder', 'inputDigest', 'telegramPollUpdatesTrigger_']);
   assert.deepEqual(w.g.triggers.map((t) => t.handler), ['PHASE1_V2', 'hrosOnFormSubmit']);
   w.user = HR;
   assert.throws(() => w.c.removeReminderTriggers(), /Owner only/);
 });
 
-test('installTriggers (form submit) ignores the reminder triggers for its cap of 5, and still reports the true total', () => {
+test('installTriggers (form submit) ignores the reminder/alert triggers for its cap of 5, and still reports the true total', () => {
   const w = world();
   w.g.triggers.push({ handler: 'a' }, { handler: 'b' }, { handler: 'c' });
-  w.c.installReminderTriggers(); // 3 foreign + 3 reminder = 6 > 5 if they were counted
+  w.c.installReminderTriggers(); // 3 foreign + 4 reminder/alert = 7 > 5 if they were counted
   const r = plain(w.c.installTriggers());
-  assert.deepEqual([r.created, r.totalTriggers], [1, 7]);
+  assert.deepEqual([r.created, r.totalTriggers], [1, 8]);
   assert.ok(w.g.triggers.some((t) => t.handler === 'hrosOnFormSubmit'));
 });
 

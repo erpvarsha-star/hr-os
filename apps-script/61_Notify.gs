@@ -4,7 +4,9 @@
  * Secrets: the bot token lives ONLY in Script Properties (TELEGRAM_BOT_TOKEN), never in a sheet and never in a log / error text.
  * People: TELEGRAM_CHATS (CHAT_ID, NAME, USERNAME, FIRST_SEEN, EMAIL, ACTIVE). Anyone who presses Start in the bot is recorded
  * with a blank EMAIL; only the owner typing an email against a chat links it to a person. An unmapped chat never gets payroll data.
- * No webhook is used: telegramPollUpdates_() pulls getUpdates on demand (menu "Telegram: refresh chats").
+ * No webhook is used: telegramPoll_() pulls getUpdates, on demand (menu "Telegram: refresh chats", via telegramPollUpdates_())
+ * and automatically every 5 minutes once reminder triggers are installed (62_Reminders.gs, via telegramPollUpdatesTrigger_()) -
+ * so pressing Start registers a person within about 5 minutes without the owner doing anything.
  *
  * Message rule: short, totals per population are fine, never a figure of an individual. AUDIT_LOG gets subject + channel + ok only.
  */
@@ -13,6 +15,7 @@ var TELEGRAM_OFFSET_PROP = 'TELEGRAM_UPDATE_OFFSET';
 var TELEGRAM_API_ = 'https://api.telegram.org/bot';
 var TELEGRAM_MAX_TEXT = 3800;
 var TELEGRAM_START_REPLY = 'Registered. Ask the payroll owner to link you.';
+var TELEGRAM_REPEAT_REPLY = "You're registered. Ask the payroll owner to link your email in TELEGRAM_CHATS if alerts aren't reaching you yet.";
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -41,25 +44,34 @@ function notifyChatMap(rows) {
 }
 
 /**
- * Pure. getUpdates result array + known chat ids -> {offset, newChats:[{chatId,name,username}], replyTo:[chatId]}.
- * Only a private chat that sent /start (or /start@bot ...) is recorded; every update advances the offset.
+ * Pure. getUpdates result array + known chat ids -> {offset, newChats:[{chatId,name,username}], replyTo:[chatId], repeatTo:[chatId]}.
+ * Only a private chat is looked at. A chat not yet known that sends /start (or /start@bot ...) is recorded and goes in
+ * replyTo; a chat already known (passed in, or recorded earlier in this same batch) that sends /start again goes in
+ * repeatTo instead (no new row, a different short reply, and only once per batch even if it sends /start several times).
+ * Every update advances the offset regardless.
  */
 function telegramPlanUpdates(updates, knownChatIds, prevOffset) {
+  var preKnown = {};
+  (knownChatIds || []).forEach(function (id) { preKnown[String(id)] = true; });
   var known = {};
-  (knownChatIds || []).forEach(function (id) { known[String(id)] = true; });
-  var offset = prevOffset || 0, newChats = [];
+  Object.keys(preKnown).forEach(function (id) { known[id] = true; });
+  var offset = prevOffset || 0, newChats = [], repeatTo = [], seenRepeat = {};
   (updates || []).forEach(function (u) {
     if (u && typeof u.update_id === 'number' && u.update_id + 1 > offset) offset = u.update_id + 1;
     var m = u && u.message;
     if (!m || !m.chat || m.chat.type !== 'private') return;
     if (!/^\/start(@\w+)?(\s|$)/i.test(String(m.text || '').trim())) return;
     var id = String(m.chat.id);
-    if (known[id]) return;
+    if (preKnown[id]) {
+      if (!seenRepeat[id]) { seenRepeat[id] = true; repeatTo.push(id); }
+      return;
+    }
+    if (known[id]) return; // already registered earlier in this same batch - nothing more to do
     known[id] = true;
     var name = [m.chat.first_name, m.chat.last_name].filter(function (x) { return x; }).join(' ');
     newChats.push({ chatId: id, name: name, username: m.chat.username ? '@' + m.chat.username : '' });
   });
-  return { offset: offset, newChats: newChats, replyTo: newChats.map(function (c) { return c.chatId; }) };
+  return { offset: offset, newChats: newChats, replyTo: newChats.map(function (c) { return c.chatId; }), repeatTo: repeatTo };
 }
 
 // ---------------------------------------------------------------- token / Telegram API
@@ -89,10 +101,13 @@ function telegramApi_(token, method, payload) {
 function notify_chatRows_() { return getSheet(TABS.TELEGRAM_CHATS) ? readObjects(TABS.TELEGRAM_CHATS) : []; }
 
 /**
- * Pulls pending bot updates (getUpdates, stored offset, no webhook), records every new /start chat in TELEGRAM_CHATS
- * (EMAIL blank, ACTIVE Y) and replies once. Returns {updates, newChats, names}.
+ * Shared core for both the manual menu refresh and the automatic 5-minute trigger: pulls pending bot updates
+ * (getUpdates, stored offset, no webhook), records every new /start chat in TELEGRAM_CHATS (EMAIL blank, ACTIVE Y),
+ * replies once to each new chat, and once more (a different, shorter message) to a chat that already exists but sends
+ * /start again. Throws if there is no token yet or getUpdates fails - callers decide how to handle that.
+ * Returns {updates, newChats, names}.
  */
-function telegramPollUpdates_() {
+function telegramPoll_() {
   var token = notify_token_();
   if (!token) throw new Error('No Telegram bot token yet (HR OS > Alerts > Telegram: set bot token)');
   var props = notify_props_();
@@ -114,9 +129,29 @@ function telegramPollUpdates_() {
   // the offset is stored after the rows are written: a failed write re-reads the same updates next time (no chat is lost)
   if (plan.offset > prevOffset) props.setProperty(TELEGRAM_OFFSET_PROP, String(plan.offset));
   plan.replyTo.forEach(function (chatId) { telegramApi_(token, 'sendMessage', { chat_id: chatId, text: TELEGRAM_START_REPLY }); });
-  var out = { updates: updates.length, newChats: plan.newChats.length, names: plan.newChats.map(function (c) { return c.name || c.username || c.chatId; }) };
+  plan.repeatTo.forEach(function (chatId) { telegramApi_(token, 'sendMessage', { chat_id: chatId, text: TELEGRAM_REPEAT_REPLY }); });
+  return { updates: updates.length, newChats: plan.newChats.length, names: plan.newChats.map(function (c) { return c.name || c.username || c.chatId; }) };
+}
+
+/** Manual version (menu "Telegram: refresh chats"): same polling as telegramPoll_(), plus an audit row for the click. */
+function telegramPollUpdates_() {
+  var out = telegramPoll_();
   audit('TELEGRAM_REFRESH', '', '', { updates: out.updates, newChats: out.newChats });
   return out;
+}
+
+/**
+ * Automatic version (62_Reminders.gs installs this on a 5-minute time trigger): the same polling as telegramPoll_(),
+ * but silent and safe for a trigger nobody is watching - no bot token yet is not an error (returns quietly), and any
+ * other failure (network, Telegram API, sheet write) is caught and written to AUDIT_LOG instead of breaking the trigger.
+ */
+function telegramPollUpdatesTrigger_() {
+  if (!notify_token_()) return;
+  try {
+    telegramPoll_();
+  } catch (e) {
+    try { audit('TELEGRAM_POLL_ERROR', '', '', String(e && e.message ? e.message : e)); } catch (e2) { /* the log never blocks the trigger */ }
+  }
 }
 
 // ---------------------------------------------------------------- notify_
