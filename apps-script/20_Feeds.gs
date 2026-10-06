@@ -19,12 +19,16 @@ var FEEDS_OT_EXTERNAL_TAB = 'Form Responses 1';    // default tab name when an e
 
 function feeds_norm_(h) { return String(h == null ? '' : h).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-/** Header row -> {normalizedHeader: firstIndex}. */
+/**
+ * Header row -> {normalizedHeader: lastIndex}. The LAST matching column wins when a header name repeats (a form
+ * edited/refreshed more than once can leave stale earlier columns behind; Google Forms always appends the
+ * current item to the end, so the rightmost occurrence is the one respondents are actually answering in).
+ */
 function feeds_headerIndex_(headerRow, limit) {
   var idx = {};
   for (var i = 0; i < headerRow.length && (limit == null || i < limit); i++) {
     var k = feeds_norm_(headerRow[i]);
-    if (k && !(k in idx)) idx[k] = i;
+    if (k) idx[k] = i;
   }
   return idx;
 }
@@ -660,14 +664,16 @@ function feeds_assertNoPassword_(headers, cols) {
 }
 
 /**
- * Pure: pick columns by header name. defs=[{key, names, required}]. Password headers are never eligible.
+ * Pure: pick columns by header name. defs=[{key, names, required}]. Password headers are never eligible. When a
+ * header name repeats (stale duplicate columns from a re-edited form) the LAST occurrence wins - see
+ * feeds_headerIndex_.
  * Returns {cols:[0-based indexes, unique], missing:[keys]}.
  */
 function feeds_selectColumns_(headers, defs) {
   var idx = {};
   headers.forEach(function (h, i) {
     var k = feeds_norm_(h);
-    if (k && !feeds_isPasswordHeader_(h) && !(k in idx)) idx[k] = i;
+    if (k && !feeds_isPasswordHeader_(h)) idx[k] = i;
   });
   var cols = [], missing = [];
   defs.forEach(function (d) {
@@ -819,7 +825,7 @@ function feeds_otPeriodOfRow_(sheet, rowNum) {
   if (lc < 1) return '';
   var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
   var col = -1;
-  headers.forEach(function (h, i) { if (col < 0 && ['dateofot', 'otdate'].indexOf(feeds_norm_(h)) >= 0) col = i; });
+  headers.forEach(function (h, i) { if (['dateofot', 'otdate'].indexOf(feeds_norm_(h)) >= 0) col = i; }); // last match wins
   if (col < 0) return '';
   var period = feeds_otPeriodForDate(sheet.getRange(rowNum, col + 1, 1, 1).getValues()[0][0], readControlMap());
   if (!period) return '';

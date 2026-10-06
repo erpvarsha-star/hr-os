@@ -61,6 +61,35 @@ function buildAttendanceForm_(def, roster) {
 
 function sheetNames_(ss) { return ss.getSheets().map(function (s) { return s.getName(); }); }
 
+/**
+ * Pure. Purely informational scan of a raw response header row: which non-blank header text appears more than
+ * once, how many times, and at which 1-based columns. Never modifies anything - a repeated form edit/refresh can
+ * leave stale duplicate question columns behind (see parseAttendanceRawRow), and the owner/HR must clean those up
+ * by hand in the Google Form itself. Sorted by first appearance.
+ */
+function attFormDuplicateHeaders(headerRow) {
+  var cols = {}, order = [];
+  (headerRow || []).forEach(function (h, i) {
+    var title = String(h == null ? '' : h).trim();
+    if (!title) return;
+    if (!cols[title]) { cols[title] = []; order.push(title); }
+    cols[title].push(i + 1);
+  });
+  return order.filter(function (t) { return cols[t].length > 1; })
+    .map(function (t) { return { header: t, count: cols[t].length, columns: cols[t] }; });
+}
+
+/** Owner/HR only. Reads row 1 of the named raw tab and reports its duplicate headers; touches nothing else. */
+function checkAttFormDuplicateColumns_(tabName) {
+  emp_requireUser_();
+  var name = String(tabName == null ? '' : tabName).trim();
+  var sheet = getSheet(name);
+  if (!sheet) throw new Error('No such tab "' + name + '"');
+  var lc = sheet.getLastColumn();
+  var headers = lc > 0 ? sheet.getRange(1, 1, 1, lc).getValues()[0] : [];
+  return { tab: name, duplicates: attFormDuplicateHeaders(headers) };
+}
+
 /** Every form the create / refresh menu actions manage: the two daily forms and the two monthly days-present forms. */
 function attAllFormJobs_() {
   var jobs = [];
@@ -170,16 +199,26 @@ function hrosOnFormSubmit(e) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    if (route === 'ATT_VFL' || route === 'ATT_PUNE') {
-      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_VFL;
+    if (route === 'ATT_VFL') {
       var rowNum = e.range.getRow(), lc = sheet.getLastColumn();
       var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
       var values = sheet.getRange(rowNum, 1, 1, lc).getValues()[0];
       var parsed = parseAttendanceRawRow(headers, values, name, rowNum);
-      var out = ingestAttendanceResponse_(parsed, site);
-      audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: site, source: parsed.sourceRef, valid: out.valid,
+      var out = ingestAttendanceResponse_(parsed, SITE_VFL);
+      audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: SITE_VFL, source: parsed.sourceRef, valid: out.valid,
         rejected: out.rejected, superseded: out.superseded });
       return out;
+    }
+    if (route === 'ATT_PUNE') {
+      // Kajal's redesign: one response = one employee's attendance for the shift-day (not a whole-site grid)
+      var prowNum = e.range.getRow(), plc = sheet.getLastColumn();
+      var pheaders = sheet.getRange(1, 1, 1, plc).getValues()[0];
+      var pvalues = sheet.getRange(prowNum, 1, 1, plc).getValues()[0];
+      var pparsed = parsePuneAttendanceRawRow(pheaders, pvalues, name, prowNum);
+      var pout = ingestPuneAttendanceResponse_(pparsed);
+      audit('ATT_FORM_SUBMIT', pparsed.date || '', '', { site: SITE_PUNE, source: pparsed.sourceRef, valid: pout.valid,
+        rejected: pout.rejected, superseded: pout.superseded });
+      return pout;
     }
     if (route === 'ATT_MONTHLY_VFL' || route === 'ATT_MONTHLY_PUNE') {
       var mrow = e.range.getRow(), mlc = sheet.getLastColumn();

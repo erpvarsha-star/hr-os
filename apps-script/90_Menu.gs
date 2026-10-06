@@ -8,7 +8,8 @@ function onOpen() {
       .addItem('Run setup (idempotent)', 'menuSetup')
       .addItem('Create attendance forms', 'menuCreateForms')
       .addItem('Refresh form rosters', 'menuRefreshRosters')
-      .addItem('Install triggers', 'menuInstallTriggers'))
+      .addItem('Install triggers', 'menuInstallTriggers')
+      .addItem('Attendance: check form for duplicate columns...', 'menuCheckFormDuplicateColumns'))
     .addItem('About HR OS', 'menuAbout')
     .addSubMenu(ui.createMenu('Employees')
       .addItem('Add or update employee', 'menuEmployeeDialog')
@@ -114,6 +115,19 @@ function menuCreateForms() { run_('Create attendance forms', createAttendanceFor
 function menuRefreshRosters() { run_('Refresh form rosters', refreshAttendanceFormRosters); }
 /** The single spreadsheet-level onFormSubmit trigger (attendance forms, OT form, canteen, efficiency). */
 function menuInstallTriggers() { run_('Install triggers', installTriggers); }
+/** Read-only: lists duplicate header text in a raw form response tab's row 1 so HR can clean up the Google Form by hand. */
+function menuCheckFormDuplicateColumns() {
+  run_('Attendance: check form for duplicate columns', function () {
+    var t = ask_('Attendance: check form for duplicate columns',
+      'Raw response tab name (e.g. ' + ATT_FORM_DEFS.VFL.rawTab + ' or ' + ATT_FORM_DEFS.PUNE.rawTab + ')');
+    if (!t) return null;
+    var r = checkAttFormDuplicateColumns_(t);
+    if (!r.duplicates.length) return 'No duplicate headers in ' + r.tab + '.';
+    return r.duplicates.map(function (d) {
+      return d.header + ': appears ' + d.count + ' times, at columns ' + d.columns.join(', ');
+    }).join('\n');
+  });
+}
 
 function menuPrepareMonth() { run_('Prepare month', function () { var p = askPeriod_('Prepare month'); return p && prepareMonth(p); }); }
 function menuPrepareAttendance() { run_('Prepare monthly attendance', function () { var p = askPeriod_('Prepare monthly attendance'); return p && prepareMonthlyAttendance(p); }); }

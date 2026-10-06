@@ -221,31 +221,37 @@ function reminderWorld() {
   return w;
 }
 
-test('dailyAttendance reminder: missing site is told with the live form link; the received site is not; escalation adds the owner', () => {
+test('dailyAttendance reminder: checks the shift-day that just finished (today - 1 day), not today', () => {
   const w = reminderWorld();
+  // today is 8-Oct; the shift-day that finished at 07:00 today is 7-Oct 07:00 -> 8-Oct 07:00
   w.addRows('ATTENDANCE_DAILY', [{ PERIOD: '2026-10', DATE: '2026-10-07', SITE: 'PUNE', EMP_ID: 'P1', CODE: 'P', STATUS: 'VALID' }]);
-  let r = plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-07'));
+  let r = plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-08'));
   assert.deepEqual(r.map((x) => [x.site, x.action]), [['VFL', 'SEND'], ['PUNE', 'SKIP']]);
   assert.deepEqual(w.g.mails.map((m) => m.to).sort(), ['hrmanager@varshaforgings.com', 'second@varshaforgings.com']);
-  assert.equal(w.g.mails[0].subject, 'Daily attendance for VFL not received for 2026-10-07');
-  assert.match(w.g.mails[0].body, /Daily attendance for VFL not received for 2026-10-07\. Form: https:\/\/forms\/live\/VFL/);
+  assert.equal(w.g.mails[0].subject, 'Daily attendance for VFL Waluj not received for shift-day 07-Oct-2026 (07:00 07-Oct to 07:00 08-Oct).');
+  assert.match(w.g.mails[0].body, /Daily attendance for VFL Waluj not received for shift-day 07-Oct-2026 \(07:00 07-Oct to 07:00 08-Oct\)\. Form: https:\/\/forms\/live\/VFL/);
   w.g.mails.length = 0;
-  r = plain(w.c.attendanceReminderRun_('ESCALATION', '2026-10-07'));
+  r = plain(w.c.attendanceReminderRun_('ESCALATION', '2026-10-08'));
   assert.deepEqual(w.g.mails.map((m) => m.to).sort(), ['hrmanager@varshaforgings.com', OWNER, 'second@varshaforgings.com'].sort());
   assert.match(w.g.mails[0].body, /Still missing after the 11:00 reminder/);
-  // once VFL arrives, the 14:00 run stays quiet
+  // once VFL arrives for the shift-day (7-Oct), the 14:00 run stays quiet
   w.addRows('ATTENDANCE_DAILY', [{ PERIOD: '2026-10', DATE: '2026-10-07', SITE: 'VFL', EMP_ID: 'V1', CODE: 'P', STATUS: 'VALID' }]);
   w.g.mails.length = 0;
-  plain(w.c.attendanceReminderRun_('ESCALATION', '2026-10-07'));
+  plain(w.c.attendanceReminderRun_('ESCALATION', '2026-10-08'));
   assert.equal(w.g.mails.length, 0);
+  // a daily row filed under TODAY's date (the shift-day that just started, not yet finished) does not count
+  const w2 = reminderWorld();
+  w2.addRows('ATTENDANCE_DAILY', [{ PERIOD: '2026-10', DATE: '2026-10-08', SITE: 'VFL', EMP_ID: 'V1', CODE: 'P', STATUS: 'VALID' }]);
+  assert.equal(plain(w2.c.attendanceReminderRun_('REMINDER', '2026-10-08'))[0].action, 'SEND', 'today\'s own shift-day row does not satisfy yesterday\'s check');
 });
 
-test('dailyAttendance reminder: silent before DAILY_REMINDER_FROM, on Sunday and on a paid site holiday; both site forms covered', () => {
+test('dailyAttendance reminder: silent before DAILY_REMINDER_FROM, on the shift-day\'s Sunday and on a paid holiday for that shift-day; both site forms covered', () => {
   const w = reminderWorld();
-  assert.ok(plain(w.c.attendanceReminderRun_('REMINDER', '2026-09-30')).every((x) => x.action === 'SKIP'));
-  assert.ok(plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-04')).every((x) => x.action === 'SKIP'), 'Sunday');
+  assert.ok(plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-01')).every((x) => x.action === 'SKIP'), 'shift-day 30-Sep is before DAILY_REMINDER_FROM 1-Oct');
+  // shift-day 4-Oct-2026 is a Sunday; it is checked the following day, 5-Oct
+  assert.ok(plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-05')).every((x) => x.action === 'SKIP'), 'shift-day was a Sunday');
   w.addRows('HOLIDAY_CALENDAR', [{ DATE: '2026-10-20', SITE: 'VFL', HOLIDAY_NAME: 'Dussehra', PAID: 'Y' }]);
-  assert.deepEqual(plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-20')).map((x) => x.action), ['SKIP', 'SEND']);
+  assert.deepEqual(plain(w.c.attendanceReminderRun_('REMINDER', '2026-10-21')).map((x) => x.action), ['SKIP', 'SEND'], 'shift-day 20-Oct (checked on 21-Oct) was VFL\'s paid holiday');
   assert.equal(w.g.mails.length, 1);
   assert.equal(w.g.mails[0].to, 'ea@varshaforgings.com');
   assert.match(w.g.mails[0].body, /form link unavailable/, 'no Pune form id stored');

@@ -563,29 +563,41 @@ function approveAttendance(period, population) {
 }
 
 /**
- * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
- * {date, marks, ack, timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked
- * response sheet are the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid
- * row, the cell holds the chosen code) and the acknowledgement checkbox title.
+ * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW) -> the parsed response {date, marks, ack,
+ * timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked response sheet are
+ * the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid row, the cell
+ * holds the chosen code) and the acknowledgement checkbox title.
+ *
+ * The live VFL form has accumulated several near-duplicate blocks of the same grid questions from repeated form
+ * edits (Google Forms appends a newly re-added item to the end and leaves the stale old one in place). For every
+ * repeated header (grid row label, Timestamp, Date, the ack checkbox) only the LAST (rightmost) column is read;
+ * earlier occurrences are ignored outright, even when they hold a non-blank leftover value, so a stale "Absent"
+ * typed into an old abandoned column can never survive over a genuine blank (= present) in the column the
+ * supervisor is actually answering in today.
  */
 function parseAttendanceRawRow(headers, values, sheetName, rowNum) {
   var out = { date: '', marks: {}, ack: false, timestamp: '', sourceRef: sheetName + '!' + rowNum };
+  var tsCol = -1, dateCol = -1, ackCol = -1, gridCol = {};
   (headers || []).forEach(function (h, i) {
     var title = String(h == null ? '' : h).trim();
-    var v = values[i];
-    if (/^timestamp$/i.test(title)) {
-      out.timestamp = Object.prototype.toString.call(v) === '[object Date]'
-        ? Utilities.formatDate(v, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : String(v == null ? '' : v);
-    } else if (/^date$/i.test(title)) {
-      out.date = feeds_parseDate_(v);
-    } else if (title.indexOf(ATT_GRID_TITLE_PREFIX) === 0) {
+    if (/^timestamp$/i.test(title)) tsCol = i;
+    else if (/^date$/i.test(title)) dateCol = i;
+    else if (title.indexOf(ATT_GRID_TITLE_PREFIX) === 0) {
       var m = /\[(.+)\]\s*$/.exec(title);
-      var code = String(v == null ? '' : v).trim();
       var lbl = m ? parseRowLabel(m[1]) : null;
-      if (lbl && code) out.marks[lbl.empId] = code.toUpperCase();
-    } else if (title === ATT_ACK_TEXT) {
-      out.ack = String(v == null ? '' : v).trim() !== '';
-    }
+      if (lbl) gridCol[lbl.empId] = i; // last (rightmost) matching column for this employee wins
+    } else if (title === ATT_ACK_TEXT) ackCol = i;
+  });
+  if (tsCol >= 0) {
+    var tv = values[tsCol];
+    out.timestamp = Object.prototype.toString.call(tv) === '[object Date]'
+      ? Utilities.formatDate(tv, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : String(tv == null ? '' : tv);
+  }
+  if (dateCol >= 0) out.date = feeds_parseDate_(values[dateCol]);
+  if (ackCol >= 0) out.ack = String(values[ackCol] == null ? '' : values[ackCol]).trim() !== '';
+  Object.keys(gridCol).forEach(function (empId) {
+    var code = String(values[gridCol[empId]] == null ? '' : values[gridCol[empId]]).trim();
+    if (code) out.marks[empId] = code.toUpperCase();
   });
   return out;
 }
@@ -599,6 +611,135 @@ function ingestAttendanceResponse_(parsed, site) {
   var roster = buildRoster(undefined, { asOf: date });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var rows = normalizeAttendanceResponse(parsed, roster, holidays, site, getWeeklyOff(site));
+  var scope = lockScope_(period);
+  var popOf = {};
+  roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });
+  rows = rows.map(function (r) {
+    if (r.STATUS === 'VALID' && scope.isLocked(popOf[r.EMP_ID], r.EMP_ID)) {
+      r.STATUS = 'REJECTED'; r.REJECT_REASON = 'PERIOD_LOCKED';
+    }
+    return r;
+  });
+  var existing = readObjects(TABS.ATTENDANCE_DAILY).filter(function (r) { return toIsoDate(r.DATE) === date; });
+  var sup = findSuperseded(existing, rows);
+  updateRows(TABS.ATTENDANCE_DAILY, sup.map(function (r) { return { row: r._row, values: { STATUS: 'SUPERSEDED' } }; }));
+  appendObjects(TABS.ATTENDANCE_DAILY, rows);
+  return { valid: rows.filter(function (r) { return r.STATUS === 'VALID'; }).length,
+    rejected: rows.filter(function (r) { return r.STATUS !== 'VALID'; }).length, superseded: sup.length };
+}
+
+// ================================================================ Pune daily form (one employee per response)
+
+/**
+ * Pure: minutes-since-midnight of a time-of-day value (a Sheets Date cell carrying only a time, or text like
+ * "8:00:00 AM" / "20:00"). null when unparseable.
+ */
+function puneTimeMinutes_(v) {
+  if (v == null || v === '') return null;
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) return null;
+    return v.getHours() * 60 + v.getMinutes() + v.getSeconds() / 60;
+  }
+  var m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/.exec(String(v).trim());
+  if (!m) return null;
+  var h = +m[1], mi = +m[2], se = m[3] ? +m[3] : 0, ap = m[4] ? m[4].toUpperCase() : '';
+  if (mi > 59 || se > 59) return null;
+  if (ap) { if (h < 1 || h > 12) return null; if (ap === 'AM') { if (h === 12) h = 0; } else if (h !== 12) h += 12; }
+  else if (h > 23) return null;
+  return h * 60 + mi + se / 60;
+}
+
+/** Pure: readable "HH:mm" label for an informational OT_START/OT_END cell, or '' when blank/unparseable. */
+function puneOtTimeLabel_(v) {
+  if (v == null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return isNaN(v.getTime()) ? '' : Utilities.formatDate(v, HROS_TZ, 'HH:mm');
+  }
+  return String(v).trim();
+}
+
+/**
+ * Pure: OT hours between two time-of-day values, wrapping past midnight (the shift day runs 07:00 -> 07:00 the
+ * next calendar day, so an OT End earlier than OT Start is an overnight span, not an error). '' when either side
+ * is missing or unparseable.
+ */
+function puneOtHoursInfo_(startVal, endVal) {
+  var s = puneTimeMinutes_(startVal), e = puneTimeMinutes_(endVal);
+  if (s == null || e == null) return '';
+  var diff = e - s;
+  if (diff <= 0) diff += 24 * 60;
+  return Math.round((diff / 60) * 100) / 100;
+}
+
+/**
+ * Pure: one response row of the redesigned Pune daily form (ATT_FORM_PUNE_RAW, one employee per response) ->
+ * {date, empId, code, ack, otStart, otEnd, timestamp, sourceRef}. Header text is matched tolerantly (trimmed,
+ * case/space-insensitive, the feeds_* convention of 20_Feeds.gs - see feeds_headerIndex_) because the live form's
+ * headers carry stray leading/trailing spaces (e.g. "  Employee  "). Column headers: Timestamp, Date,
+ * Department / Section, Employee ("EMP_ID – Name", the same label format as the VFL grid), Attendance Status,
+ * Check-in Time, Check-Out Time, the acknowledgement checkbox, OT Start Time, OT End Time.
+ */
+function parsePuneAttendanceRawRow(headers, values, sheetName, rowNum) {
+  var idx = feeds_headerIndex_(headers || []);
+  function cell(names) { var i = feeds_col_(idx, names); return i >= 0 ? values[i] : ''; }
+  var tsCell = cell(['timestamp']);
+  var timestamp = feeds_isDate_(tsCell) ? Utilities.formatDate(tsCell, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : feeds_str_(tsCell);
+  var lbl = parseRowLabel(cell(['employee']));
+  var ackIdx = -1;
+  (headers || []).forEach(function (h, i) { if (feeds_norm_(h) === feeds_norm_(ATT_ACK_TEXT)) ackIdx = i; });
+  return {
+    date: feeds_parseDate_(cell(['date'])),
+    empId: lbl ? lbl.empId : '',
+    code: feeds_str_(cell(['attendancestatus', 'attendance'])).toUpperCase(),
+    ack: ackIdx >= 0 ? feeds_str_(values[ackIdx]) !== '' : false,
+    otStart: cell(['otstarttime', 'otstart']),
+    otEnd: cell(['otendtime', 'otend']),
+    timestamp: timestamp,
+    sourceRef: sheetName + '!' + rowNum
+  };
+}
+
+/**
+ * Pure: one parsed Pune response -> exactly one ATTENDANCE_DAILY row (REJECTED or VALID) for its EMP_ID + date.
+ * One response is one employee's attendance for the shift-day in the Date column, so (unlike the VFL grid) the
+ * rest of the roster is never defaulted here. Blank Attendance Status defaults to Present, same as the VFL grid's
+ * "leave blank = present" rule; any other code not in DAILY_CODES is an EXCEPTION (REJECTED/INVALID_CODE) needing
+ * review rather than a silent guess. OT Start/End (if both given) are stored as informational columns only - see
+ * HROS_ATTENDANCE_DAILY_HEADERS.
+ */
+function normalizePuneAttendanceResponse(parsed, roster) {
+  var date = toIsoDate(parsed.date);
+  var entered = parsed.timestamp || '';
+  var otExtra = { OT_START: puneOtTimeLabel_(parsed.otStart), OT_END: puneOtTimeLabel_(parsed.otEnd),
+    OT_HOURS_INFO: puneOtHoursInfo_(parsed.otStart, parsed.otEnd) };
+  function row(emp, code, status, reason, extra) {
+    var o = { PERIOD: date ? date.slice(0, 7) : '', DATE: date, SITE: SITE_PUNE, EMP_ID: emp, CODE: code, SOURCE: 'FORM_PUNE',
+      SOURCE_REF: parsed.sourceRef || '', KEY: emp + '|' + date, STATUS: status, REJECT_REASON: reason || '', ENTERED_AT: entered };
+    Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+    return o;
+  }
+  if (!date) return [row('*', '', 'REJECTED', 'BAD_DATE')];
+  if (!parsed.ack) return [row('*', '', 'REJECTED', 'ACK_NOT_CHECKED', otExtra)];
+  var empId = String(parsed.empId || '').trim();
+  if (!empId) return [row('*', '', 'REJECTED', 'MISSING_EMP_ID', otExtra)];
+  var inRoster = (roster || []).some(function (e) { return e.SITE === SITE_PUNE && String(e.EMP_ID).trim() === empId; });
+  if (!inRoster) return [row(empId, parsed.code, 'REJECTED', 'UNKNOWN_EMP_ID', otExtra)];
+  var code = String(parsed.code || '').trim().toUpperCase();
+  if (!code) code = 'P'; // blank Attendance Status = present, same convention as the VFL grid
+  if (DAILY_CODES.indexOf(code) < 0) return [row(empId, code, 'REJECTED', 'INVALID_CODE', otExtra)];
+  return [row(empId, code, 'VALID', '', otExtra)];
+}
+
+/** Normalise + write one Pune response (rejects < MIN_PERIOD and LOCKED populations). Same "latest write for the
+ * same EMP_ID + date wins" convention as the VFL grid (findSuperseded keys on EMP_ID|DATE) and as canteen/efficiency
+ * (20_Feeds.gs feeds_latestPerKey_): a supervisor's correcting resubmission supersedes the earlier VALID row. */
+function ingestPuneAttendanceResponse_(parsed) {
+  var date = toIsoDate(parsed.date);
+  if (!date) throw new Error('Response has no valid date');
+  var period = date.slice(0, 7);
+  guardPeriod_(period);
+  var roster = buildRoster(undefined, { asOf: date });
+  var rows = normalizePuneAttendanceResponse(parsed, roster);
   var scope = lockScope_(period);
   var popOf = {};
   roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });

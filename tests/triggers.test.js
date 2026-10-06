@@ -60,6 +60,72 @@ test('parseAttendanceRawRow: grid headers "Attendance – Dept [ID – Name]", D
   assert.deepEqual(noAck.marks, {});
 });
 
+test('parseAttendanceRawRow: duplicate grid columns (repeated form edits) - only the LAST column per employee is read', () => {
+  const { c } = makeEnv();
+  const ack = c.ATT_ACK_TEXT;
+  // T-A has three columns from three form edits: the first two are stale (one still holds an old "A"), only the
+  // rightmost (blank = present) is the one the supervisor is actually answering in today.
+  const hdr = ['Timestamp', 'Date',
+    'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-A – Alpha One]',
+    'Attendance – Forge [T-B – Beta]', ack];
+  const p = plain(c.parseAttendanceRawRow(hdr,
+    [new Date(2026, 9, 6, 9, 0, 0), new Date(2026, 9, 6), 'A', '', '', 'HD', 'Confirmed'], 'ATT_FORM_VFL_RAW', 9));
+  assert.deepEqual(p.marks, { 'T-B': 'HD' }, 'T-A: stale "A" in an earlier duplicate column is ignored; the current (blank) column wins');
+  // when the LAST column is the one holding the real mark, that mark is read normally
+  const p2 = plain(c.parseAttendanceRawRow(hdr,
+    [new Date(2026, 9, 6, 9, 0, 0), new Date(2026, 9, 6), '', '', 'HD', '', 'Confirmed'], 'ATT_FORM_VFL_RAW', 10));
+  assert.deepEqual(p2.marks, { 'T-A': 'HD' });
+});
+
+test('attFormDuplicateHeaders: lists repeated header text with counts and columns; none for a clean header row', () => {
+  const { c } = makeEnv();
+  const ack = c.ATT_ACK_TEXT;
+  // abbreviated version of the real VFL header row's repeating pattern (6 near-duplicate blocks in production)
+  const dup = ['Timestamp', 'Date',
+    'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-B – Beta]',
+    'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-B – Beta]',
+    'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-B – Beta]', ack];
+  assert.deepEqual(plain(c.attFormDuplicateHeaders(dup)), [
+    { header: 'Attendance – Forge [T-A – Alpha One]', count: 3, columns: [3, 5, 7] },
+    { header: 'Attendance – Forge [T-B – Beta]', count: 3, columns: [4, 6, 8] },
+  ]);
+  const clean = ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha One]', 'Attendance – Forge [T-B – Beta]', ack];
+  assert.deepEqual(plain(c.attFormDuplicateHeaders(clean)), []);
+  assert.deepEqual(plain(c.attFormDuplicateHeaders([])), []);
+  assert.deepEqual(plain(c.attFormDuplicateHeaders(['', '', 'X'])), [], 'blank headers are never reported');
+});
+
+function duplicateCheckWorld(user) {
+  const env = makeEnv({ user: user || 'hr@varshaforgings.com' });
+  env.put('PAYROLL_CONTROL', ['KEY', 'VALUE', 'NOTE', 'UPDATED_AT'], [{ KEY: 'HR_APPROVER_EMAIL', VALUE: 'hr@varshaforgings.com' }, { KEY: 'OWNER_APPROVER_EMAIL', VALUE: 'owner@varshaforgings.com' }]);
+  env.put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
+  return env;
+}
+
+test('checkAttFormDuplicateColumns_: owner/HR only, read-only, reports a chosen tab\'s duplicate headers', () => {
+  const env = duplicateCheckWorld();
+  const raw = env.put('ATT_FORM_VFL_RAW', ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha]', 'Attendance – Forge [T-A – Alpha]']);
+  raw.data.push([new Date(2026, 9, 6), new Date(2026, 9, 6), 'A', '']);
+  const r = plain(env.c.checkAttFormDuplicateColumns_('ATT_FORM_VFL_RAW'));
+  assert.deepEqual(r, { tab: 'ATT_FORM_VFL_RAW', duplicates: [{ header: 'Attendance – Forge [T-A – Alpha]', count: 2, columns: [3, 4] }] });
+  assert.equal(raw.data.length, 2, 'nothing was written back to the sheet');
+  assert.throws(() => env.c.checkAttFormDuplicateColumns_('No Such Tab'), /No such tab/);
+  const stranger = duplicateCheckWorld('stranger@x.com');
+  stranger.put('ATT_FORM_VFL_RAW', ['Timestamp', 'Date']);
+  assert.throws(() => stranger.c.checkAttFormDuplicateColumns_('ATT_FORM_VFL_RAW'), /Not allowed/);
+});
+
+test('menu: Setup submenu carries the duplicate-column diagnostic', () => {
+  const w = duplicateCheckWorld();
+  const labels = [];
+  const menu = (name) => { const m = { items: [], addItem(l, fn) { labels.push([name, l, fn]); return m; }, addSeparator() { return m; }, addSubMenu() { return m; }, addToUi() { return m; } }; return m; };
+  w.c.SpreadsheetApp.getUi = () => ({ createMenu: menu });
+  w.c.onOpen();
+  const setup = labels.filter((l) => l[0] === 'Setup').map((l) => l[1]);
+  assert.ok(setup.includes('Attendance: check form for duplicate columns...'));
+  labels.filter((l) => l[0] === 'Setup').forEach((l) => assert.equal(typeof w.c[l[2]], 'function', l[2]));
+});
+
 function attendanceWorld() {
   const env = makeEnv();
   env.put('AUDIT_LOG', ['Timestamp', 'Module', 'Status', 'User', 'Message']);
@@ -73,9 +139,18 @@ function attendanceWorld() {
   ]);
   env.put('PAYROLL_PERIOD_CATEGORY', ['PAYROLL_MONTH', 'PAYROLL_CATEGORY', 'WORKING_DAYS', 'STATUS'], []);
   env.put('HOLIDAY_CALENDAR', ['DATE', 'SITE', 'HOLIDAY_NAME', 'PAID']);
-  env.put('ATTENDANCE_DAILY', ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'REJECT_REASON', 'ENTERED_AT']);
+  env.put('ATTENDANCE_DAILY', ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS', 'REJECT_REASON', 'ENTERED_AT',
+    'OT_START', 'OT_END', 'OT_HOURS_INFO']);
   return env;
 }
+/** Headers of the redesigned Pune daily form (ATT_FORM_PUNE_RAW), stray spaces and all, as Kajal's live sheet has them. */
+const PUNE_RAW_HDR = ['Timestamp', 'Date', '  Department / Section  ', '  Employee  ', 'Attendance  Status',
+  '  Check-in Time  ', 'Check-Out Time', 'All employees left blank were present (or on weekly off / holiday as per calendar)',
+  'OT Start Time', 'OT End Time'];
+const puneRow = (o) => Object.assign({ Timestamp: new Date(2026, 9, 1, 9, 0, 0), Date: new Date(2026, 9, 1), Dept: 'Housekeeping',
+  Employee: 'BUNG01 – Kawadu Shrawan Nehare', Status: 'P', CheckIn: '8:00:00 AM', CheckOut: '9:00:00 PM', Ack: 'Confirmed',
+  OtStart: '', OtEnd: '' }, o);
+const puneRowArray = (o) => { const r = puneRow(o); return [r.Timestamp, r.Date, r.Dept, r.Employee, r.Status, r.CheckIn, r.CheckOut, r.Ack, r.OtStart, r.OtEnd]; };
 const ev = (sheet, row, namedValues) => ({ range: { getSheet: () => sheet, getRow: () => row }, namedValues });
 
 test('hrosOnFormSubmit: attendance raw tab -> ATTENDANCE_DAILY (VFL site; Pune tab uses the Pune site)', () => {
@@ -96,9 +171,9 @@ test('hrosOnFormSubmit: attendance raw tab -> ATTENDANCE_DAILY (VFL site; Pune t
   raw.data.push([new Date(2026, 9, 5, 10, 0, 0), new Date(2026, 9, 5), '', 'HD', 'Confirmed']);
   const again = plain(env.c.hrosOnFormSubmit(ev(raw, 3)));
   assert.ok(again.superseded >= 3);
-  // Pune tab
-  const pune = env.put('ATT_FORM_PUNE_RAW', ['Timestamp', 'Date', 'Attendance – Sales [T-P – Pune]', ack]);
-  pune.data.push([new Date(2026, 9, 6, 9, 0, 0), new Date(2026, 9, 6), 'CL', 'Confirmed']);
+  // Pune tab - Kajal's redesign: one response = one employee
+  const pune = env.put('ATT_FORM_PUNE_RAW', PUNE_RAW_HDR);
+  pune.data.push(puneRowArray({ Employee: 'T-P – Pune', Status: 'CL', Timestamp: new Date(2026, 9, 6, 9, 0, 0), Date: new Date(2026, 9, 6) }));
   env.c.hrosOnFormSubmit(ev(pune, 2));
   const p = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.EMP_ID === 'T-P' && r.STATUS === 'VALID');
   assert.deepEqual([p.CODE, p.SITE, p.SOURCE], ['CL', 'PUNE', 'FORM_PUNE']);
@@ -214,4 +289,88 @@ test('OT source: local OT_FORM_RESPONSES by default, Overtime_Form fallback, ext
   e3.external.EXTID = { 'Form Responses 1': ext };
   assert.throws(() => e3.c.syncOtFromForm('2026-10'), /no tab "Nope"/);
   assert.throws(() => mk([{ KEY: 'OT_SOURCE_SPREADSHEET_ID', VALUE: 'BADID' }]).c.syncOtFromForm('2026-10'), /Cannot open the OT source spreadsheet/);
+});
+
+// ---------------------------------------------------------------- Pune daily form (Kajal's redesign)
+
+function punishedWorld() {
+  const env = attendanceWorld();
+  env.addRows('EMPLOYEE_MASTER', [{ EMP_ID: 'BUNG01', EMPLOYEE_NAME: 'Kawadu Shrawan Nehare', PAYROLL_CATEGORY: 'PUNE_STAFF',
+    STATUS_AS_SOURCE: 'Active', DEPARTMENT: 'Housekeeping', DOJ_AS_SOURCE: '01/01/2020' }]);
+  return env;
+}
+
+test('parsePuneAttendanceRawRow: the real header row and sample response, verbatim (stray spaces, "EMP_ID – Name" label)', () => {
+  const { c } = makeEnv();
+  const row = ['2026-10-01 09:15:00', new Date(2026, 9, 1), 'Housekeeping', 'BUNG01 – Kawadu Shrawan Nehare', 'P',
+    '8:00:00 AM', '9:00:00 PM', 'Confirmed', '', ''];
+  const p = plain(c.parsePuneAttendanceRawRow(PUNE_RAW_HDR, row, 'ATT_FORM_PUNE_RAW', 2));
+  assert.deepEqual(p, { date: '2026-10-01', empId: 'BUNG01', code: 'P', ack: true, otStart: '', otEnd: '', timestamp: '2026-10-01 09:15:00', sourceRef: 'ATT_FORM_PUNE_RAW!2' });
+});
+
+test('hrosOnFormSubmit (Pune, redesigned form): one response per employee, OT hours (incl. overnight), unknown code -> exception, latest wins, VFL grid untouched', () => {
+  const env = punishedWorld();
+  const pune = env.put('ATT_FORM_PUNE_RAW', PUNE_RAW_HDR);
+  // normal present day, no OT
+  pune.data.push(puneRowArray({}));
+  let out = plain(env.c.hrosOnFormSubmit(ev(pune, 2)));
+  assert.deepEqual([out.valid, out.rejected], [1, 0]);
+  let row = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.EMP_ID === 'BUNG01');
+  assert.deepEqual([row.CODE, row.SITE, row.SOURCE, row.STATUS, row.OT_HOURS_INFO], ['P', 'PUNE', 'FORM_PUNE', 'VALID', '']);
+
+  // an unknown Attendance Status code is an exception, not silently dropped or treated as present
+  pune.data.push(puneRowArray({ Date: new Date(2026, 9, 2), Status: 'ZZ', Timestamp: new Date(2026, 9, 2, 9, 0, 0) }));
+  out = plain(env.c.hrosOnFormSubmit(ev(pune, 3)));
+  assert.deepEqual([out.valid, out.rejected], [0, 1]);
+  row = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.DATE === '2026-10-02' && r.EMP_ID === 'BUNG01');
+  assert.deepEqual([row.STATUS, row.REJECT_REASON], ['REJECTED', 'INVALID_CODE']);
+
+  // blank Attendance Status defaults to present, same as the VFL grid
+  pune.data.push(puneRowArray({ Date: new Date(2026, 9, 3), Status: '', Timestamp: new Date(2026, 9, 3, 9, 0, 0) }));
+  env.c.hrosOnFormSubmit(ev(pune, 4));
+  row = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.DATE === '2026-10-03' && r.EMP_ID === 'BUNG01');
+  assert.deepEqual([row.STATUS, row.CODE], ['VALID', 'P']);
+
+  // OT Start/End present -> informational hours only (never fed into INPUT_OT); overnight span wraps past midnight
+  pune.data.push(puneRowArray({ Date: new Date(2026, 9, 4), Timestamp: new Date(2026, 9, 4, 22, 0, 0), OtStart: '10:00:00 PM', OtEnd: '1:00:00 AM' }));
+  env.c.hrosOnFormSubmit(ev(pune, 5));
+  row = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.DATE === '2026-10-04' && r.EMP_ID === 'BUNG01');
+  assert.deepEqual([row.OT_START, row.OT_END, row.OT_HOURS_INFO], ['10:00:00 PM', '1:00:00 AM', 3]);
+  assert.ok(!env.sheets.INPUT_OT, 'daily forms never create/feed INPUT_OT');
+
+  // a supervisor correction (same EMP_ID + shift-day) supersedes the earlier VALID row - latest wins, same convention as canteen/efficiency
+  const beforeCount = env.rowsOf('ATTENDANCE_DAILY').filter((r) => r.DATE === '2026-10-01' && r.EMP_ID === 'BUNG01').length;
+  assert.equal(beforeCount, 1);
+  pune.data.push(puneRowArray({ Status: 'A', Timestamp: new Date(2026, 9, 1, 11, 0, 0) }));
+  const corr = plain(env.c.hrosOnFormSubmit(ev(pune, 6)));
+  assert.equal(corr.superseded, 1);
+  const for1Oct = env.rowsOf('ATTENDANCE_DAILY').filter((r) => r.DATE === '2026-10-01' && r.EMP_ID === 'BUNG01');
+  assert.deepEqual(for1Oct.map((r) => r.STATUS).sort(), ['SUPERSEDED', 'VALID']);
+  assert.equal(for1Oct.find((r) => r.STATUS === 'VALID').CODE, 'A', 'the later correction wins');
+
+  // VFL's grid parsing is completely unaffected by any of the above
+  const ack = env.c.ATT_ACK_TEXT;
+  const vfl = env.put('ATT_FORM_VFL_RAW', ['Timestamp', 'Date', 'Attendance – Forge [T-A – Alpha]', 'Attendance – Forge [T-B – Beta]', ack]);
+  vfl.data.push([new Date(2026, 9, 5, 9, 0, 0), new Date(2026, 9, 5), 'A', '', 'Confirmed']);
+  const vout = plain(env.c.hrosOnFormSubmit(ev(vfl, 2)));
+  assert.deepEqual([vout.valid, vout.rejected], [4, 0]);
+  const byVfl = Object.fromEntries(env.rowsOf('ATTENDANCE_DAILY').filter((r) => r.DATE === '2026-10-05').map((r) => [r.EMP_ID, r.CODE]));
+  assert.equal(byVfl['T-A'], 'A');
+  assert.equal(byVfl['T-B'], 'P', 'blank = present, unaffected by the Pune change');
+});
+
+test('ingestPuneAttendanceResponse_: unknown EMP_ID and unacknowledged response are rejected, not applied', () => {
+  const env = punishedWorld();
+  const pune = env.put('ATT_FORM_PUNE_RAW', PUNE_RAW_HDR);
+  pune.data.push(puneRowArray({ Employee: 'NOPE99 – Ghost', Date: new Date(2026, 9, 1) }));
+  let out = plain(env.c.hrosOnFormSubmit(ev(pune, 2)));
+  assert.deepEqual([out.valid, out.rejected], [0, 1]);
+  let row = env.rowsOf('ATTENDANCE_DAILY').find((r) => r.EMP_ID === 'NOPE99');
+  assert.equal(row.REJECT_REASON, 'UNKNOWN_EMP_ID');
+
+  pune.data.push(puneRowArray({ Date: new Date(2026, 9, 2), Ack: '', Timestamp: new Date(2026, 9, 2, 9, 0, 0) }));
+  out = plain(env.c.hrosOnFormSubmit(ev(pune, 3)));
+  assert.deepEqual([out.valid, out.rejected], [0, 1]);
+  row = env.rowsOf('ATTENDANCE_DAILY').filter((r) => r.STATUS === 'REJECTED').pop();
+  assert.equal(row.REJECT_REASON, 'ACK_NOT_CHECKED');
 });

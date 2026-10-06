@@ -149,6 +149,8 @@ HR fills the form once per month (it can be submitted in parts: only filled boxe
 5. **HR OS ▸ Alerts ▸ Telegram: send test message to me** (it tells you if it went by Telegram or email).
 6. **HR OS ▸ Alerts ▸ Install reminder triggers** (daily attendance reminder ~11:00, escalation ~14:00, month-end input digest ~11:05). Remove them any time with **Remove reminder triggers**.
 
+   VFL runs on a 24-hour "shift day" that starts at 07:00 and ends at 07:00 the next calendar day (e.g. shift-day "6 Oct" = 6 Oct 07:00 to 7 Oct 07:00), and the daily attendance form's Date field is always the shift-day's START date. The 11:00/14:00 timers still fire at 11:00/14:00 as before - what changed is which shift-day they check: at 11:00/14:00 today they check YESTERDAY's shift-day (the one that just finished at 07:00 this morning), not today's (which has barely started and can never be complete). The reminder email now says the shift-day explicitly, e.g. "not received for shift-day 06-Oct-2026 (07:00 06-Oct to 07:00 07-Oct)."
+
 The first run after updating the script asks for one extra permission (connect to external services). Click Allow once, as the owner. Until Telegram is set up, alerts go by email.
 
 ## F. Quick self-check

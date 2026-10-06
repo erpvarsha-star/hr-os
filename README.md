@@ -68,7 +68,7 @@ These are the source files. **You do not paste them one by one**: `npm run combi
 | `51_Email.gs` | Queues and sends payslip emails (only when released). |
 | `60_Status.gs` | Payroll status: which inputs (holidays, working days, attendance, OT, canteen, society, advance) are still missing per population. Read-only. |
 | `61_Notify.gs` | Telegram / email alerts and the messages after calculate, approve and lock. |
-| `62_Reminders.gs` | The daily attendance reminder (11:00), escalation (14:00) and the month-end input digest (11:05). |
+| `62_Reminders.gs` | The daily attendance reminder (11:00) and escalation (14:00) - both check yesterday's 07:00-07:00 shift-day, not today's - and the month-end input digest (11:05). |
 | `90_Menu.gs` | The HR OS menu. |
 | `99_Audit.gs` | Writes every action to AUDIT_LOG. |
 
@@ -306,6 +306,8 @@ HR OS can message people on Telegram (and falls back to email when someone is no
 4. **HR OS ▸ Alerts ▸ Telegram: refresh chats** (owner). New people appear in the tab `TELEGRAM_CHATS`. Type each person's email (the same one used in PAYROLL_CONTROL) in the **EMAIL** column. Set ACTIVE to N to switch a person off. Do this soon after they press Start: Telegram keeps an unread Start for about a day.
 5. **HR OS ▸ Alerts ▸ Telegram: send test message to me**: it says whether it went by Telegram or email.
 6. **HR OS ▸ Alerts ▸ Install reminder triggers** (owner). This creates three daily timers and nothing else: daily attendance reminder about 11:00, escalation to the owner about 14:00, and the month-end input digest about 11:05 (days 1 to 10 of the month after the payroll month). Times are in India time and can drift by a few minutes. **Remove reminder triggers** deletes only these three.
+
+VFL runs on a 24-hour "shift day", not a calendar day: a shift day starts at 07:00 and runs to 07:00 the next calendar day (shift-day "6 Oct" = 6 Oct 07:00 to 7 Oct 07:00), and that start date is what the daily attendance form's Date field holds. The 11:00 reminder and 14:00 escalation still run at those clock times every day, but they check the shift-day that **just finished** - the one that ended at 07:00 that same morning - never the one that has only just begun. So the 11:00 run on, say, 8 October is asking "did the shift-day 7 Oct 07:00 -> 8 Oct 07:00 attendance come in?", and the email says so explicitly: "Daily attendance for VFL Waluj not received for shift-day 07-Oct-2026 (07:00 07-Oct to 07:00 08-Oct)." Weekly-off and paid-holiday skips are checked against that same shift-day, not against today.
 
 Reminders start on the date in PAYROLL_CONTROL `DAILY_REMINDER_FROM` (2026-10-01). They skip each site's weekly off and its paid holidays. **HR OS ▸ Alerts ▸ Payroll status...** shows the same digest on screen for any month. After Calculate, HR approve, Accounts approve and Lock, the next person is told automatically; set PAYROLL_CONTROL `STAGE_NOTIFICATIONS` to N to switch that off. The first time after this update you will be asked to allow the script to connect to external services: click Allow once.
 

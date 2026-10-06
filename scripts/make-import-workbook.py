@@ -305,7 +305,10 @@ SCHEMA = json.loads(r"""{
    "KEY",
    "STATUS",
    "REJECT_REASON",
-   "ENTERED_AT"
+   "ENTERED_AT",
+   "OT_START",
+   "OT_END",
+   "OT_HOURS_INFO"
   ],
   "INPUT_ATTENDANCE": [
    "PAYROLL_MONTH",

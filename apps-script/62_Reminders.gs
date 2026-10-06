@@ -16,7 +16,43 @@ var HROS_PLATFORM_MAX_TRIGGERS = 20;
 var REMINDER_FROM_DEFAULT = '2026-10-01';
 var DIGEST_DONE_PROP_PREFIX = 'DIGEST_ALL_READY_SENT_';
 
+/**
+ * VFL runs a 24-hour "shift day" 07:00 -> 07:00 the next calendar day (e.g. shift-day "6 Oct" = 6 Oct 07:00 to
+ * 7 Oct 07:00); the daily attendance form's Date field holds the shift-day's START date. At 11:00 / 14:00 on
+ * calendar day D the shift-day that just finished is D-1 (it ended at 07:00 today) - that is the one to check and
+ * remind about; shift-day D has barely started and can never be complete yet.
+ */
+var REMINDER_SITE_NAMES = { VFL: 'VFL Waluj', PUNE: 'Pune' };
+var REMINDER_MONTH_ABBR_ = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 function reminderHandlerNames_() { return Object.keys(REMINDER_HANDLERS); }
+
+/** The shift-day to check/remind about, given today's calendar date: yesterday. */
+function reminderShiftDay_(todayIso) { return leave_addDays_(todayIso, -1); }
+
+/** 'YYYY-MM-DD' -> 'DD-Mon' (e.g. '2026-10-06' -> '06-Oct'). */
+function reminderFmtDMon_(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return m[3] + '-' + REMINDER_MONTH_ABBR_[+m[2] - 1];
+}
+
+/** 'YYYY-MM-DD' -> 'DD-Mon-YYYY' (e.g. '2026-10-06' -> '06-Oct-2026'). */
+function reminderFmtDMonYYYY_(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return m[3] + '-' + REMINDER_MONTH_ABBR_[+m[2] - 1] + '-' + m[1];
+}
+
+/** Display name for a reminder message ("VFL Waluj" / "Pune"); falls back to the site code itself. */
+function reminderSiteName_(site) { return REMINDER_SITE_NAMES[site] || site; }
+
+/** The plain-text sentence naming the shift-day and its 07:00-07:00 boundary, e.g.
+ * "Daily attendance for VFL Waluj not received for shift-day 06-Oct-2026 (07:00 06-Oct to 07:00 07-Oct)." */
+function reminderShiftDayText_(site, shiftDate) {
+  return 'Daily attendance for ' + reminderSiteName_(site) + ' not received for shift-day ' + reminderFmtDMonYYYY_(shiftDate) +
+    ' (07:00 ' + reminderFmtDMon_(shiftDate) + ' to 07:00 ' + reminderFmtDMon_(leave_addDays_(shiftDate, 1)) + ').';
+}
 
 // ---------------------------------------------------------------- pure
 
@@ -64,11 +100,13 @@ function reminder_liveUrl_(site) {
 }
 
 /**
- * mode 'REMINDER' -> REGISTER_ENTRY_EMAILS_<SITE>; 'ESCALATION' -> the same people plus the owner, only for sites still missing. dateIso defaults to today.
- * Returns [{site, action, reason, sent}].
+ * mode 'REMINDER' -> REGISTER_ENTRY_EMAILS_<SITE>; 'ESCALATION' -> the same people plus the owner, only for sites still missing.
+ * todayIso is today's calendar date (defaults to today); the shift-day actually checked is todayIso - 1 day (see
+ * reminderShiftDay_ above). Returns [{site, action, reason, sent}].
  */
-function attendanceReminderRun_(mode, dateIso) {
-  var date = dateIso || status_todayIso_();
+function attendanceReminderRun_(mode, todayIso) {
+  var today = todayIso || status_todayIso_();
+  var date = reminderShiftDay_(today);
   var from = toIsoDate(getControl('DAILY_REMINDER_FROM', REMINDER_FROM_DEFAULT));
   var holidays = status_readOpt_(TABS.HOLIDAY_CALENDAR), daily = status_readOpt_(TABS.ATTENDANCE_DAILY).filter(function (r) { return toIsoDate(r.DATE) === date; });
   var owner = getOwnerApproverEmail(), out = [];
@@ -77,8 +115,8 @@ function attendanceReminderRun_(mode, dateIso) {
       hasPopulations: populationsOfSite(site).length > 0 });
     var sent = [];
     if (d.action === 'SEND') {
-      var subject = 'Daily attendance for ' + site + ' not received for ' + date;
-      var text = subject + '. Form: ' + reminder_liveUrl_(site);
+      var subject = reminderShiftDayText_(site, date);
+      var text = subject + ' Form: ' + reminder_liveUrl_(site);
       var to = notifyEmailList(getControl('REGISTER_ENTRY_EMAILS_' + site, ''));
       if (mode === 'ESCALATION') to = notifyEmailList(to.concat([owner]));
       if (mode === 'ESCALATION') text = 'Still missing after the 11:00 reminder. ' + text;

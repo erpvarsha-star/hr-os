@@ -1,4 +1,4 @@
-var HROS_VERSION = '2026-10-01 71436ad';
+var HROS_VERSION = '2026-10-06 3c067d6';
 // VFL HR OS — combined Apps Script (generated from apps-script/*.gs; do not edit here)
 
 // ===== 00_Config.gs =====
@@ -705,8 +705,13 @@ var HROS_INPUT_ATTENDANCE_HEADERS = ['PAYROLL_MONTH', 'EMP_ID', 'PAYROLL_CATEGOR
   'EL_AVAILED', 'CL_AVAILED', 'SL_AVAILED', 'PAID_LEAVE_OTHER', 'WORKED_DAYS', 'PAYABLE_DAYS', 'APPROVAL_STATUS', 'APPROVED_BY',
   'SOURCE_REF', 'ENTERED_AT', 'REMARKS', 'PHYSICAL_PRESENT_DAYS', 'ABSENT_LWP_DAYS', 'GENERATED_VALUES_JSON', 'HR_OVERRIDE',
   'OVERRIDE_REASON', 'ROW_KEY', 'REGISTER_DAYS_PRESENT', 'REGISTER_INCLUDES_WO', 'ENTERED_BY'];
+/**
+ * OT_START / OT_END / OT_HOURS_INFO are informational only (from Kajal's redesigned Pune daily form's optional OT
+ * Start/End Time columns): daily attendance forms do not feed INPUT_OT - OT is only ever paid through the separate
+ * Overtime_Form / syncOtFromForm (20_Feeds.gs). Blank for every VFL row and for Pune rows with no OT entered.
+ */
 var HROS_ATTENDANCE_DAILY_HEADERS = ['PERIOD', 'DATE', 'SITE', 'EMP_ID', 'CODE', 'SOURCE', 'SOURCE_REF', 'KEY', 'STATUS',
-  'REJECT_REASON', 'ENTERED_AT'];
+  'REJECT_REASON', 'ENTERED_AT', 'OT_START', 'OT_END', 'OT_HOURS_INFO'];
 var HROS_COMPARISON_HEADERS = ['PERIOD', 'EMP_ID', 'NAME', 'POPULATION', 'DAILY_PRESENT', 'REGISTER_PRESENT', 'DIFF', 'STATUS',
   'HR_DECIDED_DAYS', 'HR_REASON', 'HR_BY', 'HR_AT', 'OWNER_DECISION', 'OWNER_BY', 'OWNER_AT', 'HR_STAMPED_DAYS'];
 var HROS_READINESS_HEADERS = ['PERIOD', 'POPULATION', 'CHECK', 'STATUS', 'DETAIL', 'CHECKED_AT'];
@@ -1719,29 +1724,41 @@ function approveAttendance(period, population) {
 }
 
 /**
- * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW / ATT_FORM_PUNE_RAW) -> the parsed response
- * {date, marks, ack, timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked
- * response sheet are the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid
- * row, the cell holds the chosen code) and the acknowledgement checkbox title.
+ * Pure: one row of an attendance form-response tab (ATT_FORM_VFL_RAW) -> the parsed response {date, marks, ack,
+ * timestamp, sourceRef} that normalizeAttendanceResponse expects. Column headers of a linked response sheet are
+ * the question titles: "Timestamp", "Date", "Attendance – <Dept> [EMP_ID – Name]" (one per grid row, the cell
+ * holds the chosen code) and the acknowledgement checkbox title.
+ *
+ * The live VFL form has accumulated several near-duplicate blocks of the same grid questions from repeated form
+ * edits (Google Forms appends a newly re-added item to the end and leaves the stale old one in place). For every
+ * repeated header (grid row label, Timestamp, Date, the ack checkbox) only the LAST (rightmost) column is read;
+ * earlier occurrences are ignored outright, even when they hold a non-blank leftover value, so a stale "Absent"
+ * typed into an old abandoned column can never survive over a genuine blank (= present) in the column the
+ * supervisor is actually answering in today.
  */
 function parseAttendanceRawRow(headers, values, sheetName, rowNum) {
   var out = { date: '', marks: {}, ack: false, timestamp: '', sourceRef: sheetName + '!' + rowNum };
+  var tsCol = -1, dateCol = -1, ackCol = -1, gridCol = {};
   (headers || []).forEach(function (h, i) {
     var title = String(h == null ? '' : h).trim();
-    var v = values[i];
-    if (/^timestamp$/i.test(title)) {
-      out.timestamp = Object.prototype.toString.call(v) === '[object Date]'
-        ? Utilities.formatDate(v, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : String(v == null ? '' : v);
-    } else if (/^date$/i.test(title)) {
-      out.date = feeds_parseDate_(v);
-    } else if (title.indexOf(ATT_GRID_TITLE_PREFIX) === 0) {
+    if (/^timestamp$/i.test(title)) tsCol = i;
+    else if (/^date$/i.test(title)) dateCol = i;
+    else if (title.indexOf(ATT_GRID_TITLE_PREFIX) === 0) {
       var m = /\[(.+)\]\s*$/.exec(title);
-      var code = String(v == null ? '' : v).trim();
       var lbl = m ? parseRowLabel(m[1]) : null;
-      if (lbl && code) out.marks[lbl.empId] = code.toUpperCase();
-    } else if (title === ATT_ACK_TEXT) {
-      out.ack = String(v == null ? '' : v).trim() !== '';
-    }
+      if (lbl) gridCol[lbl.empId] = i; // last (rightmost) matching column for this employee wins
+    } else if (title === ATT_ACK_TEXT) ackCol = i;
+  });
+  if (tsCol >= 0) {
+    var tv = values[tsCol];
+    out.timestamp = Object.prototype.toString.call(tv) === '[object Date]'
+      ? Utilities.formatDate(tv, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : String(tv == null ? '' : tv);
+  }
+  if (dateCol >= 0) out.date = feeds_parseDate_(values[dateCol]);
+  if (ackCol >= 0) out.ack = String(values[ackCol] == null ? '' : values[ackCol]).trim() !== '';
+  Object.keys(gridCol).forEach(function (empId) {
+    var code = String(values[gridCol[empId]] == null ? '' : values[gridCol[empId]]).trim();
+    if (code) out.marks[empId] = code.toUpperCase();
   });
   return out;
 }
@@ -1755,6 +1772,135 @@ function ingestAttendanceResponse_(parsed, site) {
   var roster = buildRoster(undefined, { asOf: date });
   var holidays = readObjects(TABS.HOLIDAY_CALENDAR);
   var rows = normalizeAttendanceResponse(parsed, roster, holidays, site, getWeeklyOff(site));
+  var scope = lockScope_(period);
+  var popOf = {};
+  roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });
+  rows = rows.map(function (r) {
+    if (r.STATUS === 'VALID' && scope.isLocked(popOf[r.EMP_ID], r.EMP_ID)) {
+      r.STATUS = 'REJECTED'; r.REJECT_REASON = 'PERIOD_LOCKED';
+    }
+    return r;
+  });
+  var existing = readObjects(TABS.ATTENDANCE_DAILY).filter(function (r) { return toIsoDate(r.DATE) === date; });
+  var sup = findSuperseded(existing, rows);
+  updateRows(TABS.ATTENDANCE_DAILY, sup.map(function (r) { return { row: r._row, values: { STATUS: 'SUPERSEDED' } }; }));
+  appendObjects(TABS.ATTENDANCE_DAILY, rows);
+  return { valid: rows.filter(function (r) { return r.STATUS === 'VALID'; }).length,
+    rejected: rows.filter(function (r) { return r.STATUS !== 'VALID'; }).length, superseded: sup.length };
+}
+
+// ================================================================ Pune daily form (one employee per response)
+
+/**
+ * Pure: minutes-since-midnight of a time-of-day value (a Sheets Date cell carrying only a time, or text like
+ * "8:00:00 AM" / "20:00"). null when unparseable.
+ */
+function puneTimeMinutes_(v) {
+  if (v == null || v === '') return null;
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    if (isNaN(v.getTime())) return null;
+    return v.getHours() * 60 + v.getMinutes() + v.getSeconds() / 60;
+  }
+  var m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/.exec(String(v).trim());
+  if (!m) return null;
+  var h = +m[1], mi = +m[2], se = m[3] ? +m[3] : 0, ap = m[4] ? m[4].toUpperCase() : '';
+  if (mi > 59 || se > 59) return null;
+  if (ap) { if (h < 1 || h > 12) return null; if (ap === 'AM') { if (h === 12) h = 0; } else if (h !== 12) h += 12; }
+  else if (h > 23) return null;
+  return h * 60 + mi + se / 60;
+}
+
+/** Pure: readable "HH:mm" label for an informational OT_START/OT_END cell, or '' when blank/unparseable. */
+function puneOtTimeLabel_(v) {
+  if (v == null || v === '') return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return isNaN(v.getTime()) ? '' : Utilities.formatDate(v, HROS_TZ, 'HH:mm');
+  }
+  return String(v).trim();
+}
+
+/**
+ * Pure: OT hours between two time-of-day values, wrapping past midnight (the shift day runs 07:00 -> 07:00 the
+ * next calendar day, so an OT End earlier than OT Start is an overnight span, not an error). '' when either side
+ * is missing or unparseable.
+ */
+function puneOtHoursInfo_(startVal, endVal) {
+  var s = puneTimeMinutes_(startVal), e = puneTimeMinutes_(endVal);
+  if (s == null || e == null) return '';
+  var diff = e - s;
+  if (diff <= 0) diff += 24 * 60;
+  return Math.round((diff / 60) * 100) / 100;
+}
+
+/**
+ * Pure: one response row of the redesigned Pune daily form (ATT_FORM_PUNE_RAW, one employee per response) ->
+ * {date, empId, code, ack, otStart, otEnd, timestamp, sourceRef}. Header text is matched tolerantly (trimmed,
+ * case/space-insensitive, the feeds_* convention of 20_Feeds.gs - see feeds_headerIndex_) because the live form's
+ * headers carry stray leading/trailing spaces (e.g. "  Employee  "). Column headers: Timestamp, Date,
+ * Department / Section, Employee ("EMP_ID – Name", the same label format as the VFL grid), Attendance Status,
+ * Check-in Time, Check-Out Time, the acknowledgement checkbox, OT Start Time, OT End Time.
+ */
+function parsePuneAttendanceRawRow(headers, values, sheetName, rowNum) {
+  var idx = feeds_headerIndex_(headers || []);
+  function cell(names) { var i = feeds_col_(idx, names); return i >= 0 ? values[i] : ''; }
+  var tsCell = cell(['timestamp']);
+  var timestamp = feeds_isDate_(tsCell) ? Utilities.formatDate(tsCell, HROS_TZ, "yyyy-MM-dd'T'HH:mm:ss") : feeds_str_(tsCell);
+  var lbl = parseRowLabel(cell(['employee']));
+  var ackIdx = -1;
+  (headers || []).forEach(function (h, i) { if (feeds_norm_(h) === feeds_norm_(ATT_ACK_TEXT)) ackIdx = i; });
+  return {
+    date: feeds_parseDate_(cell(['date'])),
+    empId: lbl ? lbl.empId : '',
+    code: feeds_str_(cell(['attendancestatus', 'attendance'])).toUpperCase(),
+    ack: ackIdx >= 0 ? feeds_str_(values[ackIdx]) !== '' : false,
+    otStart: cell(['otstarttime', 'otstart']),
+    otEnd: cell(['otendtime', 'otend']),
+    timestamp: timestamp,
+    sourceRef: sheetName + '!' + rowNum
+  };
+}
+
+/**
+ * Pure: one parsed Pune response -> exactly one ATTENDANCE_DAILY row (REJECTED or VALID) for its EMP_ID + date.
+ * One response is one employee's attendance for the shift-day in the Date column, so (unlike the VFL grid) the
+ * rest of the roster is never defaulted here. Blank Attendance Status defaults to Present, same as the VFL grid's
+ * "leave blank = present" rule; any other code not in DAILY_CODES is an EXCEPTION (REJECTED/INVALID_CODE) needing
+ * review rather than a silent guess. OT Start/End (if both given) are stored as informational columns only - see
+ * HROS_ATTENDANCE_DAILY_HEADERS.
+ */
+function normalizePuneAttendanceResponse(parsed, roster) {
+  var date = toIsoDate(parsed.date);
+  var entered = parsed.timestamp || '';
+  var otExtra = { OT_START: puneOtTimeLabel_(parsed.otStart), OT_END: puneOtTimeLabel_(parsed.otEnd),
+    OT_HOURS_INFO: puneOtHoursInfo_(parsed.otStart, parsed.otEnd) };
+  function row(emp, code, status, reason, extra) {
+    var o = { PERIOD: date ? date.slice(0, 7) : '', DATE: date, SITE: SITE_PUNE, EMP_ID: emp, CODE: code, SOURCE: 'FORM_PUNE',
+      SOURCE_REF: parsed.sourceRef || '', KEY: emp + '|' + date, STATUS: status, REJECT_REASON: reason || '', ENTERED_AT: entered };
+    Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+    return o;
+  }
+  if (!date) return [row('*', '', 'REJECTED', 'BAD_DATE')];
+  if (!parsed.ack) return [row('*', '', 'REJECTED', 'ACK_NOT_CHECKED', otExtra)];
+  var empId = String(parsed.empId || '').trim();
+  if (!empId) return [row('*', '', 'REJECTED', 'MISSING_EMP_ID', otExtra)];
+  var inRoster = (roster || []).some(function (e) { return e.SITE === SITE_PUNE && String(e.EMP_ID).trim() === empId; });
+  if (!inRoster) return [row(empId, parsed.code, 'REJECTED', 'UNKNOWN_EMP_ID', otExtra)];
+  var code = String(parsed.code || '').trim().toUpperCase();
+  if (!code) code = 'P'; // blank Attendance Status = present, same convention as the VFL grid
+  if (DAILY_CODES.indexOf(code) < 0) return [row(empId, code, 'REJECTED', 'INVALID_CODE', otExtra)];
+  return [row(empId, code, 'VALID', '', otExtra)];
+}
+
+/** Normalise + write one Pune response (rejects < MIN_PERIOD and LOCKED populations). Same "latest write for the
+ * same EMP_ID + date wins" convention as the VFL grid (findSuperseded keys on EMP_ID|DATE) and as canteen/efficiency
+ * (20_Feeds.gs feeds_latestPerKey_): a supervisor's correcting resubmission supersedes the earlier VALID row. */
+function ingestPuneAttendanceResponse_(parsed) {
+  var date = toIsoDate(parsed.date);
+  if (!date) throw new Error('Response has no valid date');
+  var period = date.slice(0, 7);
+  guardPeriod_(period);
+  var roster = buildRoster(undefined, { asOf: date });
+  var rows = normalizePuneAttendanceResponse(parsed, roster);
   var scope = lockScope_(period);
   var popOf = {};
   roster.forEach(function (e) { popOf[e.EMP_ID] = e.PAYROLL_CATEGORY; });
@@ -1835,6 +1981,35 @@ function buildAttendanceForm_(def, roster) {
 }
 
 function sheetNames_(ss) { return ss.getSheets().map(function (s) { return s.getName(); }); }
+
+/**
+ * Pure. Purely informational scan of a raw response header row: which non-blank header text appears more than
+ * once, how many times, and at which 1-based columns. Never modifies anything - a repeated form edit/refresh can
+ * leave stale duplicate question columns behind (see parseAttendanceRawRow), and the owner/HR must clean those up
+ * by hand in the Google Form itself. Sorted by first appearance.
+ */
+function attFormDuplicateHeaders(headerRow) {
+  var cols = {}, order = [];
+  (headerRow || []).forEach(function (h, i) {
+    var title = String(h == null ? '' : h).trim();
+    if (!title) return;
+    if (!cols[title]) { cols[title] = []; order.push(title); }
+    cols[title].push(i + 1);
+  });
+  return order.filter(function (t) { return cols[t].length > 1; })
+    .map(function (t) { return { header: t, count: cols[t].length, columns: cols[t] }; });
+}
+
+/** Owner/HR only. Reads row 1 of the named raw tab and reports its duplicate headers; touches nothing else. */
+function checkAttFormDuplicateColumns_(tabName) {
+  emp_requireUser_();
+  var name = String(tabName == null ? '' : tabName).trim();
+  var sheet = getSheet(name);
+  if (!sheet) throw new Error('No such tab "' + name + '"');
+  var lc = sheet.getLastColumn();
+  var headers = lc > 0 ? sheet.getRange(1, 1, 1, lc).getValues()[0] : [];
+  return { tab: name, duplicates: attFormDuplicateHeaders(headers) };
+}
 
 /** Every form the create / refresh menu actions manage: the two daily forms and the two monthly days-present forms. */
 function attAllFormJobs_() {
@@ -1945,16 +2120,26 @@ function hrosOnFormSubmit(e) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    if (route === 'ATT_VFL' || route === 'ATT_PUNE') {
-      var site = route === 'ATT_PUNE' ? SITE_PUNE : SITE_VFL;
+    if (route === 'ATT_VFL') {
       var rowNum = e.range.getRow(), lc = sheet.getLastColumn();
       var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
       var values = sheet.getRange(rowNum, 1, 1, lc).getValues()[0];
       var parsed = parseAttendanceRawRow(headers, values, name, rowNum);
-      var out = ingestAttendanceResponse_(parsed, site);
-      audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: site, source: parsed.sourceRef, valid: out.valid,
+      var out = ingestAttendanceResponse_(parsed, SITE_VFL);
+      audit('ATT_FORM_SUBMIT', parsed.date || '', '', { site: SITE_VFL, source: parsed.sourceRef, valid: out.valid,
         rejected: out.rejected, superseded: out.superseded });
       return out;
+    }
+    if (route === 'ATT_PUNE') {
+      // Kajal's redesign: one response = one employee's attendance for the shift-day (not a whole-site grid)
+      var prowNum = e.range.getRow(), plc = sheet.getLastColumn();
+      var pheaders = sheet.getRange(1, 1, 1, plc).getValues()[0];
+      var pvalues = sheet.getRange(prowNum, 1, 1, plc).getValues()[0];
+      var pparsed = parsePuneAttendanceRawRow(pheaders, pvalues, name, prowNum);
+      var pout = ingestPuneAttendanceResponse_(pparsed);
+      audit('ATT_FORM_SUBMIT', pparsed.date || '', '', { site: SITE_PUNE, source: pparsed.sourceRef, valid: pout.valid,
+        rejected: pout.rejected, superseded: pout.superseded });
+      return pout;
     }
     if (route === 'ATT_MONTHLY_VFL' || route === 'ATT_MONTHLY_PUNE') {
       var mrow = e.range.getRow(), mlc = sheet.getLastColumn();
@@ -3456,12 +3641,16 @@ var FEEDS_OT_EXTERNAL_TAB = 'Form Responses 1';    // default tab name when an e
 
 function feeds_norm_(h) { return String(h == null ? '' : h).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 
-/** Header row -> {normalizedHeader: firstIndex}. */
+/**
+ * Header row -> {normalizedHeader: lastIndex}. The LAST matching column wins when a header name repeats (a form
+ * edited/refreshed more than once can leave stale earlier columns behind; Google Forms always appends the
+ * current item to the end, so the rightmost occurrence is the one respondents are actually answering in).
+ */
 function feeds_headerIndex_(headerRow, limit) {
   var idx = {};
   for (var i = 0; i < headerRow.length && (limit == null || i < limit); i++) {
     var k = feeds_norm_(headerRow[i]);
-    if (k && !(k in idx)) idx[k] = i;
+    if (k) idx[k] = i;
   }
   return idx;
 }
@@ -4097,14 +4286,16 @@ function feeds_assertNoPassword_(headers, cols) {
 }
 
 /**
- * Pure: pick columns by header name. defs=[{key, names, required}]. Password headers are never eligible.
+ * Pure: pick columns by header name. defs=[{key, names, required}]. Password headers are never eligible. When a
+ * header name repeats (stale duplicate columns from a re-edited form) the LAST occurrence wins - see
+ * feeds_headerIndex_.
  * Returns {cols:[0-based indexes, unique], missing:[keys]}.
  */
 function feeds_selectColumns_(headers, defs) {
   var idx = {};
   headers.forEach(function (h, i) {
     var k = feeds_norm_(h);
-    if (k && !feeds_isPasswordHeader_(h) && !(k in idx)) idx[k] = i;
+    if (k && !feeds_isPasswordHeader_(h)) idx[k] = i;
   });
   var cols = [], missing = [];
   defs.forEach(function (d) {
@@ -4256,7 +4447,7 @@ function feeds_otPeriodOfRow_(sheet, rowNum) {
   if (lc < 1) return '';
   var headers = sheet.getRange(1, 1, 1, lc).getValues()[0];
   var col = -1;
-  headers.forEach(function (h, i) { if (col < 0 && ['dateofot', 'otdate'].indexOf(feeds_norm_(h)) >= 0) col = i; });
+  headers.forEach(function (h, i) { if (['dateofot', 'otdate'].indexOf(feeds_norm_(h)) >= 0) col = i; }); // last match wins
   if (col < 0) return '';
   var period = feeds_otPeriodForDate(sheet.getRange(rowNum, col + 1, 1, 1).getValues()[0][0], readControlMap());
   if (!period) return '';
@@ -9638,7 +9829,43 @@ var HROS_PLATFORM_MAX_TRIGGERS = 20;
 var REMINDER_FROM_DEFAULT = '2026-10-01';
 var DIGEST_DONE_PROP_PREFIX = 'DIGEST_ALL_READY_SENT_';
 
+/**
+ * VFL runs a 24-hour "shift day" 07:00 -> 07:00 the next calendar day (e.g. shift-day "6 Oct" = 6 Oct 07:00 to
+ * 7 Oct 07:00); the daily attendance form's Date field holds the shift-day's START date. At 11:00 / 14:00 on
+ * calendar day D the shift-day that just finished is D-1 (it ended at 07:00 today) - that is the one to check and
+ * remind about; shift-day D has barely started and can never be complete yet.
+ */
+var REMINDER_SITE_NAMES = { VFL: 'VFL Waluj', PUNE: 'Pune' };
+var REMINDER_MONTH_ABBR_ = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 function reminderHandlerNames_() { return Object.keys(REMINDER_HANDLERS); }
+
+/** The shift-day to check/remind about, given today's calendar date: yesterday. */
+function reminderShiftDay_(todayIso) { return leave_addDays_(todayIso, -1); }
+
+/** 'YYYY-MM-DD' -> 'DD-Mon' (e.g. '2026-10-06' -> '06-Oct'). */
+function reminderFmtDMon_(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return m[3] + '-' + REMINDER_MONTH_ABBR_[+m[2] - 1];
+}
+
+/** 'YYYY-MM-DD' -> 'DD-Mon-YYYY' (e.g. '2026-10-06' -> '06-Oct-2026'). */
+function reminderFmtDMonYYYY_(iso) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return m[3] + '-' + REMINDER_MONTH_ABBR_[+m[2] - 1] + '-' + m[1];
+}
+
+/** Display name for a reminder message ("VFL Waluj" / "Pune"); falls back to the site code itself. */
+function reminderSiteName_(site) { return REMINDER_SITE_NAMES[site] || site; }
+
+/** The plain-text sentence naming the shift-day and its 07:00-07:00 boundary, e.g.
+ * "Daily attendance for VFL Waluj not received for shift-day 06-Oct-2026 (07:00 06-Oct to 07:00 07-Oct)." */
+function reminderShiftDayText_(site, shiftDate) {
+  return 'Daily attendance for ' + reminderSiteName_(site) + ' not received for shift-day ' + reminderFmtDMonYYYY_(shiftDate) +
+    ' (07:00 ' + reminderFmtDMon_(shiftDate) + ' to 07:00 ' + reminderFmtDMon_(leave_addDays_(shiftDate, 1)) + ').';
+}
 
 // ---------------------------------------------------------------- pure
 
@@ -9686,11 +9913,13 @@ function reminder_liveUrl_(site) {
 }
 
 /**
- * mode 'REMINDER' -> REGISTER_ENTRY_EMAILS_<SITE>; 'ESCALATION' -> the same people plus the owner, only for sites still missing. dateIso defaults to today.
- * Returns [{site, action, reason, sent}].
+ * mode 'REMINDER' -> REGISTER_ENTRY_EMAILS_<SITE>; 'ESCALATION' -> the same people plus the owner, only for sites still missing.
+ * todayIso is today's calendar date (defaults to today); the shift-day actually checked is todayIso - 1 day (see
+ * reminderShiftDay_ above). Returns [{site, action, reason, sent}].
  */
-function attendanceReminderRun_(mode, dateIso) {
-  var date = dateIso || status_todayIso_();
+function attendanceReminderRun_(mode, todayIso) {
+  var today = todayIso || status_todayIso_();
+  var date = reminderShiftDay_(today);
   var from = toIsoDate(getControl('DAILY_REMINDER_FROM', REMINDER_FROM_DEFAULT));
   var holidays = status_readOpt_(TABS.HOLIDAY_CALENDAR), daily = status_readOpt_(TABS.ATTENDANCE_DAILY).filter(function (r) { return toIsoDate(r.DATE) === date; });
   var owner = getOwnerApproverEmail(), out = [];
@@ -9699,8 +9928,8 @@ function attendanceReminderRun_(mode, dateIso) {
       hasPopulations: populationsOfSite(site).length > 0 });
     var sent = [];
     if (d.action === 'SEND') {
-      var subject = 'Daily attendance for ' + site + ' not received for ' + date;
-      var text = subject + '. Form: ' + reminder_liveUrl_(site);
+      var subject = reminderShiftDayText_(site, date);
+      var text = subject + ' Form: ' + reminder_liveUrl_(site);
       var to = notifyEmailList(getControl('REGISTER_ENTRY_EMAILS_' + site, ''));
       if (mode === 'ESCALATION') to = notifyEmailList(to.concat([owner]));
       if (mode === 'ESCALATION') text = 'Still missing after the 11:00 reminder. ' + text;
@@ -9860,7 +10089,8 @@ function onOpen() {
       .addItem('Run setup (idempotent)', 'menuSetup')
       .addItem('Create attendance forms', 'menuCreateForms')
       .addItem('Refresh form rosters', 'menuRefreshRosters')
-      .addItem('Install triggers', 'menuInstallTriggers'))
+      .addItem('Install triggers', 'menuInstallTriggers')
+      .addItem('Attendance: check form for duplicate columns...', 'menuCheckFormDuplicateColumns'))
     .addItem('About HR OS', 'menuAbout')
     .addSubMenu(ui.createMenu('Employees')
       .addItem('Add or update employee', 'menuEmployeeDialog')
@@ -9966,6 +10196,19 @@ function menuCreateForms() { run_('Create attendance forms', createAttendanceFor
 function menuRefreshRosters() { run_('Refresh form rosters', refreshAttendanceFormRosters); }
 /** The single spreadsheet-level onFormSubmit trigger (attendance forms, OT form, canteen, efficiency). */
 function menuInstallTriggers() { run_('Install triggers', installTriggers); }
+/** Read-only: lists duplicate header text in a raw form response tab's row 1 so HR can clean up the Google Form by hand. */
+function menuCheckFormDuplicateColumns() {
+  run_('Attendance: check form for duplicate columns', function () {
+    var t = ask_('Attendance: check form for duplicate columns',
+      'Raw response tab name (e.g. ' + ATT_FORM_DEFS.VFL.rawTab + ' or ' + ATT_FORM_DEFS.PUNE.rawTab + ')');
+    if (!t) return null;
+    var r = checkAttFormDuplicateColumns_(t);
+    if (!r.duplicates.length) return 'No duplicate headers in ' + r.tab + '.';
+    return r.duplicates.map(function (d) {
+      return d.header + ': appears ' + d.count + ' times, at columns ' + d.columns.join(', ');
+    }).join('\n');
+  });
+}
 
 function menuPrepareMonth() { run_('Prepare month', function () { var p = askPeriod_('Prepare month'); return p && prepareMonth(p); }); }
 function menuPrepareAttendance() { run_('Prepare monthly attendance', function () { var p = askPeriod_('Prepare monthly attendance'); return p && prepareMonthlyAttendance(p); }); }
